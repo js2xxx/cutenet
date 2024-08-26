@@ -15,8 +15,8 @@ pub trait WireCx: Provider {}
 impl<T: Provider + ?Sized> WireCx for T {}
 
 impl dyn WireCx + '_ {
-    pub fn checksums(&self) -> &Checksums {
-        request_ref(self).unwrap_or(&Checksums::IGNORE)
+    pub fn checksums(&self) -> Checksums {
+        request_ref(self).copied().unwrap_or(Checksums::IGNORE)
     }
 
     pub fn ip_addrs(&self) -> Ends<IpAddr> {

@@ -197,7 +197,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::VersionInvalid.with(packet.0));
         }
 
-        if cx.checksums().ip && !packet.verify_checksum() {
+        if cx.checksums().ip() && !packet.verify_checksum() {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -267,7 +267,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             packet.set_next_header(next_header);
             packet.set_hop_limit(hop_limit);
 
-            if cx.checksums().ip {
+            if cx.checksums().ip() {
                 packet.fill_checksum();
             } else {
                 packet.set_checksum(0);

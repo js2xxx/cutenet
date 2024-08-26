@@ -113,7 +113,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::DstInvalid.with(packet.0));
         }
 
-        if cx.checksums().udp && !packet.verify_checksum(cx.ip_addrs()) {
+        if cx.checksums().udp() && !packet.verify_checksum(cx.ip_addrs()) {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -140,7 +140,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             packet.set_src_port(src);
             packet.set_dst_port(dst);
 
-            if cx.checksums().udp {
+            if cx.checksums().udp() {
                 packet.fill_checksum(cx.ip_addrs());
             } else {
                 packet.set_checksum(0);

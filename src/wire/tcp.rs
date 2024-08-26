@@ -344,7 +344,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
         }
 
         // Valid checksum is expected.
-        if cx.checksums().tcp && !packet.verify_checksum(cx.ip_addrs()) {
+        if cx.checksums().tcp() && !packet.verify_checksum(cx.ip_addrs()) {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -501,7 +501,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             }
             packet.set_urgent_at(0);
 
-            if cx.checksums().tcp {
+            if cx.checksums().tcp() {
                 packet.fill_checksum(cx.ip_addrs())
             } else {
                 // make sure we get a consistently zeroed checksum,

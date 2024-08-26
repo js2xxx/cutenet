@@ -459,7 +459,7 @@ where
             Message::Unknown(_) => return Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
         }
 
-        if cx.checksums().icmp && !packet.verify_checksum(cx.ip_addrs()) {
+        if cx.checksums().icmp() && !packet.verify_checksum(cx.ip_addrs()) {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -524,7 +524,7 @@ where
 
     fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let checksum = |mut packet: RawPacket<&mut [u8]>| {
-            if cx.checksums().icmp {
+            if cx.checksums().icmp() {
                 packet.fill_checksum(cx.ip_addrs());
             } else {
                 // make sure we get a consistently zeroed checksum,

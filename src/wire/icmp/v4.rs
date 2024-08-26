@@ -268,7 +268,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::PacketTooShort.with(packet.0));
         }
 
-        if cx.checksums().icmp && !packet.verify_checksum() {
+        if cx.checksums().icmp() && !packet.verify_checksum() {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -314,7 +314,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
 
     fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let checksum = |mut packet: RawPacket<&mut [u8]>| {
-            if cx.checksums().icmp {
+            if cx.checksums().icmp() {
                 packet.fill_checksum();
             } else {
                 // make sure we get a consistently zeroed checksum,

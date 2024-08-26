@@ -8,36 +8,38 @@ use crate::{
 
 pub type Payload<S: Storage> = crate::wire::EthernetPayload<Buf<S>, ReserveBuf<S>>;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Checksums {
-    pub ip: bool,
-    pub udp: bool,
-    pub tcp: bool,
-    pub icmp: bool,
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct Checksums: u8 {
+        const IP = 1 << 0;
+        const UDP = 1 << 1;
+        const TCP = 1 << 2;
+        const ICMP = 1 << 3;
+    }
 }
 
 impl Checksums {
     pub const fn new() -> Self {
-        Checksums {
-            ip: true,
-            udp: true,
-            tcp: true,
-            icmp: true,
-        }
+        Checksums::all()
     }
 
-    pub const IGNORE: Self = Checksums {
-        ip: false,
-        udp: false,
-        tcp: false,
-        icmp: false,
-    };
-}
-
-impl Default for Checksums {
-    fn default() -> Self {
-        Checksums::new()
+    pub const fn ip(&self) -> bool {
+        self.contains(Checksums::IP)
     }
+
+    pub const fn udp(&self) -> bool {
+        self.contains(Checksums::UDP)
+    }
+
+    pub const fn tcp(&self) -> bool {
+        self.contains(Checksums::TCP)
+    }
+
+    pub const fn icmp(&self) -> bool {
+        self.contains(Checksums::ICMP)
+    }
+
+    pub const IGNORE: Self = Checksums::empty();
 }
 
 #[derive(Debug, Clone, Copy, Default)]
