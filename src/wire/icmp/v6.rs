@@ -4,8 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
-    context::{Checksum, Dst, Ends, Src},
-    provide_any::{request_ref, Provider},
+    context::{Dst, Ends, Src},
     wire::{
         ip::{self, checksum},
         prelude::*,
@@ -433,7 +432,7 @@ where
     T: WireParse<Payload = P>,
     U: NoPayload<Init = P>,
 {
-    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
         let packet = RawPacket(raw);
 
@@ -463,29 +462,36 @@ where
             Message::Unknown(_) => return Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
         }
 
-        if let Some(Checksum) = request_ref(cx)
-            && !packet.verify_checksum(*request_ref(cx).unwrap())
-        {
+        if cx.do_checksum && !packet.verify_checksum(cx.checksum_addrs) {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
         match (packet.msg_type(), packet.msg_code()) {
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                header: Ipv6Packet::parse(
+                    &mut false.into(),
+                    packet.0.pop(field::UNUSED.end..len)?,
+                )?,
             }),
             (Message::PktTooBig, 0) => Ok(Packet::PktTooBig {
                 mtu: packet.pkt_too_big_mtu(),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::MTU.end..len)?)?,
+                header: Ipv6Packet::parse(&mut false.into(), packet.0.pop(field::MTU.end..len)?)?,
             }),
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                header: Ipv6Packet::parse(
+                    &mut false.into(),
+                    packet.0.pop(field::UNUSED.end..len)?,
+                )?,
             }),
             (Message::ParamProblem, code) => Ok(Packet::ParamProblem {
                 reason: ParamProblem::from(code),
                 pointer: packet.param_problem_ptr(),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::POINTER.end..len)?)?,
+                header: Ipv6Packet::parse(
+                    &mut false.into(),
+                    packet.0.pop(field::POINTER.end..len)?,
+                )?,
             }),
             (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
@@ -515,10 +521,11 @@ where
     T: WireBuild<Payload = P>,
     U: NoPayload<Init = P>,
 {
-    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+        let cxc = *cx;
         let checksum = |mut packet: RawPacket<&mut [u8]>| {
-            if let Some(Checksum) = request_ref(cx) {
-                packet.fill_checksum(*request_ref(cx).unwrap());
+            if cxc.do_checksum {
+                packet.fill_checksum(cxc.checksum_addrs);
             } else {
                 // make sure we get a consistently zeroed checksum,
                 // since implementations might rely on it
@@ -529,16 +536,15 @@ where
 
         let push_opt = PayloadPush::Truncate(MAX_ERROR_PACKET_LEN);
         match self {
-            Packet::DstUnreachable { reason, header } => {
-                (header.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
+            Packet::DstUnreachable { reason, header } => (header.build(&mut false.into())?)
+                .push_with(field::UNUSED.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::DstUnreachable);
                     packet.set_msg_code(reason.into());
                     checksum(packet)
-                })
-            }
+                }),
             Packet::PktTooBig { mtu, header } => {
-                (header.build(&())?).push_with(field::MTU.end, push_opt, |buf| {
+                (header.build(&mut false.into())?).push_with(field::MTU.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::PktTooBig);
                     packet.set_msg_code(0);
@@ -546,17 +552,16 @@ where
                     checksum(packet)
                 })
             }
-            Packet::TimeExceeded { reason, header } => {
-                (header.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
+            Packet::TimeExceeded { reason, header } => (header.build(&mut false.into())?)
+                .push_with(field::UNUSED.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::TimeExceeded);
                     packet.set_msg_code(reason.into());
                     checksum(packet)
-                })
-            }
+                }),
 
             Packet::ParamProblem { reason, pointer, header } => {
-                (header.build(&())?).push_with(field::POINTER.end, push_opt, |buf| {
+                (header.build(&mut false.into())?).push_with(field::POINTER.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::ParamProblem);
                     packet.set_msg_code(reason.into());
@@ -606,7 +611,10 @@ mod tests {
     const MOCK_IP_ADDR_2: IpAddr = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2));
     const MOCK_IP_ADDRS: Ends<IpAddr> = (Src(MOCK_IP_ADDR_1), Dst(MOCK_IP_ADDR_2));
 
-    const CX: (Checksum, (Src<IpAddr>, Dst<IpAddr>)) = (Checksum, MOCK_IP_ADDRS);
+    const CX: WireCx = WireCx {
+        do_checksum: true,
+        checksum_addrs: MOCK_IP_ADDRS,
+    };
 
     static ECHO_PACKET_BYTES: [u8; 12] = [
         0x80, 0x00, 0x19, 0xb3, 0x12, 0x34, 0xab, 0xcd, 0xaa, 0x00, 0x00, 0xff,
@@ -627,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_echo_deconstruct() {
-        let packet: Packet<&[u8], _> = Packet::parse(&CX, &ECHO_PACKET_BYTES[..]).unwrap();
+        let packet: Packet<&[u8], _> = Packet::parse(&mut { CX }, &ECHO_PACKET_BYTES[..]).unwrap();
         assert_eq!(packet, Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
@@ -642,16 +650,16 @@ mod tests {
             seq_no: 0xabcd,
             payload: PayloadHolder(ECHO_PACKET_PAYLOAD.len()),
         };
-        let bytes = vec![0xa5; repr.build(&()).unwrap().0];
+        let bytes = vec![0xa5; repr.build(&mut false.into()).unwrap().0];
         let mut buf = Buf::builder(bytes).reserve_for(repr).build();
         buf.append_slice(&ECHO_PACKET_PAYLOAD);
-        let packet = repr.sub_payload(|_| buf).build(&CX).unwrap();
+        let packet = repr.sub_payload(|_| buf).build(&mut { CX }).unwrap();
         assert_eq!(packet.data(), &ECHO_PACKET_BYTES[..]);
     }
 
     #[test]
     fn test_too_big_deconstruct() {
-        let packet: Packet<&[u8], _> = Packet::parse(&CX, &PKT_TOO_BIG_BYTES[..]).unwrap();
+        let packet: Packet<&[u8], _> = Packet::parse(&mut { CX }, &PKT_TOO_BIG_BYTES[..]).unwrap();
         assert!(matches!(packet, Packet::PktTooBig {
                 mtu: 1500,
                 header: Ipv6Packet {
@@ -677,11 +685,11 @@ mod tests {
                 payload: PayloadHolder(PKT_TOO_BIG_UDP_PAYLOAD.len()),
             },
         };
-        let bytes = vec![0xa5; repr.build(&()).unwrap().0];
+        let bytes = vec![0xa5; repr.build(&mut false.into()).unwrap().0];
         let mut buf = Buf::builder(bytes).reserve_for(repr).build();
         buf.append_slice(&PKT_TOO_BIG_UDP_PAYLOAD);
 
-        let packet = repr.sub_payload(|_| buf).build(&CX).unwrap();
+        let packet = repr.sub_payload(|_| buf).build(&mut { CX }).unwrap();
         assert_eq!(packet.data(), &PKT_TOO_BIG_BYTES[..]);
     }
 
@@ -696,6 +704,9 @@ mod tests {
                 payload: PayloadHolder(9999),
             },
         };
-        assert_eq!(repr.build(&()).unwrap().0, 1280 - ip::v6::HEADER_LEN);
+        assert_eq!(
+            repr.build(&mut false.into()).unwrap().0,
+            1280 - ip::v6::HEADER_LEN
+        );
     }
 }

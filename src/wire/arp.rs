@@ -5,7 +5,6 @@ use byteorder::{ByteOrder, NetworkEndian};
 use crate::{
     self as cutenet,
     context::{Dst, Ends, Src},
-    provide_any::Provider,
     wire::{ethernet, ip::IpAddrExt, prelude::*, Data, DataMut},
 };
 
@@ -145,7 +144,7 @@ where
     P: PayloadParse<NoPayload = U> + Data,
     U: NoPayload<Init = P>,
 {
-    fn parse(_: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(_: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let packet = RawPacket(raw);
         let len = packet.0.len();
         if len < field::OPER.end
@@ -184,7 +183,7 @@ where
     P: PayloadBuild<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
-    fn build(self, _: &dyn Provider) -> Result<P, BuildError<P>> {
+    fn build(self, _: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             operation,
             addr: (Src((src_hw, src_ip)), Dst((dst_hw, dst_ip))),
@@ -225,7 +224,7 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut fb = PACKET_BYTES;
-        let packet = Packet::parse(&(), Buf::full(&mut fb[..])).unwrap();
+        let packet = Packet::parse(&mut false.into(), Buf::full(&mut fb[..])).unwrap();
 
         assert_eq!(packet.operation, Operation::Request);
         assert_eq!(
@@ -263,7 +262,10 @@ mod tests {
         let bytes = vec![0xa5; 28];
         let payload = Buf::builder(bytes).reserve_for(tag);
 
-        let packet: Buf<_> = tag.sub_no_payload(|_| payload).build(&()).unwrap();
+        let packet: Buf<_> = tag
+            .sub_no_payload(|_| payload)
+            .build(&mut false.into())
+            .unwrap();
         assert_eq!(packet.data(), &PACKET_BYTES[..]);
     }
 }

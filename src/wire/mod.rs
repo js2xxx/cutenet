@@ -3,7 +3,7 @@ use core::fmt;
 mod traits;
 pub use self::traits::{
     NoPayload, NoPayloadHolder, Payload, PayloadBuild, PayloadHolder, PayloadParse, Wire,
-    WireBuild, WireParse, WireSubNoPayload, WireSubstitute,
+    WireBuild, WireCx, WireParse, WireSubNoPayload, WireSubstitute,
 };
 
 mod error;

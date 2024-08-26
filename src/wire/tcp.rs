@@ -4,8 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate as cutenet;
 use crate::{
-    context::{Checksum, Dst, Ends, Src},
-    provide_any::{request_ref, Provider},
+    context::{Dst, Ends, Src},
     wire::{
         ip::{self, checksum},
         prelude::*,
@@ -325,7 +324,7 @@ pub struct Packet<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
-    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let packet = RawPacket(raw);
 
         let len = packet.0.len();
@@ -346,9 +345,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
         }
 
         // Valid checksum is expected.
-        if let Some(Checksum) = request_ref(cx)
-            && !packet.verify_checksum(*request_ref(cx).unwrap())
-        {
+        if cx.do_checksum && !packet.verify_checksum(cx.checksum_addrs) {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -431,7 +428,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
-    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let header_len = self.header_len();
 
         let Packet {
@@ -497,8 +494,8 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             }
             packet.set_urgent_at(0);
 
-            if let Some(Checksum) = request_ref(cx) {
-                packet.fill_checksum(*request_ref(cx).unwrap())
+            if cx.do_checksum {
+                packet.fill_checksum(cx.checksum_addrs)
             } else {
                 // make sure we get a consistently zeroed checksum,
                 // since implementations might rely on it
@@ -566,6 +563,10 @@ mod tests {
 
     const SRC_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
     const DST_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
+    const CX: WireCx = WireCx {
+        do_checksum: true,
+        checksum_addrs: (Src(SRC_ADDR), Dst(DST_ADDR)),
+    };
 
     static PACKET_BYTES: [u8; 28] = [
         0xbf, 0x00, 0x00, 0x50, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x60, 0x31, 0x01,
@@ -576,11 +577,7 @@ mod tests {
 
     #[test]
     fn test_deconstruct() {
-        let packet: Packet<&[u8]> = Packet::parse(
-            &(Checksum, (Src(SRC_ADDR), Dst(DST_ADDR))),
-            &PACKET_BYTES[..],
-        )
-        .unwrap();
+        let packet: Packet<&[u8]> = Packet::parse(&mut { CX }, &PACKET_BYTES[..]).unwrap();
         assert_eq!(packet.port, (Src(48896), Dst(80)));
         assert_eq!(packet.seq_number, SeqNumber(0x01234567));
         assert_eq!(packet.ack_number, Some(SeqNumber(0x89abcdefu32 as i32)));
@@ -592,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_truncated() {
-        let err = Packet::<&[u8]>::parse(&(), &PACKET_BYTES[..23]).unwrap_err();
+        let err = Packet::<&[u8]>::parse(&mut false.into(), &PACKET_BYTES[..23]).unwrap_err();
         assert_eq!(err.kind, ParseErrorKind::PacketTooShort);
     }
 
@@ -619,25 +616,18 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let repr = Packet::parse(
-            &(Checksum, (Src(SRC_ADDR), Dst(DST_ADDR))),
-            &SYN_PACKET_BYTES[..],
-        )
-        .unwrap();
+        let repr = Packet::parse(&mut { CX }, &SYN_PACKET_BYTES[..]).unwrap();
         assert_eq!(repr, packet_repr(&PAYLOAD_BYTES[..]));
     }
 
     #[test]
     fn test_construct() {
         let repr = packet_repr(PayloadHolder(PAYLOAD_BYTES.len()));
-        let bytes = vec![0xa5; repr.build(&()).unwrap().0];
+        let bytes = vec![0xa5; repr.build(&mut false.into()).unwrap().0];
         let mut payload = Buf::builder(bytes).reserve_for(repr).build();
         payload.append_slice(&PAYLOAD_BYTES);
 
-        let packet = repr
-            .sub_payload(|_| payload)
-            .build(&(Checksum, (Src(SRC_ADDR), Dst(DST_ADDR))))
-            .unwrap();
+        let packet = repr.sub_payload(|_| payload).build(&mut { CX }).unwrap();
         assert_eq!(packet.data(), &SYN_PACKET_BYTES[..]);
     }
 

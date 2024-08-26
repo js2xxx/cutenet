@@ -1,7 +1,10 @@
-use core::ops::Range;
+use core::{
+    net::{IpAddr, Ipv4Addr},
+    ops::Range,
+};
 
 use crate::{
-    provide_any::Provider,
+    context::{Dst, Ends, Src},
     wire::error::{BuildError, BuildErrorKind, ParseError, ParseErrorKind},
 };
 
@@ -80,12 +83,41 @@ pub trait WireSubNoPayload<N: NoPayload>: WireSubstitute<N::Init> + Sized {
 }
 impl<N: NoPayload, W: WireSubstitute<N::Init> + Sized> WireSubNoPayload<N> for W {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WireCx {
+    pub do_checksum: bool,
+    pub checksum_addrs: Ends<IpAddr>,
+}
+
+impl WireCx {
+    pub const fn new(do_checksum: bool) -> Self {
+        WireCx {
+            do_checksum,
+            checksum_addrs: (
+                Src(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+                Dst(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+            ),
+        }
+    }
+
+    pub fn set_addr(&mut self, addrs: Ends<IpAddr>) -> &mut Self {
+        self.checksum_addrs = addrs;
+        self
+    }
+}
+
+impl From<bool> for WireCx {
+    fn from(value: bool) -> Self {
+        WireCx::new(value)
+    }
+}
+
 pub trait WireBuild: Wire + Sized {
-    fn build(self, cx: &dyn Provider) -> Result<Self::Payload, BuildError<Self::Payload>>;
+    fn build(self, cx: &mut WireCx) -> Result<Self::Payload, BuildError<Self::Payload>>;
 }
 
 pub trait WireParse: Wire + Sized {
-    fn parse(cx: &dyn Provider, raw: Self::Payload) -> Result<Self, ParseError<Self::Payload>>;
+    fn parse(cx: &mut WireCx, raw: Self::Payload) -> Result<Self, ParseError<Self::Payload>>;
 }
 
 impl<T: Payload> Wire for T {
@@ -109,13 +141,13 @@ impl<T: Payload, U: Payload> WireSubstitute<U> for T {
 }
 
 impl<T: Payload + Wire<Payload = T>> WireBuild for T {
-    fn build(self, _: &dyn Provider) -> Result<T, BuildError<T>> {
+    fn build(self, _: &mut WireCx) -> Result<T, BuildError<T>> {
         Ok(self)
     }
 }
 
 impl<T: Payload + Wire<Payload = T>> WireParse for T {
-    fn parse(_: &dyn Provider, raw: T) -> Result<Self, ParseError<T>> {
+    fn parse(_: &mut WireCx, raw: T) -> Result<Self, ParseError<T>> {
         Ok(raw)
     }
 }

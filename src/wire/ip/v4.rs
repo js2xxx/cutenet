@@ -6,8 +6,7 @@ pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, Protocol};
 use crate as cutenet;
 use crate::{
-    context::{Checksum, Dst, Ends, Src},
-    provide_any::{request_ref, Provider},
+    context::{Dst, Ends, Src},
     wire::{prelude::*, Data, DataMut},
 };
 
@@ -178,7 +177,7 @@ pub struct Packet<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
-    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let packet = RawPacket(raw);
 
         let len = packet.0.len();
@@ -195,9 +194,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::VersionInvalid.with(packet.0));
         }
 
-        if let Some(Checksum) = request_ref(cx)
-            && !packet.verify_checksum()
-        {
+        if cx.do_checksum && !packet.verify_checksum() {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -214,7 +211,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             }),
 
             payload: T::parse(
-                &[cx, &(generic_addr,)],
+                cx.set_addr(generic_addr),
                 packet.0.pop(HEADER_LEN..usize::from(total_len))?,
             )?,
         })
@@ -222,7 +219,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
-    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             addr: (Src(src), Dst(dst)),
             next_header,
@@ -232,7 +229,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         } = self;
 
         let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
-        let payload = payload.build(&[cx, &(generic_addr,)])?;
+        let payload = payload.build(cx.set_addr(generic_addr))?;
 
         payload.push(HEADER_LEN, |buf| {
             let mut packet = RawPacket(buf);
@@ -263,7 +260,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             packet.set_next_header(next_header);
             packet.set_hop_limit(hop_limit);
 
-            if let Some(Checksum) = request_ref(cx) {
+            if cx.do_checksum {
                 packet.fill_checksum();
             } else {
                 packet.set_checksum(0);
@@ -296,7 +293,8 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut pb = INGRESS_PACKET_BYTES;
-        let packet: Packet<Buf<_>> = Packet::parse(&(Checksum,), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> =
+            Packet::parse(&mut true.into(), Buf::full(&mut pb[..])).unwrap();
         assert_eq!(packet.hop_limit, 0x1a);
         assert_eq!(packet.next_header, Protocol::Icmp);
         assert_eq!(
@@ -338,7 +336,10 @@ mod tests {
         let mut payload = Buf::builder(bytes).reserve_for(tag).build();
         payload.append_slice(&PAYLOAD_BYTES);
 
-        let packet = tag.sub_payload(|_| payload).build(&(Checksum,)).unwrap();
+        let packet = tag
+            .sub_payload(|_| payload)
+            .build(&mut true.into())
+            .unwrap();
         assert_eq!(packet.data(), &EGRESS_PACKET_BYTES[..]);
     }
 
@@ -347,7 +348,8 @@ mod tests {
         let mut pb = vec![];
         pb.extend(INGRESS_PACKET_BYTES);
         pb.push(0);
-        let packet: Packet<Buf<_>> = Packet::parse(&(Checksum,), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> =
+            Packet::parse(&mut true.into(), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.payload.len(), PAYLOAD_BYTES.len());
     }
@@ -356,6 +358,6 @@ mod tests {
     fn test_parse_total_len_less_than_header_len() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Packet::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
+        assert!(Packet::<Buf<_>>::parse(&mut false.into(), Buf::full(&mut bytes[..])).is_err());
     }
 }

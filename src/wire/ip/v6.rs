@@ -7,7 +7,6 @@ use super::{IpAddrExt, Protocol};
 use crate::{
     self as cutenet,
     context::{Dst, Ends, Src},
-    provide_any::Provider,
     wire::{prelude::*, Data, DataMut},
 };
 
@@ -184,7 +183,7 @@ pub struct Packet<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
-    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let packet = RawPacket(raw);
 
         let len = packet.0.len();
@@ -205,7 +204,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             hop_limit: packet.hop_limit(),
 
             payload: T::parse(
-                &[cx, &(generic_addr,)],
+                cx.set_addr(generic_addr),
                 packet.0.pop(HEADER_LEN..total_len)?,
             )?,
         })
@@ -213,7 +212,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
-    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             addr: (Src(src), Dst(dst)),
             next_header,
@@ -222,7 +221,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         } = self;
 
         let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
-        let payload = payload.build(&[cx, &(generic_addr,)])?;
+        let payload = payload.build(cx.set_addr(generic_addr))?;
 
         payload.push(HEADER_LEN, |buf| {
             let payload_len = u16::try_from(buf.len() - HEADER_LEN)
@@ -265,7 +264,8 @@ mod tests {
     #[test]
     fn test_packet_deconstruction() {
         let mut pb = REPR_PACKET_BYTES;
-        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> =
+            Packet::parse(&mut false.into(), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.next_header, Protocol::Udp);
         assert_eq!(packet.hop_limit, 0x40);
@@ -296,7 +296,10 @@ mod tests {
         let mut payload = Buf::builder(bytes).reserve_for(tag).build();
         payload.append_slice(&REPR_PAYLOAD_BYTES);
 
-        let packet = tag.sub_payload(|_| payload).build(&()).unwrap();
+        let packet = tag
+            .sub_payload(|_| payload)
+            .build(&mut false.into())
+            .unwrap();
         assert_eq!(packet.data(), &REPR_PACKET_BYTES);
     }
 
@@ -305,7 +308,8 @@ mod tests {
         let mut pb = vec![];
         pb.extend(REPR_PACKET_BYTES);
         pb.push(0);
-        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> =
+            Packet::parse(&mut false.into(), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.payload.len(), REPR_PAYLOAD_BYTES.len());
     }
@@ -314,6 +318,6 @@ mod tests {
     fn test_repr_parse_smaller_than_header() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Packet::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
+        assert!(Packet::<Buf<_>>::parse(&mut false.into(), Buf::full(&mut bytes[..])).is_err());
     }
 }
