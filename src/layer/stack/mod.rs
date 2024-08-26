@@ -17,7 +17,7 @@ mod arp;
 mod ipv4;
 mod ipv6;
 
-pub fn process<S, Rx, R, A>(now: Instant, mut rx: Rx, mut router: R, mut sockets: A)
+pub fn process<S, Rx, R, A>(now: Instant, mut rx: Rx, mut router: R, mut sockets: A) -> bool
 where
     S: Storage,
     Rx: NetRx<S>,
@@ -25,7 +25,7 @@ where
     A: AllSocketSet<S>,
 {
     let Some((src_hw, payload)) = rx.receive(now) else {
-        return;
+        return false;
     };
     let hw = rx.hw_addr();
     let device_caps = rx.device_caps();
@@ -33,7 +33,8 @@ where
 
     let packet = match payload {
         EthernetPayload::Arp(packet) => {
-            return self::arp::process_arp(now, &mut router, hw, packet)
+            self::arp::process_arp(now, &mut router, hw, packet);
+            return true;
         }
         EthernetPayload::Ip(packet) => packet,
     };
@@ -47,7 +48,8 @@ where
         Action::Forward { next_hop, mut tx } => {
             let mut packet = packet;
             return if packet.decrease_hop_limit() {
-                transmit(now, next_hop, tx, packet, ())
+                transmit(now, next_hop, tx, packet, ());
+                true
             } else {
                 tx.transmit(now, src_hw, match packet {
                     IpPacket::V4(packet) => {
@@ -64,7 +66,8 @@ where
                             payload: packet,
                         })
                     }
-                })
+                });
+                true
             };
         }
         Action::Discard => Action::Discard,
@@ -79,7 +82,7 @@ where
             ),
             Action::Forward { tx: (), .. } => unreachable!(),
             Action::Discard => {
-                return tx.transmit(now, src_hw, match packet {
+                tx.transmit(now, src_hw, match packet {
                     IpPacket::V4(packet) => ipv4::icmp_reply(
                         &device_caps,
                         packet.addr.reverse(),
@@ -97,6 +100,7 @@ where
                         },
                     ),
                 });
+                return true;
             }
         }
     }
@@ -114,8 +118,8 @@ where
     };
 
     let packet = match res {
-        SocketRecv::Received { reply: () } => return,
-        SocketRecv::NotReceived(_) if raw_processed => return,
+        SocketRecv::Received { reply: () } => return true,
+        SocketRecv::NotReceived(_) if raw_processed => return true,
         SocketRecv::NotReceived(packet) => match packet {
             IpPacket::V4(packet) => {
                 let addr = packet.addr.reverse();
@@ -139,6 +143,7 @@ where
     if let Some(mut tx) = router.device(now, hw.dst) {
         tx.transmit(now, src_hw, packet)
     }
+    true
 }
 
 pub fn dispatch<S, R, Ss>(now: Instant, mut router: R, packet: IpPacket<Buf<S>>, ss: Ss)

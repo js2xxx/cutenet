@@ -3,6 +3,8 @@ use core::net::IpAddr;
 use super::iface::NetTx;
 use crate::{context::Ends, storage::Storage, time::Instant, wire::*};
 
+pub mod r#static;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Query {
     pub addr: Ends<IpAddr>,
@@ -21,6 +23,17 @@ impl<Tx> Action<Tx> {
         match self {
             Action::Deliver => Action::Deliver,
             Action::Forward { next_hop, tx } => Action::Forward { next_hop, tx: map(tx) },
+            Action::Discard => Action::Discard,
+        }
+    }
+
+    pub fn map_or_discard<U>(self, map: impl FnOnce(Tx) -> Option<U>) -> Action<U> {
+        match self {
+            Action::Deliver => Action::Deliver,
+            Action::Forward { next_hop, tx } => match map(tx) {
+                Some(tx) => Action::Forward { next_hop, tx },
+                None => Action::Discard,
+            },
             Action::Discard => Action::Discard,
         }
     }

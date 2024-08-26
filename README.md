@@ -12,7 +12,7 @@
   - [ ] IPv4 fragmentation & reassembly
 - [ ] Network routers
   - [x] Network router trait
-  - [ ] Static network routers
+  - [x] Static network routers
   - [ ] Dynamic network routers (based on TRIEs)
 - [ ] Network sockets
   - [ ] Raw sockets

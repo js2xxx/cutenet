@@ -51,3 +51,64 @@ pub trait NetRx<S: Storage> {
 
     fn receive(&mut self, now: Instant) -> Option<(HwAddr, Payload<S>)>;
 }
+
+impl<S: Storage, N: NetTx<S>> NetTx<S> for &'_ mut N {
+    fn hw_addr(&self) -> HwAddr {
+        (**self).hw_addr()
+    }
+
+    fn device_caps(&self) -> DeviceCaps {
+        (**self).device_caps()
+    }
+
+    fn has_ip(&self, ip: IpAddr) -> bool {
+        (**self).has_ip(ip)
+    }
+
+    fn is_same_net(&self, ip: IpAddr) -> bool {
+        (**self).is_same_net(ip)
+    }
+
+    fn is_broadcast(&self, ip: IpAddr) -> bool {
+        (**self).is_broadcast(ip)
+    }
+
+    fn has_solicited_node(&self, ip: Ipv6Addr) -> bool {
+        (**self).has_solicited_node(ip)
+    }
+
+    fn fill_neighbor_cache(
+        &mut self,
+        now: Instant,
+        entry: (IpAddr, HwAddr),
+        opt: NeighborCacheOption,
+    ) {
+        (**self).fill_neighbor_cache(now, entry, opt)
+    }
+
+    fn lookup_neighbor_cache(
+        &self,
+        now: Instant,
+        ip: IpAddr,
+    ) -> Result<HwAddr, NeighborLookupError> {
+        (**self).lookup_neighbor_cache(now, ip)
+    }
+
+    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) {
+        (**self).transmit(now, dst, packet)
+    }
+}
+
+impl<S: Storage, N: NetRx<S>> NetRx<S> for &'_ mut N {
+    fn hw_addr(&self) -> HwAddr {
+        (**self).hw_addr()
+    }
+
+    fn device_caps(&self) -> DeviceCaps {
+        (**self).device_caps()
+    }
+
+    fn receive(&mut self, now: Instant) -> Option<(HwAddr, Payload<S>)> {
+        (**self).receive(now)
+    }
+}

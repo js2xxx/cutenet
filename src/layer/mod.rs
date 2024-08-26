@@ -10,7 +10,10 @@ pub use self::iface::{
 };
 
 mod route;
-pub use self::route::{Action as RouteAction, Query as RouteQuery, Router};
+pub use self::route::{
+    r#static::{Destination as StaticDestination, Route as StaticRoute, StaticRouter},
+    Action as RouteAction, Query as RouteQuery, Router,
+};
 
 mod socket;
 pub use self::socket::{
