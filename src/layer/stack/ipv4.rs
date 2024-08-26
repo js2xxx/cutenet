@@ -5,9 +5,9 @@ use crate::{
     context::Ends,
     layer::{
         iface::NetTx,
+        phy::DeviceCaps,
         route::Router,
-        socket::{AllSocketSet, SocketRecv, SocketSet},
-        DeviceCaps,
+        socket::{AllSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet},
     },
     storage::{Buf, ReserveBuf, Storage},
     time::Instant,
@@ -61,14 +61,13 @@ where
             match sockets.receive(now, device_caps, addr.map(Into::into), tcp) {
                 SocketRecv::Received { reply: Some(reply) } => {
                     let addr = addr.reverse();
+                    let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V4));
                     let packet = Ipv4Packet {
                         addr,
                         next_header: IpProtocol::Tcp,
                         hop_limit: 64,
                         frag_info: None,
-                        payload: uncheck_build!(
-                            reply.build(&(device_caps.tx_checksums, addr.map(IpAddr::V4)))
-                        ),
+                        payload: uncheck_build!(reply.build(cx)),
                     };
 
                     dispatch_impl(now, router, IpPacket::V4(packet));

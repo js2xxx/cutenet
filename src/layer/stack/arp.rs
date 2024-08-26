@@ -2,10 +2,7 @@ use core::net::IpAddr;
 
 use crate::{
     context::Ends,
-    layer::{
-        iface::{NeighborCacheOption, NetTx},
-        route::Router,
-    },
+    layer::{iface::NetTx, route::Router, NeighborCacheOption},
     storage::{ReserveBuf, Storage},
     time::Instant,
     wire::*,

@@ -1,0 +1,3 @@
+pub const STATIC_NEIGHBOR_CACHE_CAPACITY: usize = 8;
+pub const STATIC_IFACE_IP_CAPACITY: usize = 5;
+pub const STATIC_LOOPBACK_CAPACITY: usize = 1024;

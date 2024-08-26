@@ -6,10 +6,10 @@ use super::dispatch_impl;
 use crate::{
     context::Ends,
     layer::{
-        iface::NeighborCacheOption,
+        phy::DeviceCaps,
         route::Router,
-        socket::{AllSocketSet, SocketRecv, SocketSet},
-        DeviceCaps, NetTx,
+        socket::{AllSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet},
+        NeighborCacheOption, NetTx,
     },
     storage::{Buf, ReserveBuf, Storage},
     time::Instant,
@@ -63,13 +63,12 @@ where
             match sockets.receive(now, device_caps, addr.map(Into::into), tcp) {
                 SocketRecv::Received { reply: Some(reply) } => {
                     let addr = addr.reverse();
+                    let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V6));
                     let packet = Ipv6Packet {
                         addr,
                         next_header: IpProtocol::Tcp,
                         hop_limit: 64,
-                        payload: uncheck_build!(
-                            reply.build(&(device_caps.tx_checksums, addr.map(IpAddr::V6)))
-                        ),
+                        payload: uncheck_build!(reply.build(cx)),
                     };
 
                     dispatch_impl(now, router, IpPacket::V6(packet));
@@ -169,7 +168,7 @@ fn process_nd<S, R>(
             let opt = if flags.contains(Icmpv6NeighborFlags::OVERRIDE) {
                 NeighborCacheOption::Override
             } else {
-                NeighborCacheOption::UpdateHwAddr
+                NeighborCacheOption::TryInsert
             };
             dev.fill_neighbor_cache(now, (target_addr.into(), lladdr), opt);
         }

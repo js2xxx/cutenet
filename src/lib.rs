@@ -18,9 +18,13 @@
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+#[cfg(any(feature = "std", feature = "alloc"))]
+extern crate alloc;
+
 #[macro_use]
 mod macros;
 
+pub mod config;
 pub mod context;
 pub mod layer;
 pub mod storage;

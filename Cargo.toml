@@ -10,6 +10,7 @@ version = "0.1.0"
 [features]
 alloc = [
   "stable_deref_trait/alloc",
+  "dep:crossbeam-queue",
 ]
 default = [
   "std",
@@ -30,7 +31,9 @@ cutenet-macros = {path = "macros"}
 # External crates
 bitflags = "2.6"
 byteorder = {version = "1.5", default-features = false}
+crossbeam-queue = {version = "0.3", default-features = false, features = ["alloc"], optional = true}
 either = {version = "1.13", default-features = false}
+heapless = {version = "0.8", features = ["mpmc_large"]}
 stable_deref_trait = {version = "1.2", default-features = false}
 
 [dependencies.tracing]

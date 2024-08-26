@@ -156,6 +156,16 @@ pub enum EthernetPayload<#[wire] T, #[no_payload] U> {
     Ip(#[wire] super::IpPacket<T>),
 }
 
+impl<T, U> EthernetPayload<T, U> {
+    pub fn ethernet_protocol(&self) -> Protocol {
+        match self {
+            EthernetPayload::Arp(_) => Protocol::Arp,
+            EthernetPayload::Ip(super::IpPacket::V4(_)) => Protocol::Ipv4,
+            EthernetPayload::Ip(super::IpPacket::V6(_)) => Protocol::Ipv6,
+        }
+    }
+}
+
 impl<T, P, U> WireParse for EthernetPayload<T, U>
 where
     T: WireParse<Payload = P>,

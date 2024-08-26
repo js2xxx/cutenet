@@ -1,22 +1,12 @@
 use core::net::IpAddr;
 
-use super::DeviceCaps;
 use crate::{
     context::Ends,
+    layer::phy::DeviceCaps,
     storage::{Buf, Storage},
     time::Instant,
     wire::{IpPacket, TcpPacket, UdpPacket},
 };
-
-pub trait SocketSet<T, R> {
-    fn receive(
-        &mut self,
-        now: Instant,
-        device_caps: &DeviceCaps,
-        addr: Ends<IpAddr>,
-        packet: T,
-    ) -> SocketRecv<T, R>;
-}
 
 #[derive(Debug)]
 pub enum SocketRecv<Orig, Reply> {
@@ -33,9 +23,25 @@ pub trait RawSocketSet<S: Storage> {
     ) -> bool;
 }
 
-pub trait UdpSocketSet<S: Storage> = SocketSet<UdpPacket<Buf<S>>, ()>;
+pub trait UdpSocketSet<S: Storage> {
+    fn receive(
+        &mut self,
+        now: Instant,
+        device_caps: &DeviceCaps,
+        addr: Ends<IpAddr>,
+        packet: UdpPacket<Buf<S>>,
+    ) -> SocketRecv<UdpPacket<Buf<S>>, ()>;
+}
 
-pub trait TcpSocketSet<S: Storage> = SocketSet<TcpPacket<Buf<S>>, Option<TcpPacket<Buf<S>>>>;
+pub trait TcpSocketSet<S: Storage> {
+    fn receive(
+        &mut self,
+        now: Instant,
+        device_caps: &DeviceCaps,
+        addr: Ends<IpAddr>,
+        packet: TcpPacket<Buf<S>>,
+    ) -> SocketRecv<TcpPacket<Buf<S>>, Option<TcpPacket<Buf<S>>>>;
+}
 
 pub trait AllSocketSet<S: Storage> {
     type Raw<'a>: RawSocketSet<S>

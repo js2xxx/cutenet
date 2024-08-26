@@ -1,9 +1,10 @@
 use core::net::IpAddr;
 
 use super::{
-    iface::{NeighborCacheOption, NeighborLookupError, NetRx, NetTx},
+    iface::{NetRx, NetTx},
     route::{Action, Query, Router},
     socket::{AllSocketSet, RawSocketSet, SocketRecv},
+    NeighborCacheOption, NeighborLookupError,
 };
 use crate::{
     context::Ends,
@@ -28,6 +29,7 @@ where
     };
     let hw = rx.hw_addr();
     let device_caps = rx.device_caps();
+    drop(rx);
 
     let packet = match payload {
         EthernetPayload::Arp(packet) => {
@@ -60,7 +62,7 @@ where
             Action::Discard => {
                 return tx.transmit(now, src_hw, match packet {
                     IpPacket::V4(packet) => ipv4::icmp_reply(
-                        device_caps,
+                        &device_caps,
                         packet.addr.reverse(),
                         Icmpv4Packet::DstUnreachable {
                             reason: Icmpv4DstUnreachable::HostUnreachable,
@@ -68,7 +70,7 @@ where
                         },
                     ),
                     IpPacket::V6(packet) => ipv6::icmp_reply(
-                        device_caps,
+                        &device_caps,
                         packet.addr.reverse(),
                         Icmpv6Packet::DstUnreachable {
                             reason: Icmpv6DstUnreachable::NoRoute,
@@ -80,15 +82,15 @@ where
         }
     }
 
-    let raw_processed = sockets.raw().receive(now, device_caps, &packet);
+    let raw_processed = sockets.raw().receive(now, &device_caps, &packet);
 
     let hw = Ends { src: src_hw, dst: hw };
     let res = match packet {
         IpPacket::V4(packet) => {
-            ipv4::process(now, device_caps, &mut router, &mut sockets, hw, packet)
+            ipv4::process(now, &device_caps, &mut router, &mut sockets, hw, packet)
         }
         IpPacket::V6(packet) => {
-            ipv6::process(now, device_caps, &mut router, &mut sockets, hw, packet)
+            ipv6::process(now, &device_caps, &mut router, &mut sockets, hw, packet)
         }
     };
 
@@ -102,7 +104,7 @@ where
                     reason: Icmpv4DstUnreachable::ProtoUnreachable,
                     payload: packet,
                 };
-                ipv4::icmp_reply(device_caps, addr, icmp)
+                ipv4::icmp_reply(&device_caps, addr, icmp)
             }
             IpPacket::V6(packet) => {
                 let addr = packet.addr.reverse();
@@ -111,7 +113,7 @@ where
                     pointer: packet.header_len() as u32,
                     payload: packet,
                 };
-                ipv6::icmp_reply(device_caps, addr, icmp)
+                ipv6::icmp_reply(&device_caps, addr, icmp)
             }
         },
     };
@@ -210,7 +212,7 @@ where
         (IpAddr::V6(src), IpAddr::V6(dst)) => {
             let dst = dst.solicited_node();
 
-            let packet = ipv6::icmp_reply(tx.device_caps(), Ends { src, dst }, Icmpv6Packet::Nd {
+            let packet = ipv6::icmp_reply(&tx.device_caps(), Ends { src, dst }, Icmpv6Packet::Nd {
                 nd: Icmpv6Nd::NeighborSolicit {
                     target_addr: dst,
                     lladdr: Some(hw.into()),

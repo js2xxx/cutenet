@@ -2,7 +2,7 @@ use core::fmt;
 
 use super::{EthernetAddr, Ieee802154Addr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HwAddr {
     Ip,
     Ethernet(EthernetAddr),
