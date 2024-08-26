@@ -4,6 +4,7 @@ use crate::storage::{Buf, Storage};
 
 pub mod arpv4;
 pub mod ethernet;
+pub mod ieee802154;
 pub mod ip;
 pub mod udp;
 
@@ -136,6 +137,8 @@ pub struct Error<K, S: Storage + ?Sized> {
 #[derive(Debug)]
 pub enum ParseErrorKind {
     PacketTooShort,
+    PacketTooLong,
+
     ProtocolUnknown,
     ChecksumInvalid,
     VersionInvalid,
