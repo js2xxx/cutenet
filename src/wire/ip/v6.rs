@@ -12,6 +12,11 @@ pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
 use crate::wire::{BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire};
 
+/// Minimum MTU required of all links supporting IPv6. See [RFC 8200 § 5].
+///
+/// [RFC 8200 § 5]: https://tools.ietf.org/html/rfc8200#section-5
+pub const MIN_MTU: usize = 1280;
+
 pub trait Ipv6AddrExt {
     const LINK_LOCAL_ALL_NODES: Ipv6Addr;
     const LINK_LOCAL_ALL_ROUTERS: Ipv6Addr;

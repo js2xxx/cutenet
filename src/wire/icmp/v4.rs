@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::wire::{
     ip::{self, checksum, v4::Ipv4},
-    BuildErrorKind, Data, DataMut, ParseErrorKind, VerifyChecksum, Wire,
+    BuildErrorKind, Data, DataMut, ParseErrorKind, VerifyChecksum, Wire, WireExt,
 };
 
 enum_with_unknown! {
@@ -327,8 +327,8 @@ impl Wire for Icmpv4 {
             }),
 
             (Message::DstUnreachable, code) => {
-                let ip_packet = ip::v4::Packet::parse(packet.data(), VerifyChecksum(false))
-                    .map_err(|e| e.kind)?;
+                let header =
+                    Ipv4::parse(packet.data(), VerifyChecksum(false)).map_err(|e| e.kind)?;
 
                 // RFC 792 requires exactly eight bytes to be returned.
                 // We allow more, since there isn't a reason not to, but require at least eight.
@@ -338,17 +338,13 @@ impl Wire for Icmpv4 {
 
                 Ok(Icmpv4::DstUnreachable {
                     reason: DstUnreachable::from(code),
-                    header: Ipv4 {
-                        addr: ip_packet.addr(),
-                        next_header: ip_packet.next_header(),
-                        hop_limit: ip_packet.hop_limit(),
-                    },
+                    header,
                 })
             }
 
             (Message::TimeExceeded, code) => {
-                let ip_packet = ip::v4::Packet::parse(packet.data(), VerifyChecksum(false))
-                    .map_err(|e| e.kind)?;
+                let header =
+                    Ipv4::parse(packet.data(), VerifyChecksum(false)).map_err(|e| e.kind)?;
 
                 // RFC 792 requires exactly eight bytes to be returned.
                 // We allow more, since there isn't a reason not to, but require at least eight.
@@ -358,11 +354,7 @@ impl Wire for Icmpv4 {
 
                 Ok(Icmpv4::TimeExceeded {
                     reason: TimeExceeded::from(code),
-                    header: Ipv4 {
-                        addr: ip_packet.addr(),
-                        next_header: ip_packet.next_header(),
-                        hop_limit: ip_packet.hop_limit(),
-                    },
+                    header,
                 })
             }
 

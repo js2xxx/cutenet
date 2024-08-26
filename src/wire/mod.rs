@@ -29,10 +29,10 @@ impl<T: AsRef<[u8]> + ?Sized> Data for T {}
 pub trait DataMut: Data + AsMut<[u8]> {}
 impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> DataMut for T {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Src<T>(pub T);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Dst<T>(pub T);
 
 pub type Ends<T> = (Src<T>, Dst<T>);
@@ -163,6 +163,14 @@ impl<Tag: Wire, S: Storage> Packet<Tag, Buf<S>> {
 }
 
 pub trait WireExt: Wire {
+    fn parse<T: Data>(raw: T, arg: Self::ParseArg<'_>) -> Result<Self, ParseError<T>> {
+        let packet = Packet { marker: PhantomData, inner: raw };
+        match Self::parse_packet(packet.as_ref(), arg) {
+            Ok(ret) => Ok(ret),
+            Err(kind) => Err(ParseError { data: packet.inner, kind }),
+        }
+    }
+
     fn build<S: Storage>(
         self,
         payload: Buf<S>,

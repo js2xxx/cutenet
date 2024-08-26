@@ -110,6 +110,8 @@ fn mask_impl<const N: usize>(input: [u8; N], prefix_len: u8) -> [u8; N] {
 }
 
 pub trait IpAddrExt {
+    fn zeroed() -> Self;
+
     fn from_bytes(bytes: &[u8]) -> Self;
 
     fn mask(&self, prefix_len: u8) -> Self;
@@ -118,6 +120,10 @@ pub trait IpAddrExt {
 }
 
 impl IpAddrExt for Ipv4Addr {
+    fn zeroed() -> Self {
+        Ipv4Addr::from_bits(0)
+    }
+
     fn from_bytes(bytes: &[u8]) -> Self {
         From::<[u8; 4]>::from(bytes.try_into().unwrap())
     }
@@ -132,6 +138,10 @@ impl IpAddrExt for Ipv4Addr {
 }
 
 impl IpAddrExt for Ipv6Addr {
+    fn zeroed() -> Self {
+        Ipv6Addr::from_bits(0)
+    }
+
     fn from_bytes(bytes: &[u8]) -> Self {
         From::<[u8; 16]>::from(bytes.try_into().unwrap())
     }
@@ -146,6 +156,10 @@ impl IpAddrExt for Ipv6Addr {
 }
 
 impl IpAddrExt for IpAddr {
+    fn zeroed() -> Self {
+        IpAddr::V4(Ipv4Addr::zeroed())
+    }
+
     fn from_bytes(bytes: &[u8]) -> Self {
         match bytes.len() {
             4 => IpAddr::V4(Ipv4Addr::from_bytes(bytes)),
