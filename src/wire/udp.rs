@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{
     ip::{self, checksum},
-    Dst, Src, WireBuf,
+    Dst, Ends, Src, WireBuf,
 };
 use crate::storage::{Buf, Storage};
 
@@ -34,7 +34,7 @@ impl<S: Storage> Packet<S> {
 
     pub fn parse(
         raw: Buf<S>,
-        verify_checksum: Option<(Src<IpAddr>, Dst<IpAddr>)>,
+        verify_checksum: Option<Ends<IpAddr>>,
     ) -> Result<Packet<S>, ParseError> {
         let packet = Packet { inner: raw };
 
@@ -93,7 +93,7 @@ impl<S: Storage + ?Sized> Packet<S> {
         NetworkEndian::read_u16(&self.inner.data()[field::DST_PORT])
     }
 
-    pub fn port(&self) -> (Src<u16>, Dst<u16>) {
+    pub fn port(&self) -> Ends<u16> {
         (Src(self.src_port()), Dst(self.dst_port()))
     }
 
@@ -110,7 +110,7 @@ impl<S: Storage + ?Sized> Packet<S> {
         &self.inner.data()[field::PAYLOAD]
     }
 
-    pub fn verify_checksum(&self, addr: (Src<IpAddr>, Dst<IpAddr>)) -> bool {
+    pub fn verify_checksum(&self, addr: Ends<IpAddr>) -> bool {
         let (Src(src), Dst(dst)) = addr;
         // From the RFC:
         // > An all zero transmitted checksum value means that the transmitter
@@ -165,14 +165,14 @@ impl<S: Storage> PacketBuilder<S> {
         Ok(ret)
     }
 
-    pub fn port(mut self, port: (Src<u16>, Dst<u16>)) -> Self {
+    pub fn port(mut self, port: Ends<u16>) -> Self {
         let (Src(src), Dst(dst)) = port;
         self.set_src_port(src);
         self.set_dst_port(dst);
         self
     }
 
-    pub fn checksum(mut self, addr: (Src<IpAddr>, Dst<IpAddr>)) -> Self {
+    pub fn checksum(mut self, addr: Ends<IpAddr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
         self.set_checksum(0);
         let checksum = !checksum::combine(&[
@@ -207,7 +207,7 @@ mod test {
 
     const SRC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
     const DST_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 2);
-    const ADDR: (Src<IpAddr>, Dst<IpAddr>) = (Src(IpAddr::V4(SRC_ADDR)), Dst(IpAddr::V4(DST_ADDR)));
+    const ADDR: Ends<IpAddr> = (Src(IpAddr::V4(SRC_ADDR)), Dst(IpAddr::V4(DST_ADDR)));
 
     const PACKET_BYTES: [u8; 12] = [
         0xbf, 0x00, 0x00, 0x35, 0x00, 0x0c, 0x12, 0x4d, 0xaa, 0x00, 0x00, 0xff,

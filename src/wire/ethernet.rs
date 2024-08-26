@@ -2,7 +2,7 @@ use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Dst, Src, WireBuf};
+use super::{Dst, Ends, Src, WireBuf};
 use crate::storage::{Buf, Storage};
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
@@ -156,7 +156,7 @@ impl<S: Storage> FrameBuilder<S> {
         FrameBuilder { inner }
     }
 
-    pub fn addr(mut self, addr: (Src<Addr>, Dst<Addr>)) -> Self {
+    pub fn addr(mut self, addr: Ends<Addr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
         self.set_src_addr(src);
         self.set_dst_addr(dst);
