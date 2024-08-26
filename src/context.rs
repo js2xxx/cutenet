@@ -1,7 +1,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Src<T>(pub T);
+pub struct Ends<T> {
+    pub src: T,
+    pub dst: T,
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Dst<T>(pub T);
-
-pub type Ends<T> = (Src<T>, Dst<T>);
+impl<T> Ends<T> {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Ends<U> {
+        Ends {
+            src: f(self.src),
+            dst: f(self.dst),
+        }
+    }
+}

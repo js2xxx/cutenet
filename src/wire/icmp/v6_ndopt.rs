@@ -3,7 +3,7 @@ use core::{fmt, net::Ipv6Addr, time::Duration};
 use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::wire::{ip::IpAddrExt, prelude::*, Data, DataMut, RawHwAddr, MAX_HWADDR_LEN};
+use crate::wire::{ip::IpAddrExt, prelude::*, Data, DataMut, RawHwAddr, HWADDR_MAX_LEN};
 
 enum_with_unknown! {
     /// NDISC Option Type
@@ -130,7 +130,7 @@ wire!(impl RawOpt {
 
     ll_addr/set_ll_addr: RawHwAddr =>
         @this |data| {
-            let len = MAX_HWADDR_LEN.min(this.data_len() as usize * 8 - 2);
+            let len = HWADDR_MAX_LEN.min(this.data_len() as usize * 8 - 2);
             RawHwAddr::from_bytes(&data[2..len + 2])
         };
         |data, value| data[2..2 + value.len()].copy_from_slice(value.as_bytes());

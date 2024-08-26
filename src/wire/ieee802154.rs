@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, LittleEndian};
 
 use crate as cutenet;
 use crate::{
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::{ip::IpAddrExt, prelude::*, Data, DataMut},
 };
 
@@ -558,10 +558,10 @@ impl<T: Data + ?Sized> RawFrame<T> {
     }
 
     pub fn ends(&self) -> Ends<(Option<Pan>, Option<Addr>)> {
-        (
-            Src((self.src_pan_id(), self.src_addr())),
-            Dst((self.dst_pan_id(), self.dst_addr())),
-        )
+        Ends {
+            src: (self.src_pan_id(), self.src_addr()),
+            dst: (self.dst_pan_id(), self.dst_addr()),
+        }
     }
 
     /// Return the index where the auxiliary security header starts.
@@ -779,7 +779,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
             sequence_number,
             pan_id_compression,
             frame_version,
-            ends: (Src((src_pan_id, src_addr)), Dst((dst_pan_id, dst_addr))),
+            ends: Ends { src, dst },
             payload,
         } = self;
 
@@ -796,6 +796,9 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
             if let Some(sequence_number) = sequence_number {
                 frame.set_sequence_number(sequence_number);
             }
+
+            let (src_pan_id, src_addr) = src;
+            let (dst_pan_id, dst_addr) = dst;
 
             if let Some(dst_pan_id) = dst_pan_id {
                 frame.set_dst_pan_id(dst_pan_id);
@@ -819,15 +822,15 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
 
 impl<T> Frame<T> {
     fn header_len(&self) -> usize {
-        let (Src((_, src_addr)), Dst((_, dst_addr))) = self.ends;
+        let addr = self.ends.map(|(_pan, addr)| addr);
         3 + 2
-            + match dst_addr {
+            + match addr.dst {
                 Some(Addr::Absent) | None => 0,
                 Some(Addr::Short(_)) => 2,
                 Some(Addr::Extended(_)) => 8,
             }
             + if !self.pan_id_compression { 2 } else { 0 }
-            + match src_addr {
+            + match addr.src {
                 Some(Addr::Absent) | None => 0,
                 Some(Addr::Short(_)) => 2,
                 Some(Addr::Extended(_)) => 8,
@@ -858,15 +861,15 @@ mod tests {
             pan_id_compression: true,
             frame_version: FrameVersion::Ieee802154,
             sequence_number: Some(1),
-            ends: (
-                Src((
+            ends: Ends {
+                src: (
                     None,
                     Some(Addr::Extended([
                         0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00,
                     ])),
-                )),
-                Dst((Some(Pan(0xabcd)), Some(Addr::BROADCAST))),
-            ),
+                ),
+                dst: (Some(Pan(0xabcd)), Some(Addr::BROADCAST)),
+            },
             payload: PayloadHolder(10),
         };
 
@@ -889,18 +892,15 @@ mod tests {
         assert!(frame.pan_id_compression);
         assert_eq!(frame.frame_version, FrameVersion::Ieee802154);
         assert_eq!(frame.sequence_number, Some(1));
-        assert_eq!(
-            frame.ends,
-            (
-                Src((
-                    None,
-                    Some(Addr::Extended([
-                        0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00,
-                    ])),
-                )),
-                Dst((Some(Pan(0xabcd)), Some(Addr::BROADCAST))),
-            )
-        );
+        assert_eq!(frame.ends, Ends {
+            src: (
+                None,
+                Some(Addr::Extended([
+                    0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00,
+                ])),
+            ),
+            dst: (Some(Pan(0xabcd)), Some(Addr::BROADCAST)),
+        });
     }
 
     macro_rules! vector_test {
@@ -929,10 +929,10 @@ mod tests {
             0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, // src addr
         ];
         frame_type -> FrameType::Data,
-        ends -> (
-            Src((Some(Pan(0x0403)), Some(Addr::Extended([0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00])))),
-            Dst((Some(Pan(0xabcd)), Some(Addr::Extended([0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00])))),
-        ),
+        ends -> Ends {
+            src: (Some(Pan(0x0403)), Some(Addr::Extended([0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00]))),
+            dst: (Some(Pan(0xabcd)), Some(Addr::Extended([0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00]))),
+        },
     }
 
     vector_test! {
@@ -949,10 +949,10 @@ mod tests {
         ack_request -> false,
         pan_id_compression -> false,
         frame_version -> FrameVersion::Ieee802154_2006,
-        ends -> (
-            Src((Some(Pan(0x1234)), Some(Addr::Short([0x9a, 0xbc])))),
-            Dst((Some(Pan(0x1234)), Some(Addr::Short([0x56, 0x78])))),
-        ),
+        ends -> Ends {
+            src: (Some(Pan(0x1234)), Some(Addr::Short([0x9a, 0xbc]))),
+            dst: (Some(Pan(0x1234)), Some(Addr::Short([0x56, 0x78]))),
+        },
     }
 
     vector_test! {
@@ -993,10 +993,10 @@ mod tests {
         ack_request -> true,
         pan_id_compression -> true,
         frame_version -> FrameVersion::Ieee802154_2006,
-        ends -> (
-            Src((None, Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x14,0xb5,0xd9,0xc7])))),
-            Dst((Some(Pan(0xabcd)), Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x06,0x15,0x9b,0xbf])))),
-        ),
+        ends -> Ends {
+            src: (None, Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x14,0xb5,0xd9,0xc7]))),
+            dst: (Some(Pan(0xabcd)), Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x06,0x15,0x9b,0xbf]))),
+        },
         // security_level -> 5,
         // key_identifier_mode -> 0,
         // frame_counter -> Some(305),

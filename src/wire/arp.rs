@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::{ethernet, ip::IpAddrExt, prelude::*, Data, DataMut},
 };
 
@@ -124,10 +124,10 @@ wire!(impl RawPacket {
 
 impl<T: Data + ?Sized> RawPacket<T> {
     pub fn addr(&self) -> Ends<(ethernet::Addr, Ipv4Addr)> {
-        (
-            Src((self.source_hardware_addr(), self.source_protocol_addr())),
-            Dst((self.target_hardware_addr(), self.target_protocol_addr())),
-        )
+        Ends {
+            src: (self.source_hardware_addr(), self.source_protocol_addr()),
+            dst: (self.target_hardware_addr(), self.target_protocol_addr()),
+        }
     }
 }
 
@@ -186,7 +186,7 @@ where
     fn build(self, _: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             operation,
-            addr: (Src((src_hw, src_ip)), Dst((dst_hw, dst_ip))),
+            addr: Ends { src, dst },
             payload,
         } = self;
 
@@ -199,6 +199,8 @@ where
             packet.set_protocol_len(PROTOCOL_LEN);
 
             packet.set_operation(operation);
+            let (src_hw, src_ip) = src;
+            let (dst_hw, dst_ip) = dst;
             packet.set_source_hardware_addr(src_hw);
             packet.set_source_protocol_addr(src_ip);
             packet.set_target_hardware_addr(dst_hw);
@@ -227,35 +229,32 @@ mod tests {
         let packet = Packet::parse(&mut false.into(), Buf::full(&mut fb[..])).unwrap();
 
         assert_eq!(packet.operation, Operation::Request);
-        assert_eq!(
-            packet.addr,
-            (
-                Src((
-                    ethernet::Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
-                    Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]),
-                )),
-                Dst((
-                    ethernet::Addr([0x31, 0x32, 0x33, 0x34, 0x35, 0x36]),
-                    Ipv4Addr::from([0x41, 0x42, 0x43, 0x44]),
-                )),
-            )
-        );
+        assert_eq!(packet.addr, Ends {
+            src: (
+                ethernet::Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
+                Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]),
+            ),
+            dst: (
+                ethernet::Addr([0x31, 0x32, 0x33, 0x34, 0x35, 0x36]),
+                Ipv4Addr::from([0x41, 0x42, 0x43, 0x44]),
+            ),
+        });
     }
 
     #[test]
     fn test_construct() {
         let tag = Packet {
             operation: Operation::Request,
-            addr: (
-                Src((
+            addr: Ends {
+                src: (
                     ethernet::Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
                     Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]),
-                )),
-                Dst((
+                ),
+                dst: (
                     ethernet::Addr([0x31, 0x32, 0x33, 0x34, 0x35, 0x36]),
                     Ipv4Addr::from([0x41, 0x42, 0x43, 0x44]),
-                )),
-            ),
+                ),
+            },
             payload: NoPayloadHolder,
         };
 

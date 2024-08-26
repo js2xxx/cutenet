@@ -3,8 +3,11 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
-use crate as cutenet;
-use crate::wire::prelude::*;
+use crate::{
+    self as cutenet,
+    context::*,
+    wire::{prelude::*, EthernetProtocol},
+};
 
 pub(super) mod checksum;
 pub mod v4;
@@ -187,8 +190,8 @@ fn mask_impl<const N: usize>(input: [u8; N], prefix_len: u8) -> [u8; N] {
     bytes
 }
 
-pub trait IpAddrExt {
-    fn zeroed() -> Self;
+pub trait IpAddrExt: Eq + fmt::Display + Copy {
+    const UNSPECIFIED: Self;
 
     fn from_bytes(bytes: &[u8]) -> Self;
 
@@ -196,15 +199,15 @@ pub trait IpAddrExt {
 
     fn prefix_len(&self) -> Option<u8>;
 
+    fn is_unicast(&self) -> bool;
+
     fn unwrap_v4(self) -> Ipv4Addr;
 
     fn unwrap_v6(self) -> Ipv6Addr;
 }
 
 impl IpAddrExt for Ipv4Addr {
-    fn zeroed() -> Self {
-        Ipv4Addr::from_bits(0)
-    }
+    const UNSPECIFIED: Self = Ipv4Addr::UNSPECIFIED;
 
     fn from_bytes(bytes: &[u8]) -> Self {
         From::<[u8; 4]>::from(bytes.try_into().unwrap())
@@ -218,6 +221,10 @@ impl IpAddrExt for Ipv4Addr {
         prefix_len_impl(&self.octets())
     }
 
+    fn is_unicast(&self) -> bool {
+        !(self.is_broadcast() || self.is_multicast() || self.is_unspecified())
+    }
+
     fn unwrap_v4(self) -> Ipv4Addr {
         self
     }
@@ -228,9 +235,7 @@ impl IpAddrExt for Ipv4Addr {
 }
 
 impl IpAddrExt for Ipv6Addr {
-    fn zeroed() -> Self {
-        Ipv6Addr::from_bits(0)
-    }
+    const UNSPECIFIED: Self = Ipv6Addr::UNSPECIFIED;
 
     fn from_bytes(bytes: &[u8]) -> Self {
         From::<[u8; 16]>::from(bytes.try_into().unwrap())
@@ -244,6 +249,10 @@ impl IpAddrExt for Ipv6Addr {
         prefix_len_impl(&self.octets())
     }
 
+    fn is_unicast(&self) -> bool {
+        self.is_unicast()
+    }
+
     fn unwrap_v4(self) -> Ipv4Addr {
         unreachable!("IPv6 => IPv4")
     }
@@ -254,9 +263,7 @@ impl IpAddrExt for Ipv6Addr {
 }
 
 impl IpAddrExt for IpAddr {
-    fn zeroed() -> Self {
-        IpAddr::V4(Ipv4Addr::zeroed())
-    }
+    const UNSPECIFIED: Self = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
     fn from_bytes(bytes: &[u8]) -> Self {
         match bytes.len() {
@@ -280,6 +287,13 @@ impl IpAddrExt for IpAddr {
         }
     }
 
+    fn is_unicast(&self) -> bool {
+        match self {
+            IpAddr::V4(v4) => v4.is_unicast(),
+            IpAddr::V6(v6) => v6.is_unicast(),
+        }
+    }
+
     fn unwrap_v4(self) -> Ipv4Addr {
         match self {
             IpAddr::V4(v4) => v4.unwrap_v4(),
@@ -300,4 +314,57 @@ pub enum Packet<#[wire] T, #[no_payload] U> {
     Arp(#[wire] super::ArpPacket<U>),
     V4(#[wire] v4::Packet<T>),
     V6(#[wire] v6::Packet<T>),
+}
+
+impl<T, U> Packet<T, U> {
+    pub fn ip_addr(&self) -> Ends<IpAddr> {
+        match *self {
+            Packet::Arp(super::ArpPacket { addr, .. }) => addr.map(|(_hw, ip)| IpAddr::V4(ip)),
+            Packet::V4(v4::Packet { addr, .. }) => addr.map(IpAddr::V4),
+            Packet::V6(v6::Packet { addr, .. }) => addr.map(IpAddr::V6),
+        }
+    }
+
+    pub fn eth_protocol(&self) -> EthernetProtocol {
+        match self {
+            Packet::Arp(_) => EthernetProtocol::Arp,
+            Packet::V4(_) => EthernetProtocol::Ipv4,
+            Packet::V6(_) => EthernetProtocol::Ipv6,
+        }
+    }
+}
+
+impl<T, P, U> Packet<T, U>
+where
+    T: WireParse<Payload = P>,
+    P: PayloadParse<NoPayload = U> + super::Data,
+    U: NoPayload<Init = P>,
+{
+    pub fn parse(
+        cx: &mut WireCx,
+        protocol: EthernetProtocol,
+        raw: P,
+    ) -> Result<Self, ParseError<P>> {
+        Ok(match protocol {
+            EthernetProtocol::Arp => Packet::Arp(super::ArpPacket::parse(cx, raw)?),
+            EthernetProtocol::Ipv4 => Packet::V4(v4::Packet::parse(cx, raw)?),
+            EthernetProtocol::Ipv6 => Packet::V6(v6::Packet::parse(cx, raw)?),
+            _ => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
+        })
+    }
+}
+
+impl<T, P, U> WireBuild for Packet<T, U>
+where
+    T: WireBuild<Payload = P>,
+    P: PayloadBuild<NoPayload = U>,
+    U: NoPayload<Init = P>,
+{
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+        match self {
+            Packet::Arp(packet) => packet.build(cx),
+            Packet::V4(packet) => packet.build(cx),
+            Packet::V6(packet) => packet.build(cx),
+        }
+    }
 }

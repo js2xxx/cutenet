@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate as cutenet;
 use crate::{
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::{
         ip::{self, checksum},
         prelude::*,
@@ -223,7 +223,10 @@ wire_flags! {
 
 impl<T: Data + ?Sized> RawPacket<T> {
     pub fn port(&self) -> Ends<u16> {
-        (Src(self.src_port()), Dst(self.dst_port()))
+        Ends {
+            src: self.src_port(),
+            dst: self.dst_port(),
+        }
     }
 
     /// Returns whether the selective acknowledgement SYN flag is set or not.
@@ -264,11 +267,9 @@ impl<T: Data + ?Sized> RawPacket<T> {
     /// This function panics unless `src_addr` and `dst_addr` belong to the same
     /// family, and that family is IPv4 or IPv6.
     pub fn verify_checksum(&self, addr: Ends<IpAddr>) -> bool {
-        let (Src(src), Dst(dst)) = addr;
-
         let data = self.0.as_ref();
         let combine = checksum::combine(&[
-            checksum::pseudo_header(&src, &dst, ip::Protocol::Tcp, data.len() as u32),
+            checksum::pseudo_header(&addr.src, &addr.dst, ip::Protocol::Tcp, data.len() as u32),
             checksum::data(data),
         ]);
         combine == !0
@@ -286,13 +287,11 @@ impl<T: DataMut + ?Sized> RawPacket<T> {
     /// This function panics unless `src_addr` and `dst_addr` belong to the same
     /// family, and that family is IPv4 or IPv6.
     pub fn fill_checksum(&mut self, addr: Ends<IpAddr>) {
-        let (Src(src), Dst(dst)) = addr;
-
         self.set_checksum(0);
         let checksum = {
             let data = self.0.as_ref();
             !checksum::combine(&[
-                checksum::pseudo_header(&src, &dst, ip::Protocol::Tcp, data.len() as u32),
+                checksum::pseudo_header(&addr.src, &addr.dst, ip::Protocol::Tcp, data.len() as u32),
                 checksum::data(data),
             ])
         };
@@ -432,7 +431,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         let header_len = self.header_len();
 
         let Packet {
-            port: (Src(src_port), Dst(dst_port)),
+            port: Ends { src, dst },
             control,
             seq_number,
             ack_number,
@@ -448,8 +447,8 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         payload.build(cx)?.push(header_len, |buf| {
             let mut packet = RawPacket(buf);
 
-            packet.set_src_port(src_port);
-            packet.set_dst_port(dst_port);
+            packet.set_src_port(src);
+            packet.set_dst_port(dst);
             packet.set_seq_number(seq_number);
             packet.set_ack_number(ack_number.unwrap_or(SeqNumber(0)));
             packet.set_window_len(window_len);
@@ -565,7 +564,7 @@ mod tests {
     const DST_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
     const CX: WireCx = WireCx {
         do_checksum: true,
-        checksum_addrs: (Src(SRC_ADDR), Dst(DST_ADDR)),
+        checksum_addrs: Ends { src: SRC_ADDR, dst: DST_ADDR },
     };
 
     static PACKET_BYTES: [u8; 28] = [
@@ -578,7 +577,7 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let packet: Packet<&[u8]> = Packet::parse(&mut { CX }, &PACKET_BYTES[..]).unwrap();
-        assert_eq!(packet.port, (Src(48896), Dst(80)));
+        assert_eq!(packet.port, Ends { src: 48896, dst: 80 });
         assert_eq!(packet.seq_number, SeqNumber(0x01234567));
         assert_eq!(packet.ack_number, Some(SeqNumber(0x89abcdefu32 as i32)));
         assert_eq!(packet.header_len(), 24);
@@ -600,7 +599,7 @@ mod tests {
 
     fn packet_repr<T>(t: T) -> Packet<T> {
         Packet {
-            port: (Src(48896), Dst(80)),
+            port: Ends { src: 48896, dst: 80 },
             seq_number: SeqNumber(0x01234567),
             ack_number: None,
             window_len: 0x0123,

@@ -25,5 +25,6 @@ mod macros;
 pub mod provide_any;
 
 pub mod context;
+pub mod phy;
 pub mod storage;
 pub mod wire;

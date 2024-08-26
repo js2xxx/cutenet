@@ -1,4 +1,4 @@
-use core::net::{IpAddr, Ipv4Addr};
+use core::net::Ipv4Addr;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
@@ -6,7 +6,7 @@ pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, Protocol};
 use crate as cutenet;
 use crate::{
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::{prelude::*, Data, DataMut},
 };
 
@@ -135,7 +135,10 @@ wire!(impl RawPacket {
 
 impl<T: Data + ?Sized> RawPacket<T> {
     pub fn addr(&self) -> Ends<Ipv4Addr> {
-        (Src(self.src_addr()), Dst(self.dst_addr()))
+        Ends {
+            src: self.src_addr(),
+            dst: self.dst_addr(),
+        }
     }
 
     pub fn verify_checksum(&self) -> bool {
@@ -198,11 +201,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
-        let addr @ (Src(src), Dst(dst)) = packet.addr();
-        let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
+        let generic_addr = packet.addr().map(Into::into);
 
         Ok(Packet {
-            addr,
+            addr: packet.addr(),
             next_header: packet.next_header(),
             hop_limit: packet.hop_limit(),
             frag_info: packet.more_frags().then(|| FragInfo {
@@ -221,14 +223,14 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
-            addr: (Src(src), Dst(dst)),
+            addr,
             next_header,
             hop_limit,
             frag_info,
             payload,
         } = self;
 
-        let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
+        let generic_addr = addr.map(Into::into);
         let payload = payload.build(cx.set_addr(generic_addr))?;
 
         payload.push(HEADER_LEN, |buf| {
@@ -255,8 +257,8 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                 packet.set_ident(0);
             }
 
-            packet.set_src_addr(src);
-            packet.set_dst_addr(dst);
+            packet.set_src_addr(addr.src);
+            packet.set_dst_addr(addr.dst);
             packet.set_next_header(next_header);
             packet.set_hop_limit(hop_limit);
 
@@ -297,13 +299,10 @@ mod tests {
             Packet::parse(&mut true.into(), Buf::full(&mut pb[..])).unwrap();
         assert_eq!(packet.hop_limit, 0x1a);
         assert_eq!(packet.next_header, Protocol::Icmp);
-        assert_eq!(
-            packet.addr,
-            (
-                Src(Ipv4Addr::from([0x11, 0x12, 0x13, 0x14])),
-                Dst(Ipv4Addr::from([0x21, 0x22, 0x23, 0x24])),
-            )
-        );
+        assert_eq!(packet.addr, Ends {
+            src: Ipv4Addr::from([0x11, 0x12, 0x13, 0x14]),
+            dst: Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]),
+        });
         assert_eq!(
             packet.frag_info,
             Some(FragInfo {
@@ -322,10 +321,10 @@ mod tests {
     #[test]
     fn test_construct() {
         let tag = Packet {
-            addr: (
-                Src(Ipv4Addr::from([0x11, 0x12, 0x13, 0x14])),
-                Dst(Ipv4Addr::from([0x21, 0x22, 0x23, 0x24])),
-            ),
+            addr: Ends {
+                src: Ipv4Addr::from([0x11, 0x12, 0x13, 0x14]),
+                dst: Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]),
+            },
             next_header: Protocol::Icmp,
             hop_limit: 0x1a,
             frag_info: None,

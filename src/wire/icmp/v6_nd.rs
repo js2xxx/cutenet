@@ -265,17 +265,17 @@ mod tests {
 
     use super::*;
     use crate::{
-        context::{Dst, Ends, Src},
+        context::Ends,
         storage::Buf,
         wire::{ethernet, icmp::v6::Packet},
     };
 
     const MOCK_IP_ADDR_1: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     const MOCK_IP_ADDR_2: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
-    const MOCK_IP_ADDRS: Ends<IpAddr> = (
-        Src(IpAddr::V6(MOCK_IP_ADDR_1)),
-        Dst(IpAddr::V6(MOCK_IP_ADDR_2)),
-    );
+    const MOCK_IP_ADDRS: Ends<IpAddr> = Ends {
+        src: IpAddr::V6(MOCK_IP_ADDR_1),
+        dst: IpAddr::V6(MOCK_IP_ADDR_2),
+    };
     const CX: WireCx = WireCx {
         do_checksum: true,
         checksum_addrs: MOCK_IP_ADDRS,

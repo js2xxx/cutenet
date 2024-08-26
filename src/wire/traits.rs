@@ -4,7 +4,7 @@ use core::{
 };
 
 use crate::{
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::error::{BuildError, BuildErrorKind, ParseError, ParseErrorKind},
 };
 
@@ -89,14 +89,20 @@ pub struct WireCx {
     pub checksum_addrs: Ends<IpAddr>,
 }
 
+impl Default for WireCx {
+    fn default() -> Self {
+        WireCx::new(true)
+    }
+}
+
 impl WireCx {
     pub const fn new(do_checksum: bool) -> Self {
         WireCx {
             do_checksum,
-            checksum_addrs: (
-                Src(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
-                Dst(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
-            ),
+            checksum_addrs: Ends {
+                src: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                dst: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            },
         }
     }
 

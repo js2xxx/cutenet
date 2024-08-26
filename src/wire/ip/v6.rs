@@ -1,4 +1,4 @@
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
+use core::net::{Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
@@ -6,7 +6,7 @@ pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
 use crate::{
     self as cutenet,
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::{prelude::*, Data, DataMut},
 };
 
@@ -169,7 +169,10 @@ impl<T: Data + ?Sized> RawPacket<T> {
     }
 
     pub fn addr(&self) -> Ends<Ipv6Addr> {
-        (Src(self.src_addr()), Dst(self.dst_addr()))
+        Ends {
+            src: self.src_addr(),
+            dst: self.dst_addr(),
+        }
     }
 }
 
@@ -195,11 +198,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::VersionInvalid.with(packet.0));
         }
 
-        let addr @ (Src(src), Dst(dst)) = packet.addr();
-        let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
+        let generic_addr = packet.addr().map(Into::into);
 
         Ok(Packet {
-            addr,
+            addr: packet.addr(),
             next_header: packet.next_header(),
             hop_limit: packet.hop_limit(),
 
@@ -214,13 +216,13 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
-            addr: (Src(src), Dst(dst)),
+            addr,
             next_header,
             hop_limit,
             payload,
         } = self;
 
-        let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
+        let generic_addr = addr.map(Into::into);
         let payload = payload.build(cx.set_addr(generic_addr))?;
 
         payload.push(HEADER_LEN, |buf| {
@@ -234,8 +236,8 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             packet.set_flow_label(0);
             packet.set_payload_len(payload_len);
 
-            packet.set_src_addr(src);
-            packet.set_dst_addr(dst);
+            packet.set_src_addr(addr.src);
+            packet.set_dst_addr(addr.dst);
             packet.set_next_header(next_header);
             packet.set_hop_limit(hop_limit);
 
@@ -269,23 +271,20 @@ mod tests {
 
         assert_eq!(packet.next_header, Protocol::Udp);
         assert_eq!(packet.hop_limit, 0x40);
-        assert_eq!(
-            packet.addr,
-            (
-                Src(Ipv6Addr::LINK_LOCAL_ALL_ROUTERS),
-                Dst(Ipv6Addr::LINK_LOCAL_ALL_NODES),
-            ),
-        );
+        assert_eq!(packet.addr, Ends {
+            src: Ipv6Addr::LINK_LOCAL_ALL_ROUTERS,
+            dst: Ipv6Addr::LINK_LOCAL_ALL_NODES,
+        },);
         assert_eq!(packet.payload.data(), &REPR_PAYLOAD_BYTES[..]);
     }
 
     #[test]
     fn test_packet_construction() {
         let ip = Packet {
-            addr: (
-                Src(Ipv6Addr::LINK_LOCAL_ALL_ROUTERS),
-                Dst(Ipv6Addr::LINK_LOCAL_ALL_NODES),
-            ),
+            addr: Ends {
+                src: Ipv6Addr::LINK_LOCAL_ALL_ROUTERS,
+                dst: Ipv6Addr::LINK_LOCAL_ALL_NODES,
+            },
             next_header: Protocol::Udp,
             hop_limit: 0x40,
             payload: PayloadHolder(REPR_PACKET_BYTES.len()),

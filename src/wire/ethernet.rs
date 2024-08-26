@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::{prelude::*, Data, DataMut},
 };
 
@@ -95,7 +95,10 @@ wire!(impl RawFrame {
 
 impl<T: Data + ?Sized> RawFrame<T> {
     pub fn addr(&self) -> Ends<Addr> {
-        (Src(self.src_addr()), Dst(self.dst_addr()))
+        Ends {
+            src: self.src_addr(),
+            dst: self.dst_addr(),
+        }
     }
 }
 
@@ -128,7 +131,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Frame {
-            addr: (Src(src), Dst(dst)),
+            addr: Ends { src, dst },
             protocol: proto,
             payload,
         } = self;
@@ -185,13 +188,10 @@ mod test_ipv4 {
     fn test_deconstruct() {
         let mut fb = FRAME_BYTES;
         let frame: Frame<Buf<_>> = Frame::parse(&mut false.into(), Buf::full(&mut fb[..])).unwrap();
-        assert_eq!(
-            frame.addr,
-            (
-                Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
-                Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
-            ),
-        );
+        assert_eq!(frame.addr, Ends {
+            src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
+            dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
+        },);
         assert_eq!(frame.protocol, Protocol::Ipv4);
         assert_eq!(frame.payload.data(), &PAYLOAD_BYTES[..]);
     }
@@ -199,10 +199,10 @@ mod test_ipv4 {
     #[test]
     fn test_construct() {
         let tag = Frame {
-            addr: (
-                Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
-                Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
-            ),
+            addr: Ends {
+                src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
+                dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
+            },
             protocol: Protocol::Ipv4,
             payload: PayloadHolder(PAYLOAD_BYTES.len()),
         };
@@ -245,13 +245,10 @@ mod test_ipv6 {
         let mut binding = FRAME_BYTES;
         let frame: Frame<Buf<_>> =
             Frame::parse(&mut false.into(), Buf::full(&mut binding[..])).unwrap();
-        assert_eq!(
-            frame.addr,
-            (
-                Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
-                Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]))
-            )
-        );
+        assert_eq!(frame.addr, Ends {
+            src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
+            dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
+        });
         assert_eq!(frame.protocol, Protocol::Ipv6);
         assert_eq!(frame.payload.data(), &PAYLOAD_BYTES[..]);
     }
@@ -259,10 +256,10 @@ mod test_ipv6 {
     #[test]
     fn test_construct() {
         let tag = Frame {
-            addr: (
-                Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
-                Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
-            ),
+            addr: Ends {
+                src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
+                dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
+            },
             protocol: Protocol::Ipv6,
             payload: PayloadHolder(PAYLOAD_BYTES.len()),
         };

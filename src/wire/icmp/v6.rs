@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
-    context::{Dst, Ends, Src},
+    context::Ends,
     wire::{
         ip::{self, checksum},
         prelude::*,
@@ -321,12 +321,11 @@ impl<T: Data + ?Sized> RawPacket<T> {
 
     /// Validate the header checksum.
     pub fn verify_checksum(&self, addr: Ends<IpAddr>) -> bool {
-        let (Src(src_addr), Dst(dst_addr)) = addr;
         let data = self.0.as_ref();
         checksum::combine(&[
             checksum::pseudo_header_v6(
-                &src_addr.unwrap_v6(),
-                &dst_addr.unwrap_v6(),
+                &addr.src.unwrap_v6(),
+                &addr.dst.unwrap_v6(),
                 ip::Protocol::Icmpv6,
                 data.len() as u32,
             ),
@@ -362,15 +361,13 @@ impl<T: DataMut + ?Sized> RawPacket<T> {
     }
 
     pub fn fill_checksum(&mut self, addr: Ends<IpAddr>) {
-        let (Src(src_addr), Dst(dst_addr)) = addr;
-
         self.set_checksum(0);
         let checksum = {
             let data = self.0.as_ref();
             !checksum::combine(&[
                 checksum::pseudo_header_v6(
-                    &src_addr.unwrap_v6(),
-                    &dst_addr.unwrap_v6(),
+                    &addr.src.unwrap_v6(),
+                    &addr.dst.unwrap_v6(),
                     ip::Protocol::Icmpv6,
                     data.len() as u32,
                 ),
@@ -609,7 +606,10 @@ mod tests {
 
     const MOCK_IP_ADDR_1: IpAddr = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
     const MOCK_IP_ADDR_2: IpAddr = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2));
-    const MOCK_IP_ADDRS: Ends<IpAddr> = (Src(MOCK_IP_ADDR_1), Dst(MOCK_IP_ADDR_2));
+    const MOCK_IP_ADDRS: Ends<IpAddr> = Ends {
+        src: MOCK_IP_ADDR_1,
+        dst: MOCK_IP_ADDR_2,
+    };
 
     const CX: WireCx = WireCx {
         do_checksum: true,
@@ -676,10 +676,7 @@ mod tests {
         let repr = Packet::PktTooBig {
             mtu: 1500,
             header: Ipv6Packet {
-                addr: (
-                    Src(MOCK_IP_ADDR_1.unwrap_v6()),
-                    Dst(MOCK_IP_ADDR_2.unwrap_v6()),
-                ),
+                addr: MOCK_IP_ADDRS.map(|ip| ip.unwrap_v6()),
                 next_header: ip::Protocol::Udp,
                 hop_limit: 0x40,
                 payload: PayloadHolder(PKT_TOO_BIG_UDP_PAYLOAD.len()),
@@ -698,7 +695,10 @@ mod tests {
         let repr = Packet::PktTooBig {
             mtu: 1280,
             header: Ipv6Packet {
-                addr: (Src(Ipv6Addr::zeroed()), Dst(Ipv6Addr::zeroed())),
+                addr: Ends {
+                    src: Ipv6Addr::UNSPECIFIED,
+                    dst: Ipv6Addr::UNSPECIFIED,
+                },
                 next_header: ip::Protocol::Tcp,
                 hop_limit: 64,
                 payload: PayloadHolder(9999),
