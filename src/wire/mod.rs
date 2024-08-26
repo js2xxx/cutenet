@@ -7,6 +7,7 @@ pub mod ethernet;
 pub mod icmp;
 pub mod ieee802154;
 pub mod ip;
+pub mod tcp;
 pub mod udp;
 
 mod field {
@@ -187,19 +188,21 @@ pub struct Error<K, T: ?Sized> {
     pub data: T,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ParseErrorKind {
     PacketTooShort,
     PacketTooLong,
 
     ProtocolUnknown,
+    FormatInvalid,
     ChecksumInvalid,
     VersionInvalid,
+    SrcInvalid,
     DstInvalid,
 }
 pub type ParseError<T: ?Sized> = Error<ParseErrorKind, T>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BuildErrorKind {
     PayloadTooLong,
     PayloadNotEmpty,

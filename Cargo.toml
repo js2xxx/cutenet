@@ -10,5 +10,6 @@ default = ["std", "alloc"]
 std = ["stable_deref_trait/std"]
 
 [dependencies]
+bitflags = "2.6"
 byteorder = {version = "1.5", default-features = false}
 stable_deref_trait = {version = "1.2", default-features = false}
