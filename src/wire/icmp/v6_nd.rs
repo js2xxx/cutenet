@@ -266,6 +266,7 @@ mod tests {
     use super::*;
     use crate::{
         context::Ends,
+        layer::Checksums,
         storage::Buf,
         wire::{ethernet, icmp::v6::Packet},
     };
@@ -276,10 +277,7 @@ mod tests {
         src: IpAddr::V6(MOCK_IP_ADDR_1),
         dst: IpAddr::V6(MOCK_IP_ADDR_2),
     };
-    const CX: WireCx = WireCx {
-        do_checksum: true,
-        checksum_addrs: MOCK_IP_ADDRS,
-    };
+    const CX: (Checksums, Ends<IpAddr>) = (Checksums::new(), MOCK_IP_ADDRS);
 
     static ROUTER_ADVERT_BYTES: [u8; 24] = [
         0x86, 0x00, 0xa9, 0xde, 0x40, 0x80, 0x03, 0x84, 0x00, 0x00, 0x03, 0x84, 0x00, 0x00, 0x03,
@@ -304,8 +302,7 @@ mod tests {
 
     #[test]
     fn test_router_advert_deconstruct() {
-        let packet: Packet<&[u8], _> =
-            Packet::parse(&mut { CX }, &ROUTER_ADVERT_BYTES[..]).unwrap();
+        let packet: Packet<&[u8], _> = Packet::parse(&CX, &ROUTER_ADVERT_BYTES[..]).unwrap();
         assert_eq!(packet, create_repr((&[][..]).truncate()));
     }
 
@@ -316,7 +313,7 @@ mod tests {
         let bytes = vec![0x0; 24];
         let buf = Buf::builder(bytes).reserve_for(&repr);
 
-        let packet: Buf<_> = repr.sub_no_payload(|_| buf).build(&mut { CX }).unwrap();
+        let packet: Buf<_> = repr.sub_no_payload(|_| buf).build(&CX).unwrap();
         assert_eq!(packet.data(), &ROUTER_ADVERT_BYTES[..]);
     }
 }

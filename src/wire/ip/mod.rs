@@ -3,6 +3,7 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
+use super::EthernetAddr;
 use crate::{
     self as cutenet,
     context::*,
@@ -205,6 +206,8 @@ pub trait IpAddrExt: Eq + Copy + fmt::Display + fmt::Debug {
 
     fn is_broadcast(&self) -> bool;
 
+    fn multicast_ethernet(&self) -> EthernetAddr;
+
     fn unwrap_v4(self) -> Ipv4Addr;
 
     fn unwrap_v6(self) -> Ipv6Addr;
@@ -233,6 +236,11 @@ impl IpAddrExt for Ipv4Addr {
 
     fn is_broadcast(&self) -> bool {
         self.is_broadcast()
+    }
+
+    fn multicast_ethernet(&self) -> EthernetAddr {
+        let [_, b1, b2, b3, ..] = self.octets();
+        EthernetAddr([0x01, 0x00, 0x5e, b1 & 0x7F, b2, b3])
     }
 
     fn unwrap_v4(self) -> Ipv4Addr {
@@ -267,6 +275,11 @@ impl IpAddrExt for Ipv6Addr {
 
     fn is_broadcast(&self) -> bool {
         false
+    }
+
+    fn multicast_ethernet(&self) -> EthernetAddr {
+        let [.., b12, b13, b14, b15] = self.octets();
+        EthernetAddr([0x33, 0x33, b12, b13, b14, b15])
     }
 
     fn unwrap_v4(self) -> Ipv4Addr {
@@ -316,6 +329,13 @@ impl IpAddrExt for IpAddr {
         match self {
             IpAddr::V4(v4) => v4.is_broadcast(),
             IpAddr::V6(v6) => v6.is_broadcast(),
+        }
+    }
+
+    fn multicast_ethernet(&self) -> EthernetAddr {
+        match self {
+            IpAddr::V4(v4) => v4.multicast_ethernet(),
+            IpAddr::V6(v6) => v6.multicast_ethernet(),
         }
     }
 
@@ -463,18 +483,14 @@ impl<T> Packet<T> {
     }
 }
 
-impl<T, P, U> Packet<T>
+impl<T, P, U> WireParse for Packet<T>
 where
     T: WireParse<Payload = P>,
     P: PayloadParse<NoPayload = U> + super::Data,
     U: NoPayload<Init = P>,
 {
-    pub fn parse(
-        cx: &mut WireCx,
-        protocol: EthernetProtocol,
-        raw: P,
-    ) -> Result<Self, ParseError<P>> {
-        Ok(match protocol {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
+        Ok(match cx.ethernet_protocol() {
             EthernetProtocol::Ipv4 => Packet::V4(v4::Packet::parse(cx, raw)?),
             EthernetProtocol::Ipv6 => Packet::V6(v6::Packet::parse(cx, raw)?),
             _ => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
@@ -495,7 +511,7 @@ where
         }
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         match self {
             Packet::V4(packet) => packet.build(cx),
             Packet::V6(packet) => packet.build(cx),

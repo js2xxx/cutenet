@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, LittleEndian};
 
 use crate as cutenet;
 use crate::{
-    context::Ends,
+    context::{Ends, WireCx},
     wire::{ip::IpAddrExt, prelude::*, Data, DataMut},
 };
 
@@ -708,7 +708,7 @@ pub struct Frame<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
-    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let frame = RawFrame(raw);
 
         let len = frame.0.len();
@@ -772,7 +772,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
         self.header_len() + self.payload_len()
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let header_len = self.header_len();
 
         let Frame {
@@ -883,11 +883,11 @@ mod tests {
             .reserve_for(&repr)
             .build();
 
-        let buf: Buf<_> = repr.sub_payload(|_| buf).build(&mut false.into()).unwrap();
+        let buf: Buf<_> = repr.sub_payload(|_| buf).build(&()).unwrap();
 
         // println!("{frame:2x?}");
 
-        let frame: Frame<Buf<_>> = Frame::parse(&mut false.into(), buf).unwrap();
+        let frame: Frame<Buf<_>> = Frame::parse(&(), buf).unwrap();
 
         assert_eq!(frame.frame_type, FrameType::Data);
         assert!(!frame.security_enabled);
@@ -913,7 +913,7 @@ mod tests {
             #[allow(clippy::bool_assert_comparison)]
             fn $name() {
                 let frame = &$bytes[..];
-                let frame: Frame<&[u8]> = Frame::parse(&mut false.into(), frame).unwrap();
+                let frame: Frame<&[u8]> = Frame::parse(&(), frame).unwrap();
 
                 $(
                     assert_eq!(frame.$test_method, $expected, stringify!($test_method));

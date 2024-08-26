@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
-    context::Ends,
+    context::{Ends, WireCx},
     wire::{
         ip::{self, checksum},
         prelude::*,
@@ -97,7 +97,7 @@ pub struct Packet<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
-    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let packet = RawPacket(raw);
         let buffer_len = packet.0.len();
         if buffer_len < HEADER_LEN {
@@ -113,7 +113,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::DstInvalid.with(packet.0));
         }
 
-        if cx.do_checksum && !packet.verify_checksum(cx.checksum_addrs) {
+        if cx.checksums().udp && !packet.verify_checksum(cx.ip_addrs()) {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -129,7 +129,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         HEADER_LEN + self.payload_len()
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let Packet { port: Ends { src, dst }, payload } = self;
 
         payload.build(cx)?.push(HEADER_LEN, |buf| {
@@ -140,8 +140,8 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             packet.set_src_port(src);
             packet.set_dst_port(dst);
 
-            if cx.do_checksum {
-                packet.fill_checksum(cx.checksum_addrs);
+            if cx.checksums().udp {
+                packet.fill_checksum(cx.ip_addrs());
             } else {
                 packet.set_checksum(0);
             }
@@ -156,7 +156,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::storage::Buf;
+    use crate::{layer::Checksums, storage::Buf};
 
     const SRC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
     const DST_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 2);
@@ -165,10 +165,7 @@ mod tests {
         dst: IpAddr::V4(DST_ADDR),
     };
 
-    const CX: WireCx = WireCx {
-        do_checksum: true,
-        checksum_addrs: ADDR,
-    };
+    const CX: (Checksums, Ends<IpAddr>) = (Checksums::new(), ADDR);
 
     const PACKET_BYTES: [u8; 12] = [
         0xbf, 0x00, 0x00, 0x35, 0x00, 0x0c, 0x12, 0x4d, 0xaa, 0x00, 0x00, 0xff,
@@ -179,7 +176,7 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut fb = PACKET_BYTES;
-        let packet: Packet<Buf<_>> = Packet::parse(&mut { CX }, Buf::full(&mut fb[..])).unwrap();
+        let packet: Packet<Buf<_>> = Packet::parse(&CX, Buf::full(&mut fb[..])).unwrap();
         assert_eq!(packet.port, Ends { src: 48896, dst: 53 });
         assert_eq!(packet.payload.data(), &PAYLOAD_BYTES[..]);
     }
@@ -195,7 +192,7 @@ mod tests {
         let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&PAYLOAD_BYTES[..]);
 
-        let packet = tag.sub_payload(|_| payload).build(&mut { CX }).unwrap();
+        let packet = tag.sub_payload(|_| payload).build(&CX).unwrap();
         assert_eq!(packet.data(), &PACKET_BYTES[..]);
     }
 
@@ -207,7 +204,7 @@ mod tests {
         };
 
         let payload = Buf::builder(vec![0; 8]).reserve_for(&tag).build();
-        let packet = tag.sub_payload(|_| payload).build(&mut { CX }).unwrap();
+        let packet = tag.sub_payload(|_| payload).build(&CX).unwrap();
         assert_eq!(packet.data(), &[0, 1, 0x7c, 0x89, 0, 8, 0xff, 0xff]);
     }
 
@@ -219,10 +216,7 @@ mod tests {
         };
 
         let payload = Buf::builder(vec![0; 8]).reserve_for(&tag).build();
-        let packet = tag
-            .sub_payload(|_| payload)
-            .build(&mut false.into())
-            .unwrap();
-        assert!(Packet::<Buf<_>>::parse(&mut { CX }, packet).is_ok());
+        let packet = tag.sub_payload(|_| payload).build(&()).unwrap();
+        assert!(Packet::<Buf<_>>::parse(&CX, packet).is_ok());
     }
 }

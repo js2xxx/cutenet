@@ -1,7 +1,7 @@
 mod traits;
 pub use self::traits::{
     NoPayload, NoPayloadHolder, Payload, PayloadBuild, PayloadHolder, PayloadParse, Wire,
-    WireBuild, WireCx, WireParse, WireSubNoPayload, WireSubstitute,
+    WireBuild, WireParse, WireSubNoPayload, WireSubstitute,
 };
 
 mod error;

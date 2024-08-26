@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
-    context::Ends,
+    context::{Ends, WireCx},
     wire::{prelude::*, Data, DataMut},
 };
 
@@ -111,7 +111,7 @@ pub struct Frame<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
-    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
         if len < HEADER_LEN {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
@@ -123,7 +123,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
             addr: frame.addr(),
             protocol: frame.protocol(),
 
-            payload: T::parse(cx, frame.0.pop(HEADER_LEN..len)?)?,
+            payload: T::parse(&[cx, &(frame.protocol(),)], frame.0.pop(HEADER_LEN..len)?)?,
         })
     }
 }
@@ -133,18 +133,18 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
         HEADER_LEN + self.payload_len()
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let Frame {
             addr: Ends { src, dst },
-            protocol: proto,
+            protocol,
             payload,
         } = self;
 
-        payload.build(cx)?.push(HEADER_LEN, |buf| {
+        payload.build(&[cx, &(protocol,)])?.push(HEADER_LEN, |buf| {
             let mut frame = RawFrame(buf);
             frame.set_src_addr(src);
             frame.set_dst_addr(dst);
-            frame.set_protocol(proto);
+            frame.set_protocol(protocol);
             Ok(())
         })
     }
@@ -156,19 +156,17 @@ pub enum EthernetPayload<#[wire] T, #[no_payload] U> {
     Ip(#[wire] super::IpPacket<T>),
 }
 
-impl<T, U> EthernetPayload<T, U> {}
-
-impl<T, P, U> EthernetPayload<T, U>
+impl<T, P, U> WireParse for EthernetPayload<T, U>
 where
     T: WireParse<Payload = P>,
     P: PayloadParse<NoPayload = U> + super::Data,
     U: NoPayload<Init = P>,
 {
-    pub fn parse(cx: &mut WireCx, protocol: Protocol, raw: P) -> Result<Self, ParseError<P>> {
-        Ok(match protocol {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
+        Ok(match cx.ethernet_protocol() {
             Protocol::Arp => EthernetPayload::Arp(super::ArpPacket::parse(cx, raw)?),
             Protocol::Ipv4 | Protocol::Ipv6 => {
-                EthernetPayload::Ip(super::IpPacket::parse(cx, protocol, raw)?)
+                EthernetPayload::Ip(super::IpPacket::parse(cx, raw)?)
             }
             _ => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
         })
@@ -188,7 +186,7 @@ where
         }
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         match self {
             EthernetPayload::Arp(packet) => packet.build(cx),
             EthernetPayload::Ip(packet) => packet.build(cx),
@@ -237,7 +235,7 @@ mod test_ipv4 {
     #[test]
     fn test_deconstruct() {
         let mut fb = FRAME_BYTES;
-        let frame: Frame<Buf<_>> = Frame::parse(&mut false.into(), Buf::full(&mut fb[..])).unwrap();
+        let frame: Frame<Buf<_>> = Frame::parse(&(), Buf::full(&mut fb[..])).unwrap();
         assert_eq!(frame.addr, Ends {
             src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
             dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
@@ -261,10 +259,7 @@ mod test_ipv4 {
         let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = tag
-            .sub_payload(|_| payload)
-            .build(&mut false.into())
-            .unwrap();
+        let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert_eq!(frame.data(), &FRAME_BYTES[..]);
     }
 }
@@ -293,8 +288,7 @@ mod test_ipv6 {
     #[test]
     fn test_deconstruct() {
         let mut binding = FRAME_BYTES;
-        let frame: Frame<Buf<_>> =
-            Frame::parse(&mut false.into(), Buf::full(&mut binding[..])).unwrap();
+        let frame: Frame<Buf<_>> = Frame::parse(&(), Buf::full(&mut binding[..])).unwrap();
         assert_eq!(frame.addr, Ends {
             src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
             dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
@@ -319,10 +313,7 @@ mod test_ipv6 {
         let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = tag
-            .sub_payload(|_| payload)
-            .build(&mut false.into())
-            .unwrap();
+        let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert_eq!(frame.data(), &FRAME_BYTES[..]);
     }
 }

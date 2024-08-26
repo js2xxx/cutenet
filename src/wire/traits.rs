@@ -1,10 +1,9 @@
-use core::{
-    net::{IpAddr, Ipv4Addr},
-    ops::Range,
-};
+use core::ops::Range;
+
+use either::Either;
 
 use crate::{
-    context::Ends,
+    context::WireCx,
     wire::error::{BuildError, BuildErrorKind, ParseError, ParseErrorKind},
 };
 
@@ -60,6 +59,40 @@ pub trait WireSubstitute<Q: Payload>: Wire + Sized {
         F: FnOnce(Self::Payload) -> Q,
         G: FnOnce(<Self::Payload as Payload>::NoPayload) -> Q::NoPayload;
 
+    #[allow(clippy::type_complexity)]
+    fn sub_ref<F, G>(
+        self,
+        sub_payload: F,
+        sub_no_payload: G,
+    ) -> (
+        Self::Output,
+        Either<Self::Payload, <Self::Payload as Payload>::NoPayload>,
+    )
+    where
+        F: FnOnce(&Self::Payload) -> Q,
+        G: FnOnce(&<Self::Payload as Payload>::NoPayload) -> Q::NoPayload,
+    {
+        let mut payload_slot = None;
+        let mut no_payload_slot = None;
+        let output = self.substitute(
+            |payload| {
+                let sub = sub_payload(&payload);
+                payload_slot = Some(payload);
+                sub
+            },
+            |no_payload| {
+                let sub = sub_no_payload(&no_payload);
+                no_payload_slot = Some(no_payload);
+                sub
+            },
+        );
+        (output, match (payload_slot, no_payload_slot) {
+            (Some(payload), None) => Either::Left(payload),
+            (None, Some(no_payload)) => Either::Right(no_payload),
+            (None, None) | (Some(_), Some(_)) => unreachable!(),
+        })
+    }
+
     fn sub_payload<F>(self, sub: F) -> Self::Output
     where
         F: FnOnce(Self::Payload) -> Q,
@@ -96,41 +129,6 @@ pub trait WireSubNoPayload<N: NoPayload>: WireSubstitute<N::Init> + Sized {
 }
 impl<N: NoPayload, W: WireSubstitute<N::Init> + Sized> WireSubNoPayload<N> for W {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WireCx {
-    pub do_checksum: bool,
-    pub checksum_addrs: Ends<IpAddr>,
-}
-
-impl Default for WireCx {
-    fn default() -> Self {
-        WireCx::new(true)
-    }
-}
-
-impl WireCx {
-    pub const fn new(do_checksum: bool) -> Self {
-        WireCx {
-            do_checksum,
-            checksum_addrs: Ends {
-                src: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                dst: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            },
-        }
-    }
-
-    pub fn set_addr(&mut self, addrs: Ends<IpAddr>) -> &mut Self {
-        self.checksum_addrs = addrs;
-        self
-    }
-}
-
-impl From<bool> for WireCx {
-    fn from(value: bool) -> Self {
-        WireCx::new(value)
-    }
-}
-
 pub trait WireBuild: Wire + Sized {
     fn buffer_len(&self) -> usize;
 
@@ -138,11 +136,11 @@ pub trait WireBuild: Wire + Sized {
         self.buffer_len() - self.payload_len()
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<Self::Payload, BuildError<Self::Payload>>;
+    fn build(self, cx: &dyn WireCx) -> Result<Self::Payload, BuildError<Self::Payload>>;
 }
 
 pub trait WireParse: Wire + Sized {
-    fn parse(cx: &mut WireCx, raw: Self::Payload) -> Result<Self, ParseError<Self::Payload>>;
+    fn parse(cx: &dyn WireCx, raw: Self::Payload) -> Result<Self, ParseError<Self::Payload>>;
 }
 
 impl<T: Payload> Wire for T {
@@ -170,13 +168,13 @@ impl<T: Payload + Wire<Payload = T>> WireBuild for T {
         self.len()
     }
 
-    fn build(self, _: &mut WireCx) -> Result<T, BuildError<T>> {
+    fn build(self, _: &dyn WireCx) -> Result<T, BuildError<T>> {
         Ok(self)
     }
 }
 
 impl<T: Payload + Wire<Payload = T>> WireParse for T {
-    fn parse(_: &mut WireCx, raw: T) -> Result<Self, ParseError<T>> {
+    fn parse(_: &dyn WireCx, raw: T) -> Result<Self, ParseError<T>> {
         Ok(raw)
     }
 }

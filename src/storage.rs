@@ -22,6 +22,10 @@ impl<S: Storage> ReserveBuf<S> {
         ReserveBuf { reserved: 0, storage }
     }
 
+    pub fn reset(self) -> Self {
+        Self::new(self.storage)
+    }
+
     pub fn from_buf_truncate(buf: Buf<S>) -> Self {
         ReserveBuf {
             reserved: buf.head,
@@ -38,14 +42,21 @@ impl<S: Storage> ReserveBuf<S> {
         self
     }
 
+    pub fn try_add_reservation(mut self, size: usize) -> Result<Self, Self> {
+        if self.try_reserve(size) {
+            Ok(self)
+        } else {
+            Err(self)
+        }
+    }
+
     pub fn add_reservation(mut self, size: usize) -> Self {
         self.reserve(size);
         self
     }
 
     pub fn reserve_for<W: WireBuild>(self, w: &W) -> Self {
-        let payload_len = w.payload_len();
-        self.add_reservation(w.buffer_len() - payload_len)
+        self.add_reservation(w.header_len())
     }
 
     pub fn build(self) -> Buf<S> {

@@ -3,7 +3,10 @@ use core::fmt;
 use byteorder::{ByteOrder, NetworkEndian};
 
 use crate as cutenet;
-use crate::wire::{ip::checksum, prelude::*, Data, DataMut, Ipv4Packet};
+use crate::{
+    context::WireCx,
+    wire::{ip::checksum, prelude::*, Data, DataMut, Ipv4Packet},
+};
 
 enum_with_unknown! {
     /// Internet protocol control message type.
@@ -257,7 +260,7 @@ pub enum Packet<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
-    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let packet = RawPacket(raw);
 
         let len = packet.0.len();
@@ -265,7 +268,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::PacketTooShort.with(packet.0));
         }
 
-        if cx.do_checksum && !packet.verify_checksum() {
+        if cx.checksums().icmp && !packet.verify_checksum() {
             return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
@@ -284,18 +287,12 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Ipv4Packet::parse(
-                    &mut false.into(),
-                    packet.0.pop(field::UNUSED.end..len)?,
-                )?,
+                payload: Ipv4Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
 
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Ipv4Packet::parse(
-                    &mut false.into(),
-                    packet.0.pop(field::UNUSED.end..len)?,
-                )?,
+                payload: Ipv4Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
 
             _ => Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
@@ -315,10 +312,9 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         }
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
-        let do_checksum = cx.do_checksum;
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let checksum = |mut packet: RawPacket<&mut [u8]>| {
-            if do_checksum {
+            if cx.checksums().icmp {
                 packet.fill_checksum();
             } else {
                 // make sure we get a consistently zeroed checksum,
@@ -354,7 +350,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                 })
             }
             Packet::DstUnreachable { reason, payload } => {
-                (payload.build(&mut false.into())?).push(field::UNUSED.end, |buf| {
+                (payload.build(&())?).push(field::UNUSED.end, |buf| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::DstUnreachable);
@@ -364,7 +360,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                 })
             }
             Packet::TimeExceeded { reason, payload } => {
-                (payload.build(&mut false.into())?).push(field::UNUSED.end, |buf| {
+                (payload.build(&())?).push(field::UNUSED.end, |buf| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::TimeExceeded);
@@ -382,7 +378,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::storage::Buf;
+    use crate::{layer::Checksums, storage::Buf};
 
     static ECHO_PACKET_BYTES: [u8; 12] = [
         0x08, 0x00, 0x8e, 0xfe, 0x12, 0x34, 0xab, 0xcd, 0xaa, 0x00, 0x00, 0xff,
@@ -390,10 +386,11 @@ mod tests {
 
     static ECHO_DATA_BYTES: [u8; 4] = [0xaa, 0x00, 0x00, 0xff];
 
+    const CX: (Checksums,) = (Checksums::new(),);
+
     #[test]
     fn test_echo_deconstruct() {
-        let packet: Packet<&[u8]> =
-            Packet::parse(&mut true.into(), &ECHO_PACKET_BYTES[..]).unwrap();
+        let packet: Packet<&[u8]> = Packet::parse(&CX, &ECHO_PACKET_BYTES[..]).unwrap();
         assert_eq!(packet, Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
@@ -413,10 +410,7 @@ mod tests {
         let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&ECHO_DATA_BYTES);
 
-        let packet = tag
-            .sub_payload(|_| payload)
-            .build(&mut true.into())
-            .unwrap();
+        let packet = tag.sub_payload(|_| payload).build(&CX).unwrap();
         assert_eq!(packet.data(), &ECHO_PACKET_BYTES[..]);
     }
 }

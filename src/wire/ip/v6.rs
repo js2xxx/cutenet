@@ -1,9 +1,9 @@
-use core::net::{Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
-use super::{IpAddrExt, Protocol};
+use super::{IpAddrExt, Protocol, WireCx};
 use crate::{
     self as cutenet,
     context::Ends,
@@ -198,7 +198,7 @@ pub struct Packet<#[wire] T> {
 }
 
 impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
-    fn parse(cx: &mut WireCx, raw: P) -> Result<Self, ParseError<P>> {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let packet = RawPacket(raw);
 
         let len = packet.0.len();
@@ -210,15 +210,16 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             return Err(ParseErrorKind::VersionInvalid.with(packet.0));
         }
 
-        let generic_addr = packet.addr().map(Into::into);
+        let generic_addr = packet.addr().map(IpAddr::V6);
+        let next_header = packet.next_header();
 
         Ok(Packet {
             addr: packet.addr(),
-            next_header: packet.next_header(),
+            next_header,
             hop_limit: packet.hop_limit(),
 
             payload: T::parse(
-                cx.set_addr(generic_addr),
+                &[cx, &(generic_addr, next_header)],
                 packet.0.pop(HEADER_LEN..total_len)?,
             )?,
         })
@@ -230,7 +231,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         HEADER_LEN + self.payload_len()
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             addr,
             next_header,
@@ -238,8 +239,8 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             payload,
         } = self;
 
-        let generic_addr = addr.map(Into::into);
-        let payload = payload.build(cx.set_addr(generic_addr))?;
+        let generic_addr = addr.map(IpAddr::V6);
+        let payload = payload.build(&[cx, &(generic_addr, next_header)])?;
 
         payload.push(HEADER_LEN, |buf| {
             let payload_len = u16::try_from(buf.len() - HEADER_LEN)
@@ -269,18 +270,14 @@ pub enum Ipv6Payload<#[wire] T, #[no_payload] U> {
     Tcp(#[wire] crate::wire::TcpPacket<T>),
 }
 
-impl<T, P, U> Ipv6Payload<T, U>
+impl<T, P, U> WireParse for Ipv6Payload<T, U>
 where
     T: WireParse<Payload = P>,
     P: PayloadParse<NoPayload = U> + Data,
     U: NoPayload<Init = P>,
 {
-    pub fn parse(
-        cx: &mut WireCx,
-        next_header: Protocol,
-        raw: P,
-    ) -> Result<Self, ParseError<P>> {
-        Ok(match next_header {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
+        Ok(match cx.ip_protocol() {
             Protocol::Icmpv6 => Ipv6Payload::Icmp(crate::wire::Icmpv6Packet::parse(cx, raw)?),
             Protocol::Tcp => Ipv6Payload::Tcp(crate::wire::TcpPacket::parse(cx, raw)?),
             Protocol::Udp => Ipv6Payload::Udp(crate::wire::UdpPacket::parse(cx, raw)?),
@@ -303,7 +300,7 @@ where
         }
     }
 
-    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         match self {
             Ipv6Payload::Icmp(packet) => packet.build(cx),
             Ipv6Payload::Tcp(packet) => packet.build(cx),
@@ -311,7 +308,6 @@ where
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -333,8 +329,7 @@ mod tests {
     #[test]
     fn test_packet_deconstruction() {
         let mut pb = REPR_PACKET_BYTES;
-        let packet: Packet<Buf<_>> =
-            Packet::parse(&mut false.into(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.next_header, Protocol::Udp);
         assert_eq!(packet.hop_limit, 0x40);
@@ -362,10 +357,7 @@ mod tests {
         let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&REPR_PAYLOAD_BYTES);
 
-        let packet = tag
-            .sub_payload(|_| payload)
-            .build(&mut false.into())
-            .unwrap();
+        let packet = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert_eq!(packet.data(), &REPR_PACKET_BYTES);
     }
 
@@ -374,8 +366,7 @@ mod tests {
         let mut pb = vec![];
         pb.extend(REPR_PACKET_BYTES);
         pb.push(0);
-        let packet: Packet<Buf<_>> =
-            Packet::parse(&mut false.into(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.payload.len(), REPR_PAYLOAD_BYTES.len());
     }
@@ -384,6 +375,6 @@ mod tests {
     fn test_repr_parse_smaller_than_header() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Packet::<Buf<_>>::parse(&mut false.into(), Buf::full(&mut bytes[..])).is_err());
+        assert!(Packet::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
     }
 }

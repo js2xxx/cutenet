@@ -22,6 +22,23 @@ impl From<EthernetAddr> for HwAddr {
 }
 
 impl HwAddr {
+    pub fn is_unicast(&self) -> bool {
+        match self {
+            HwAddr::Ip => unreachable!(),
+            HwAddr::Ethernet(addr) => addr.is_unicast(),
+            HwAddr::Ieee802154(addr) => addr.is_unicast(),
+        }
+    }
+
+    /// Query whether the address is a broadcast address.
+    pub fn is_broadcast(&self) -> bool {
+        match self {
+            HwAddr::Ip => unreachable!(),
+            HwAddr::Ethernet(addr) => addr.is_broadcast(),
+            HwAddr::Ieee802154(addr) => addr.is_broadcast(),
+        }
+    }
+
     pub fn ethernet(self) -> Option<EthernetAddr> {
         match self {
             HwAddr::Ethernet(eth) => Some(eth),
@@ -88,6 +105,14 @@ impl RawHwAddr {
             return None;
         }
         Some(Ieee802154Addr::from_bytes(self.as_bytes()))
+    }
+
+    pub fn parse(self, other: &HwAddr) -> Option<HwAddr> {
+        match other {
+            HwAddr::Ethernet(_) => self.to_ethernet().map(HwAddr::Ethernet),
+            HwAddr::Ieee802154(_) => self.to_ieee802154().map(HwAddr::Ieee802154),
+            HwAddr::Ip => Some(HwAddr::Ip),
+        }
     }
 }
 
