@@ -384,23 +384,23 @@ pub enum Packet<#[wire] T, #[no_payload] U> {
     DstUnreachable {
         reason: DstUnreachable,
         #[wire]
-        header: Ipv6Packet<T>,
+        payload: Ipv6Packet<T>,
     },
     PktTooBig {
         mtu: u32,
         #[wire]
-        header: Ipv6Packet<T>,
+        payload: Ipv6Packet<T>,
     },
     TimeExceeded {
         reason: TimeExceeded,
         #[wire]
-        header: Ipv6Packet<T>,
+        payload: Ipv6Packet<T>,
     },
     ParamProblem {
         reason: ParamProblem,
         pointer: u32,
         #[wire]
-        header: Ipv6Packet<T>,
+        payload: Ipv6Packet<T>,
     },
     EchoRequest {
         ident: u16,
@@ -466,20 +466,20 @@ where
         match (packet.msg_type(), packet.msg_code()) {
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
             (Message::PktTooBig, 0) => Ok(Packet::PktTooBig {
                 mtu: packet.pkt_too_big_mtu(),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::MTU.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), packet.0.pop(field::MTU.end..len)?)?,
             }),
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
             (Message::ParamProblem, code) => Ok(Packet::ParamProblem {
                 reason: ParamProblem::from(code),
                 pointer: packet.param_problem_ptr(),
-                header: Ipv6Packet::parse(&(), packet.0.pop(field::POINTER.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), packet.0.pop(field::POINTER.end..len)?)?,
             }),
             (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
@@ -511,10 +511,10 @@ where
 {
     fn buffer_len(&self) -> usize {
         MAX_ERROR_PACKET_LEN.min(match self {
-            Packet::DstUnreachable { header, .. } => field::UNUSED.end + header.buffer_len(),
-            Packet::PktTooBig { header, .. } => field::MTU.end + header.buffer_len(),
-            Packet::TimeExceeded { header, .. } => field::UNUSED.end + header.buffer_len(),
-            Packet::ParamProblem { header, .. } => field::POINTER.end + header.buffer_len(),
+            Packet::DstUnreachable { payload, .. } => field::UNUSED.end + payload.buffer_len(),
+            Packet::PktTooBig { payload, .. } => field::MTU.end + payload.buffer_len(),
+            Packet::TimeExceeded { payload, .. } => field::UNUSED.end + payload.buffer_len(),
+            Packet::ParamProblem { payload, .. } => field::POINTER.end + payload.buffer_len(),
             Packet::EchoRequest { payload, .. } | Packet::EchoReply { payload, .. } => {
                 field::ECHO_SEQNO.end + payload.buffer_len()
             }
@@ -536,16 +536,16 @@ where
 
         let push_opt = PayloadPush::Truncate(MAX_ERROR_PACKET_LEN);
         match self {
-            Packet::DstUnreachable { reason, header } => {
-                (header.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
+            Packet::DstUnreachable { reason, payload } => {
+                (payload.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::DstUnreachable);
                     packet.set_msg_code(reason.into());
                     checksum(packet)
                 })
             }
-            Packet::PktTooBig { mtu, header } => {
-                (header.build(&())?).push_with(field::MTU.end, push_opt, |buf| {
+            Packet::PktTooBig { mtu, payload } => {
+                (payload.build(&())?).push_with(field::MTU.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::PktTooBig);
                     packet.set_msg_code(0);
@@ -553,8 +553,8 @@ where
                     checksum(packet)
                 })
             }
-            Packet::TimeExceeded { reason, header } => {
-                (header.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
+            Packet::TimeExceeded { reason, payload } => {
+                (payload.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::TimeExceeded);
                     packet.set_msg_code(reason.into());
@@ -562,8 +562,8 @@ where
                 })
             }
 
-            Packet::ParamProblem { reason, pointer, header } => {
-                (header.build(&())?).push_with(field::POINTER.end, push_opt, |buf| {
+            Packet::ParamProblem { reason, pointer, payload } => {
+                (payload.build(&())?).push_with(field::POINTER.end, push_opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::ParamProblem);
                     packet.set_msg_code(reason.into());
@@ -664,7 +664,7 @@ mod tests {
         let packet: Packet<&[u8], _> = Packet::parse(&CX, &PKT_TOO_BIG_BYTES[..]).unwrap();
         assert!(matches!(packet, Packet::PktTooBig {
                 mtu: 1500,
-                header: Ipv6Packet {
+                payload: Ipv6Packet {
                     next_header: ip::Protocol::Udp,
                     hop_limit: 0x40,
                     payload,
@@ -677,7 +677,7 @@ mod tests {
     fn test_too_big_construct() {
         let repr = Packet::PktTooBig {
             mtu: 1500,
-            header: Ipv6Packet {
+            payload: Ipv6Packet {
                 addr: MOCK_IP_ADDRS.map(|ip| ip.unwrap_v6()),
                 next_header: ip::Protocol::Udp,
                 hop_limit: 0x40,
@@ -696,7 +696,7 @@ mod tests {
     fn test_buffer_length_is_truncated_to_mtu() {
         let repr = Packet::PktTooBig {
             mtu: 1280,
-            header: Ipv6Packet {
+            payload: Ipv6Packet {
                 addr: Ends {
                     src: Ipv6Addr::UNSPECIFIED,
                     dst: Ipv6Addr::UNSPECIFIED,

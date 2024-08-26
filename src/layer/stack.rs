@@ -23,7 +23,7 @@ where
     R: Router<S>,
     A: AllSocketSet<S>,
 {
-    let Some((src_hw, payload)) = rx.receive() else {
+    let Some((src_hw, payload)) = rx.receive(now) else {
         return;
     };
     let hw = rx.hw_addr();
@@ -67,7 +67,14 @@ where
                             payload: packet,
                         },
                     ),
-                    IpPacket::V6(_) => todo!(),
+                    IpPacket::V6(packet) => ipv6::icmp_reply(
+                        device_caps,
+                        packet.addr.reverse(),
+                        Icmpv6Packet::DstUnreachable {
+                            reason: Icmpv6DstUnreachable::NoRoute,
+                            payload: packet,
+                        },
+                    ),
                 });
             }
         }
@@ -102,7 +109,7 @@ where
                 let icmp = Icmpv6Packet::ParamProblem {
                     reason: Icmpv6ParamProblem::UnrecognizedNxtHdr,
                     pointer: packet.header_len() as u32,
-                    header: packet,
+                    payload: packet,
                 };
                 ipv6::icmp_reply(device_caps, addr, icmp)
             }

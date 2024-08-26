@@ -6,8 +6,6 @@ use crate::{
     wire::*,
 };
 
-pub type Payload<S: Storage> = crate::wire::EthernetPayload<Buf<S>, ReserveBuf<S>>;
-
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     pub struct Checksums: u8 {
@@ -75,6 +73,8 @@ pub enum NeighborCacheOption {
     UpdateExpiration,
 }
 
+pub type Payload<S: Storage> = crate::wire::EthernetPayload<Buf<S>, ReserveBuf<S>>;
+
 pub trait NetTx<S: Storage> {
     fn hw_addr(&self) -> HwAddr;
 
@@ -109,5 +109,5 @@ pub trait NetRx<S: Storage> {
 
     fn device_caps(&self) -> &DeviceCaps;
 
-    fn receive(&mut self) -> Option<(HwAddr, Payload<S>)>;
+    fn receive(&mut self, now: Instant) -> Option<(HwAddr, Payload<S>)>;
 }
