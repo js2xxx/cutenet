@@ -37,4 +37,3 @@ macro_rules! enum_with_unknown {
         }
     }
 }
-

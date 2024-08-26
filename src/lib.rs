@@ -5,6 +5,7 @@
 #![allow(edition_2024_expr_fragment_specifier)]
 #![deny(trivial_casts)]
 #![deny(trivial_numeric_casts)]
+#![feature(ip)]
 #![feature(let_chains)]
 
 #[cfg(test)]
@@ -13,5 +14,5 @@ extern crate std;
 #[macro_use]
 mod macros;
 
-pub mod wire;
 pub mod storage;
+pub mod wire;

@@ -94,6 +94,19 @@ fn prefix_len_impl(bytes: &[u8]) -> Option<u8> {
     Some(prefix_len)
 }
 
+fn mask_impl<const N: usize>(input: [u8; N], prefix_len: u8) -> [u8; N] {
+    let mut bytes = [0u8; N];
+    let idx = (prefix_len as usize) / 8;
+    let modulus = (prefix_len as usize) % 8;
+    let (first, second) = input.split_at(idx);
+    bytes[0..idx].copy_from_slice(first);
+    if idx < 16 {
+        let part = second[0];
+        bytes[idx] = part & (!(0xff >> modulus) as u8);
+    }
+    bytes
+}
+
 pub trait IpAddrExt {
     fn mask(&self, prefix_len: u8) -> Self;
 
@@ -102,11 +115,7 @@ pub trait IpAddrExt {
 
 impl IpAddrExt for Ipv4Addr {
     fn mask(&self, prefix_len: u8) -> Self {
-        if prefix_len == 0 {
-            return *self;
-        }
-        let mask = (1 << (32 - prefix_len - 1)) - 1;
-        Ipv4Addr::from_bits(self.to_bits() & !mask)
+        Ipv4Addr::from(mask_impl(self.octets(), prefix_len))
     }
 
     fn prefix_len(&self) -> Option<u8> {
@@ -116,11 +125,7 @@ impl IpAddrExt for Ipv4Addr {
 
 impl IpAddrExt for Ipv6Addr {
     fn mask(&self, prefix_len: u8) -> Self {
-        if prefix_len == 0 {
-            return *self;
-        }
-        let mask = (1 << (128 - prefix_len - 1)) - 1;
-        Ipv6Addr::from_bits(self.to_bits() & !mask)
+        Ipv6Addr::from(mask_impl(self.octets(), prefix_len))
     }
 
     fn prefix_len(&self) -> Option<u8> {
@@ -144,6 +149,7 @@ impl IpAddrExt for IpAddr {
     }
 }
 
+#[derive(Debug)]
 pub enum ParseError {
     VersionUnknown,
     NetmaskInvalid,
