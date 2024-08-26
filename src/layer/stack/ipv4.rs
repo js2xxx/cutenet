@@ -46,7 +46,7 @@ where
             SocketRecv::Received { reply: () }
         }
         Ipv4Payload::Udp(udp) => {
-            let mut sockets = sockets.udp();
+            let sockets = sockets.udp();
             match sockets.receive(now, device_caps, addr.map(Into::into), udp) {
                 SocketRecv::Received { reply: () } => SocketRecv::Received { reply: () },
                 SocketRecv::NotReceived(mut udp) => SocketRecv::NotReceived({
@@ -57,9 +57,9 @@ where
             }
         }
         Ipv4Payload::Tcp(tcp) => {
-            let mut sockets = sockets.tcp();
+            let sockets = sockets.tcp();
             match sockets.receive(now, device_caps, addr.map(Into::into), tcp) {
-                SocketRecv::Received { reply: Some(reply) } => {
+                SocketRecv::Received { reply: Some((reply, ss)) } => {
                     let addr = addr.reverse();
                     let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V4));
                     let packet = Ipv4Packet {
@@ -70,7 +70,7 @@ where
                         payload: uncheck_build!(reply.build(cx)),
                     };
 
-                    dispatch_impl(now, router, IpPacket::V4(packet));
+                    dispatch_impl(now, router, IpPacket::V4(packet), ss);
                     SocketRecv::Received { reply: () }
                 }
                 SocketRecv::Received { reply: None } => SocketRecv::Received { reply: () },

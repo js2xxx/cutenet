@@ -3,7 +3,7 @@ use core::net::IpAddr;
 use super::{
     iface::{NetRx, NetTx},
     route::{Action, Query, Router},
-    socket::{AllSocketSet, RawSocketSet, SocketRecv},
+    socket::{AllSocketSet, RawSocketSet, SocketRecv, SocketState},
     NeighborCacheOption, NeighborLookupError,
 };
 use crate::{
@@ -47,7 +47,7 @@ where
         Action::Forward { next_hop, mut tx } => {
             let mut packet = packet;
             return if packet.decrease_hop_limit() {
-                transmit(now, next_hop, tx, packet)
+                transmit(now, next_hop, tx, packet, ())
             } else {
                 tx.transmit(now, src_hw, match packet {
                     IpPacket::V4(packet) => {
@@ -141,25 +141,27 @@ where
     }
 }
 
-pub fn dispatch<S, R>(now: Instant, mut router: R, packet: IpPacket<Buf<S>>)
+pub fn dispatch<S, R, Ss>(now: Instant, mut router: R, packet: IpPacket<Buf<S>>, ss: Ss)
 where
     S: Storage,
     R: Router<S>,
+    Ss: SocketState,
 {
-    dispatch_impl(now, &mut router, packet)
+    dispatch_impl(now, &mut router, packet, ss)
 }
 
-fn dispatch_impl<S, R>(now: Instant, router: &mut R, packet: IpPacket<Buf<S>>)
+fn dispatch_impl<S, R, Ss>(now: Instant, router: &mut R, packet: IpPacket<Buf<S>>, ss: Ss)
 where
     S: Storage,
     R: Router<S>,
+    Ss: SocketState,
 {
     match router.route(now, Query {
         addr: packet.ip_addr(),
         next_header: packet.next_header(),
     }) {
         Action::Deliver => {}
-        Action::Forward { next_hop, tx } => return transmit(now, next_hop, tx, packet),
+        Action::Forward { next_hop, tx } => return transmit(now, next_hop, tx, packet, ss),
         Action::Discard => return,
     }
     if let Some(mut loopback) = router.loopback(now) {
@@ -167,10 +169,11 @@ where
     }
 }
 
-fn transmit<S, Tx>(now: Instant, next_hop: IpAddr, mut tx: Tx, packet: IpPacket<Buf<S>>)
+fn transmit<S, Tx, Ss>(now: Instant, next_hop: IpAddr, mut tx: Tx, packet: IpPacket<Buf<S>>, ss: Ss)
 where
     S: Storage,
     Tx: NetTx<S>,
+    Ss: SocketState,
 {
     let ip = packet.ip_addr();
 
@@ -201,8 +204,12 @@ where
         Ok(dst) => {
             return tx.transmit(now, dst, EthernetPayload::Ip(packet));
         }
-        Err(NeighborLookupError { rate_limited: true }) => return,
-        Err(_) => {}
+        Err(NeighborLookupError { rate_limited }) => {
+            ss.neighbor_missing(now, next_hop);
+            if rate_limited {
+                return;
+            }
+        }
     }
 
     let (_, buf) = packet.sub_payload_ref(|p| PayloadHolder(p.len()));

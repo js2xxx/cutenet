@@ -13,7 +13,9 @@ mod route;
 pub use self::route::{Action as RouteAction, Query as RouteQuery, Router};
 
 mod socket;
-pub use self::socket::{AllSocketSet, RawSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet};
+pub use self::socket::{
+    AllSocketSet, RawSocketSet, SocketRecv, SocketState, TcpSocketSet, UdpSocketSet,
+};
 
 mod stack;
 pub use self::stack::{dispatch, process};
