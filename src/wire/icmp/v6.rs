@@ -650,7 +650,7 @@ mod tests {
             seq_no: 0xabcd,
             payload: PayloadHolder(ECHO_PACKET_PAYLOAD.len()),
         };
-        let bytes = vec![0xa5; repr.build(&mut false.into()).unwrap().0];
+        let bytes = vec![0xa5; repr.buffer_len()];
         let mut buf = Buf::builder(bytes).reserve_for(repr).build();
         buf.append_slice(&ECHO_PACKET_PAYLOAD);
         let packet = repr.sub_payload(|_| buf).build(&mut { CX }).unwrap();
@@ -682,7 +682,7 @@ mod tests {
                 payload: PayloadHolder(PKT_TOO_BIG_UDP_PAYLOAD.len()),
             },
         };
-        let bytes = vec![0xa5; repr.build(&mut false.into()).unwrap().0];
+        let bytes = vec![0xa5; repr.buffer_len()];
         let mut buf = Buf::builder(bytes).reserve_for(repr).build();
         buf.append_slice(&PKT_TOO_BIG_UDP_PAYLOAD);
 
@@ -704,9 +704,6 @@ mod tests {
                 payload: PayloadHolder(9999),
             },
         };
-        assert_eq!(
-            repr.build(&mut false.into()).unwrap().0,
-            1280 - ip::v6::HEADER_LEN
-        );
+        assert_eq!(repr.buffer_len(), 1280 - ip::v6::HEADER_LEN);
     }
 }

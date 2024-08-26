@@ -30,7 +30,7 @@ impl Cidr {
     }
 
     /// Return the address of this IPv4 CIDR block.
-    pub const fn address(&self) -> Ipv4Addr {
+    pub const fn addr(&self) -> Ipv4Addr {
         self.address
     }
 
@@ -181,7 +181,7 @@ mod test_cidr {
             assert!(!cidr.contains_subnet(&subnet));
         }
 
-        let cidr_without_prefix = Cidr::new(cidr.address(), 0);
+        let cidr_without_prefix = Cidr::new(cidr.addr(), 0);
         assert!(cidr_without_prefix.contains_addr(&Ipv4Addr::new(127, 0, 0, 1)));
     }
 

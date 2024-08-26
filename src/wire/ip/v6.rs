@@ -29,6 +29,8 @@ pub trait Ipv6AddrExt {
 
     fn is_global_unicast(&self) -> bool;
 
+    fn solicited_node(&self) -> Self;
+
     fn unicast_scope(&self) -> Option<Ipv6MulticastScope>;
 
     fn from_ipv4_mapped(v4: Ipv4Addr) -> Self;
@@ -61,6 +63,16 @@ impl Ipv6AddrExt for Ipv6Addr {
 
     fn is_global_unicast(&self) -> bool {
         (self.octets()[0] >> 5) == 0b001
+    }
+
+    fn solicited_node(&self) -> Self {
+        assert!(self.is_unicast());
+
+        let [.., b13, b14, b15] = self.octets();
+        Ipv6Addr::from([
+            0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, b13, b14,
+            b15,
+        ])
     }
 
     fn unicast_scope(&self) -> Option<Ipv6MulticastScope> {

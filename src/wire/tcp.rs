@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn test_construct() {
         let repr = packet_repr(PayloadHolder(PAYLOAD_BYTES.len()));
-        let bytes = vec![0xa5; repr.build(&mut false.into()).unwrap().0];
+        let bytes = vec![0xa5; repr.buffer_len()];
         let mut payload = Buf::builder(bytes).reserve_for(repr).build();
         payload.append_slice(&PAYLOAD_BYTES);
 

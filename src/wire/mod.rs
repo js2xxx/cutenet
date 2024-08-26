@@ -12,8 +12,7 @@ pub use self::hw::{HwAddr, HwAddrExt, RawHwAddr, HWADDR_MAX_LEN};
 
 mod arp;
 pub use self::arp::{
-    Operation as ArpOperation, Packet as ArpPacket, HARDWARE_LEN as ARPV4_HARDWARE_LEN,
-    HEADER_LEN as ARPV4_HEADER_LEN, PROTOCOL_LEN as ARPV4_PROTOCOL_LEN,
+    Operation as ArpOperation, Packet as ArpPacket, HEADER_LEN as ARPV4_HEADER_LEN,
 };
 
 mod ethernet;
@@ -55,7 +54,8 @@ pub use self::ip::{
         Cidr as Ipv6Cidr, Ipv6AddrExt, Packet as Ipv6Packet, HEADER_LEN as IPV6_HEADER_LEN,
         MIN_MTU as IPV6_MIN_MTU,
     },
-    Cidr as IpCidr, IpAddrExt, Packet as IpPacket, Protocol as IpProtocol, Version as IpVersion,
+    Cidr as IpCidr, IpAddrExt, IpCidrExt, Packet as IpPacket, Protocol as IpProtocol,
+    Version as IpVersion,
 };
 
 mod tcp;

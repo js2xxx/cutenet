@@ -120,6 +120,13 @@ impl From<bool> for WireCx {
 
 pub trait WireBuild: Wire + Sized {
     fn build(self, cx: &mut WireCx) -> Result<Self::Payload, BuildError<Self::Payload>>;
+
+    fn buffer_len(&self) -> usize
+    where
+        Self: WireBuild<Payload = PayloadHolder> + Copy,
+    {
+        (*self).build(&mut false.into()).unwrap().0
+    }
 }
 
 pub trait WireParse: Wire + Sized {

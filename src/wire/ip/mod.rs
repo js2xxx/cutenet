@@ -35,7 +35,7 @@ impl Cidr {
     /// Return the IP address of this CIDR block.
     pub const fn addr(&self) -> IpAddr {
         match *self {
-            Cidr::V4(cidr) => IpAddr::V4(cidr.address()),
+            Cidr::V4(cidr) => IpAddr::V4(cidr.addr()),
             Cidr::V6(cidr) => IpAddr::V6(cidr.address()),
         }
     }
@@ -191,6 +191,8 @@ fn mask_impl<const N: usize>(input: [u8; N], prefix_len: u8) -> [u8; N] {
 }
 
 pub trait IpAddrExt: Eq + fmt::Display + Copy {
+    type Cidr: IpCidrExt<Addr = Self>;
+
     const UNSPECIFIED: Self;
 
     fn from_bytes(bytes: &[u8]) -> Self;
@@ -201,12 +203,16 @@ pub trait IpAddrExt: Eq + fmt::Display + Copy {
 
     fn is_unicast(&self) -> bool;
 
+    fn is_broadcast(&self) -> bool;
+
     fn unwrap_v4(self) -> Ipv4Addr;
 
     fn unwrap_v6(self) -> Ipv6Addr;
 }
 
 impl IpAddrExt for Ipv4Addr {
+    type Cidr = v4::Cidr;
+
     const UNSPECIFIED: Self = Ipv4Addr::UNSPECIFIED;
 
     fn from_bytes(bytes: &[u8]) -> Self {
@@ -225,6 +231,10 @@ impl IpAddrExt for Ipv4Addr {
         !(self.is_broadcast() || self.is_multicast() || self.is_unspecified())
     }
 
+    fn is_broadcast(&self) -> bool {
+        self.is_broadcast()
+    }
+
     fn unwrap_v4(self) -> Ipv4Addr {
         self
     }
@@ -235,6 +245,8 @@ impl IpAddrExt for Ipv4Addr {
 }
 
 impl IpAddrExt for Ipv6Addr {
+    type Cidr = v6::Cidr;
+
     const UNSPECIFIED: Self = Ipv6Addr::UNSPECIFIED;
 
     fn from_bytes(bytes: &[u8]) -> Self {
@@ -253,6 +265,10 @@ impl IpAddrExt for Ipv6Addr {
         self.is_unicast()
     }
 
+    fn is_broadcast(&self) -> bool {
+        false
+    }
+
     fn unwrap_v4(self) -> Ipv4Addr {
         unreachable!("IPv6 => IPv4")
     }
@@ -263,6 +279,8 @@ impl IpAddrExt for Ipv6Addr {
 }
 
 impl IpAddrExt for IpAddr {
+    type Cidr = Cidr;
+
     const UNSPECIFIED: Self = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
     fn from_bytes(bytes: &[u8]) -> Self {
@@ -294,6 +312,13 @@ impl IpAddrExt for IpAddr {
         }
     }
 
+    fn is_broadcast(&self) -> bool {
+        match self {
+            IpAddr::V4(v4) => v4.is_broadcast(),
+            IpAddr::V6(v6) => v6.is_broadcast(),
+        }
+    }
+
     fn unwrap_v4(self) -> Ipv4Addr {
         match self {
             IpAddr::V4(v4) => v4.unwrap_v4(),
@@ -305,6 +330,47 @@ impl IpAddrExt for IpAddr {
         match self {
             IpAddr::V4(v4) => v4.unwrap_v6(),
             IpAddr::V6(v6) => v6.unwrap_v6(),
+        }
+    }
+}
+
+pub trait IpCidrExt: Eq + Copy {
+    type Addr: IpAddrExt<Cidr = Self>;
+
+    const UNSPECIFIED: Self;
+
+    fn broadcast(&self) -> Option<Self::Addr>;
+}
+
+impl IpCidrExt for v4::Cidr {
+    type Addr = Ipv4Addr;
+
+    const UNSPECIFIED: Self = v4::Cidr::new(Ipv4Addr::UNSPECIFIED, 32);
+
+    fn broadcast(&self) -> Option<Self::Addr> {
+        self.broadcast()
+    }
+}
+
+impl IpCidrExt for v6::Cidr {
+    type Addr = Ipv6Addr;
+
+    const UNSPECIFIED: Self = v6::Cidr::new(Ipv6Addr::UNSPECIFIED, 128);
+
+    fn broadcast(&self) -> Option<Self::Addr> {
+        None
+    }
+}
+
+impl IpCidrExt for Cidr {
+    type Addr = IpAddr;
+
+    const UNSPECIFIED: Self = Cidr::V4(v4::Cidr::UNSPECIFIED);
+
+    fn broadcast(&self) -> Option<Self::Addr> {
+        match self {
+            Cidr::V4(cidr) => cidr.broadcast().map(IpAddr::V4),
+            Cidr::V6(cidr) => cidr.broadcast().map(IpAddr::V6),
         }
     }
 }

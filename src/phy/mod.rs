@@ -11,8 +11,8 @@ pub struct Checksums {
     pub icmp: bool,
 }
 
-impl Default for Checksums {
-    fn default() -> Self {
+impl Checksums {
+    pub const fn new() -> Self {
         Checksums {
             ip: true,
             udp: true,
@@ -22,10 +22,27 @@ impl Default for Checksums {
     }
 }
 
+impl Default for Checksums {
+    fn default() -> Self {
+        Checksums::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeviceCaps {
+    pub header_len: usize,
     pub rx_checksums: Checksums,
     pub tx_checksums: Checksums,
+}
+
+impl DeviceCaps {
+    pub const fn new() -> Self {
+        DeviceCaps {
+            header_len: 0,
+            rx_checksums: Checksums::new(),
+            tx_checksums: Checksums::new(),
+        }
+    }
 }
 
 pub trait Device {
@@ -46,6 +63,10 @@ pub trait TxToken {
     type Storage: Storage;
 
     fn wire_len<W: WireBuild<Payload = PayloadHolder>>(&self, wire: W) -> usize;
+
+    fn header_len(&self) -> usize {
+        self.wire_len(PayloadHolder(0))
+    }
 
     fn consume(self, buf: Buf<Self::Storage>);
 }
