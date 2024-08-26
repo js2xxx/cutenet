@@ -63,13 +63,10 @@ pub trait Wire: Sized {
     where
         S: Storage;
 
-    type BuildError;
-    fn build_default<S>(
+    fn build_default<S: Storage>(
         packet: &mut Packet<Self, S>,
         payload_len: usize,
-    ) -> Result<(), Self::BuildError>
-    where
-        S: Storage;
+    ) -> Result<(), BuildErrorKind>;
 }
 
 impl<Tag: Wire, S: Storage> Packet<Tag, S> {
@@ -86,24 +83,37 @@ impl<Tag: Wire, S: Storage> Packet<Tag, S> {
     pub fn parse(raw: Buf<S>, arg: Tag::ParseArg<'_>) -> Result<Self, ParseError<S>> {
         let packet = Packet { marker: PhantomData, inner: raw };
         match Tag::parse(&packet, arg) {
-            Ok(()) => {}
-            Err(kind) => return Err(ParseError { buf: packet.inner, kind }),
+            Ok(()) => Ok(packet),
+            Err(kind) => Err(ParseError { buf: packet.inner, kind }),
         }
-        Ok(packet)
     }
 
-    pub fn builder(payload: Buf<S>) -> Result<Builder<Self>, Tag::BuildError> {
+    pub fn builder(payload: Buf<S>) -> Result<Builder<Self>, BuildError<S>> {
         let len = payload.len();
+        if Tag::EMPTY_PAYLOAD && len != 0 {
+            let error = BuildError {
+                kind: BuildErrorKind::PayloadNotEmpty,
+                buf: payload,
+            };
+            return Err(error);
+        }
 
         let mut inner = payload;
         inner.prepend(Tag::HEAD_LEN);
         inner.append(Tag::TAIL_LEN);
 
         let mut packet = Packet { marker: PhantomData, inner };
-        Tag::build_default(&mut packet, len)?;
-
-        Ok(Builder(packet))
+        match Tag::build_default(&mut packet, len) {
+            Ok(()) => Ok(Builder(packet)),
+            Err(kind) => Err(BuildError { kind, buf: packet.into_payload() }),
+        }
     }
+}
+
+#[derive(Debug)]
+pub struct Error<K, S: Storage + ?Sized> {
+    pub kind: K,
+    pub buf: Buf<S>,
 }
 
 #[derive(Debug)]
@@ -114,12 +124,14 @@ pub enum ParseErrorKind {
     VersionInvalid,
     DstInvalid,
 }
+pub type ParseError<S: Storage + ?Sized> = Error<ParseErrorKind, S>;
 
 #[derive(Debug)]
-pub struct ParseError<S: Storage + ?Sized> {
-    pub kind: ParseErrorKind,
-    pub buf: Buf<S>,
+pub enum BuildErrorKind {
+    PayloadTooLong,
+    PayloadNotEmpty,
 }
+pub type BuildError<S: Storage + ?Sized> = Error<BuildErrorKind, S>;
 
 #[derive(Debug)]
 pub struct Builder<W>(W);

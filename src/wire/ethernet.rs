@@ -1,8 +1,8 @@
-use core::{convert::Infallible, fmt};
+use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Builder, Dst, Ends, ParseErrorKind, Src, Wire};
+use super::{BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, Wire};
 use crate::storage::Storage;
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
@@ -136,8 +136,7 @@ impl Wire for Ethernet {
         Ok(())
     }
 
-    type BuildError = Infallible;
-    fn build_default<S: Storage>(_: &mut Frame<S>, _: usize) -> Result<(), Infallible> {
+    fn build_default<S: Storage>(_: &mut Frame<S>, _: usize) -> Result<(), BuildErrorKind> {
         Ok(())
     }
 }

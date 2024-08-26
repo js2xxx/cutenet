@@ -5,7 +5,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 use super::{
     ethernet::{self, Protocol},
     ip::IpAddrExt,
-    Builder, Dst, Ends, ParseErrorKind, Src, Wire,
+    BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, Wire,
 };
 use crate::storage::Storage;
 
@@ -195,8 +195,7 @@ impl Wire for ArpV4 {
         Ok(())
     }
 
-    type BuildError = BuildError;
-    fn build_default<S: Storage>(packet: &mut Packet<S>, _: usize) -> Result<(), BuildError> {
+    fn build_default<S: Storage>(packet: &mut Packet<S>, _: usize) -> Result<(), BuildErrorKind> {
         packet.set_hardware_type(Hardware::Ethernet);
         packet.set_protocol_type(Protocol::Ipv4);
         packet.set_hardware_len(HARDWARE_LEN);
@@ -219,11 +218,6 @@ impl<S: Storage> Builder<Packet<S>> {
         self.0.set_target_protocol_addr(dst_ip);
         self
     }
-}
-
-#[derive(Debug)]
-pub enum BuildError {
-    PayloadNotEmpty,
 }
 
 #[cfg(test)]

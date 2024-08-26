@@ -12,7 +12,7 @@ pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
 use crate::{
     storage::Storage,
-    wire::{Builder, Dst, Ends, ParseErrorKind, Src, Wire},
+    wire::{BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, Wire},
 };
 
 pub trait Ipv6AddrExt {
@@ -224,12 +224,11 @@ impl Wire for Ipv6 {
         Ok(())
     }
 
-    type BuildError = BuildError;
     fn build_default<S: Storage>(
         packet: &mut Packet<S>,
         payload_len: usize,
-    ) -> Result<(), BuildError> {
-        let payload_len = u16::try_from(payload_len).map_err(|_| BuildError::PayloadTooLong)?;
+    ) -> Result<(), BuildErrorKind> {
+        let payload_len = u16::try_from(payload_len).map_err(|_| BuildErrorKind::PayloadTooLong)?;
 
         packet.set_version(6);
         packet.set_traffic_class(0);
@@ -259,11 +258,6 @@ impl<S: Storage> Builder<Packet<S>> {
         self.0.set_next_header(prot);
         self
     }
-}
-
-#[derive(Debug)]
-pub enum BuildError {
-    PayloadTooLong,
 }
 
 #[cfg(test)]

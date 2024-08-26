@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{
     ip::{self, checksum},
-    Builder, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire,
+    BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire,
 };
 use crate::storage::Storage;
 
@@ -119,9 +119,8 @@ impl Wire for Udp {
         Ok(())
     }
 
-    type BuildError = BuildError;
-    fn build_default<S: Storage>(packet: &mut Packet<S>, _: usize) -> Result<(), BuildError> {
-        let len = u16::try_from(packet.inner.len()).map_err(|_| BuildError(()))?;
+    fn build_default<S: Storage>(packet: &mut Packet<S>, _: usize) -> Result<(), BuildErrorKind> {
+        let len = u16::try_from(packet.inner.len()).map_err(|_| BuildErrorKind::PayloadTooLong)?;
         packet.set_len(len);
         packet.set_checksum(0);
         Ok(())
@@ -150,9 +149,6 @@ impl<S: Storage> Builder<Packet<S>> {
         self
     }
 }
-
-#[derive(Debug)]
-pub struct BuildError(());
 
 #[cfg(test)]
 mod test {

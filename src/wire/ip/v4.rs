@@ -9,7 +9,7 @@ pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, Protocol};
 use crate::{
     storage::Storage,
-    wire::{Builder, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire},
+    wire::{BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire},
 };
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -238,8 +238,7 @@ impl Wire for Ipv4 {
         Ok(())
     }
 
-    type BuildError = BuildError;
-    fn build_default<S>(packet: &mut Packet<S>, payload_len: usize) -> Result<(), BuildError>
+    fn build_default<S>(packet: &mut Packet<S>, payload_len: usize) -> Result<(), BuildErrorKind>
     where
         S: Storage,
     {
@@ -249,7 +248,7 @@ impl Wire for Ipv4 {
         packet.set_ecn(0);
 
         let total_len = usize::from(packet.header_len()) + payload_len;
-        packet.set_total_len(u16::try_from(total_len).map_err(|_| BuildError::PayloadTooLong)?);
+        packet.set_total_len(u16::try_from(total_len).map_err(|_| BuildErrorKind::PayloadTooLong)?);
 
         packet.set_ident(0);
         packet.clear_flags();
@@ -288,11 +287,6 @@ impl<S: Storage> Builder<Packet<S>> {
         self.0.set_checksum(checksum);
         self
     }
-}
-
-#[derive(Debug)]
-pub enum BuildError {
-    PayloadTooLong,
 }
 
 #[cfg(test)]
