@@ -2,8 +2,8 @@ use core::{convert::Infallible, fmt};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Builder, Dst, Ends, Src, WireBuf};
-use crate::storage::{Buf, Storage};
+use super::{Builder, Dst, Ends, Src, Wire};
+use crate::storage::Storage;
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 pub struct Addr(pub [u8; 6]);
@@ -74,10 +74,8 @@ pub mod field {
 }
 pub const HEADER_LEN: usize = field::PAYLOAD.start;
 
-#[derive(Debug)]
-pub struct Frame<S: Storage + ?Sized> {
-    inner: Buf<S>,
-}
+pub enum Ethernet {}
+pub type Frame<S: Storage + ?Sized> = super::Packet<Ethernet, S>;
 
 impl<S: Storage + ?Sized> Frame<S> {
     pub fn dst_addr(&self) -> Addr {
@@ -108,10 +106,6 @@ impl<S: Storage + ?Sized> Frame<S> {
     fn set_protocol(&mut self, value: Protocol) {
         NetworkEndian::write_u16(&mut self.inner.data_mut()[field::ETHERTYPE], value.into())
     }
-
-    pub fn payload(&self) -> &[u8] {
-        &self.inner.data()[field::PAYLOAD]
-    }
 }
 
 impl<S: Storage> Builder<Frame<S>> {
@@ -128,47 +122,24 @@ impl<S: Storage> Builder<Frame<S>> {
     }
 }
 
-impl<S: Storage + ?Sized> WireBuf for Frame<S> {
-    type Storage = S;
+impl Wire for Ethernet {
+    const EMPTY_PAYLOAD: bool = false;
 
-    const HEADER_LEN: usize = HEADER_LEN;
-
-    fn into_raw(self) -> Buf<Self::Storage>
-    where
-        S: Sized,
-    {
-        self.inner
-    }
-
-    fn into_payload(self) -> Buf<Self::Storage>
-    where
-        S: Sized,
-    {
-        self.inner.slice_into(HEADER_LEN..)
-    }
+    const HEAD_LEN: usize = HEADER_LEN;
+    const TAIL_LEN: usize = 0;
 
     type ParseError = ParseError;
-
     type ParseArg<'a> = ();
-
-    fn parse(raw: Buf<Self::Storage>, _: ()) -> Result<Self, Self::ParseError>
-    where
-        Self::Storage: Sized,
-    {
-        if raw.len() < HEADER_LEN {
+    fn parse<S: Storage>(frame: &Frame<S>, _: ()) -> Result<(), ParseError> {
+        if frame.inner.len() < HEADER_LEN {
             return Err(ParseError(()));
         }
-        Ok(Frame { inner: raw })
+        Ok(())
     }
 
     type BuildError = Infallible;
-    fn build_default(payload: Buf<S>) -> Result<Self, Infallible>
-    where
-        S: Sized,
-    {
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        Ok(Frame { inner })
+    fn build_default<S: Storage>(_: &mut Frame<S>, _: usize) -> Result<(), Infallible> {
+        Ok(())
     }
 }
 
@@ -196,7 +167,7 @@ mod test_ipv4 {
 
     // Tests that are valid only with "proto-ipv4"
     use super::*;
-    use crate::wire::WireBufExt;
+    use crate::storage::Buf;
 
     const FRAME_BYTES: [u8; 64] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x08, 0x00, 0xaa,
@@ -216,7 +187,7 @@ mod test_ipv4 {
     #[test]
     fn test_deconstruct() {
         let mut fb = FRAME_BYTES;
-        let frame = Frame { inner: Buf::full(&mut fb[..]) };
+        let frame = Frame::parse(Buf::full(&mut fb[..]), ()).unwrap();
         assert_eq!(frame.dst_addr(), Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
         assert_eq!(frame.src_addr(), Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
         assert_eq!(frame.protocol(), Protocol::Ipv4);
@@ -226,7 +197,7 @@ mod test_ipv4 {
     #[test]
     fn test_construct() {
         let bytes = vec![0xa5; 64];
-        let mut payload = Buf::builder(bytes).reserve_for::<Frame<_>>().build();
+        let mut payload = Buf::builder(bytes).reserve_for::<Ethernet>().build();
         payload
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);
@@ -246,7 +217,7 @@ mod test_ipv6 {
 
     // Tests that are valid only with "proto-ipv6"
     use super::*;
-    use crate::wire::WireBufExt;
+    use crate::storage::Buf;
 
     const FRAME_BYTES: [u8; 54] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x86, 0xdd, 0x60,
@@ -264,9 +235,7 @@ mod test_ipv6 {
     #[test]
     fn test_deconstruct() {
         let mut binding = FRAME_BYTES;
-        let frame = Frame {
-            inner: Buf::full(&mut binding[..]),
-        };
+        let frame = Frame::parse(Buf::full(&mut binding[..]), ()).unwrap();
         assert_eq!(frame.dst_addr(), Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
         assert_eq!(frame.src_addr(), Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
         assert_eq!(frame.protocol(), Protocol::Ipv6);
@@ -277,7 +246,7 @@ mod test_ipv6 {
     fn test_construct() {
         let bytes = vec![0xa5; 54];
 
-        let mut payload = Buf::builder(bytes).reserve_for::<Frame<_>>().build();
+        let mut payload = Buf::builder(bytes).reserve_for::<Ethernet>().build();
         payload
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);

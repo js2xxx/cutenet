@@ -5,9 +5,9 @@ use byteorder::{ByteOrder, NetworkEndian};
 use super::{
     ethernet::{self, Protocol},
     ip::IpAddrExt,
-    Builder, Dst, Ends, Src, WireBuf,
+    Builder, Dst, Ends, Src, Wire,
 };
-use crate::storage::{Buf, Storage};
+use crate::storage::Storage;
 
 enum_with_unknown! {
     /// ARP hardware type.
@@ -64,10 +64,8 @@ pub const HARDWARE_LEN: u8 = 6;
 pub const PROTOCOL_LEN: u8 = 4;
 pub const HEADER_LEN: usize = field::TPA(HARDWARE_LEN, PROTOCOL_LEN).end;
 
-#[derive(Debug)]
-pub struct Packet<S: Storage + ?Sized> {
-    inner: Buf<S>,
-}
+pub enum ArpV4 {}
+pub type Packet<S: Storage + ?Sized> = super::Packet<ArpV4, S>;
 
 impl<S: Storage + ?Sized> Packet<S> {
     pub fn hardware_type(&self) -> Hardware {
@@ -162,36 +160,15 @@ impl<S: Storage + ?Sized> Packet<S> {
     }
 }
 
-impl<S: Storage + ?Sized> WireBuf for Packet<S> {
-    type Storage = S;
+impl Wire for ArpV4 {
+    const EMPTY_PAYLOAD: bool = true;
 
-    const HEADER_LEN: usize = HEADER_LEN;
-
-    fn into_raw(self) -> Buf<Self::Storage>
-    where
-        Self::Storage: Sized,
-    {
-        self.inner
-    }
-
-    fn into_payload(self) -> Buf<Self::Storage>
-    where
-        Self::Storage: Sized,
-    {
-        self.inner.slice_into(HEADER_LEN..HEADER_LEN)
-    }
+    const HEAD_LEN: usize = HEADER_LEN;
+    const TAIL_LEN: usize = 0;
 
     type ParseError = ParseError;
-
     type ParseArg<'a> = ();
-
-    fn parse(raw: Buf<Self::Storage>, _: ()) -> Result<Self, ParseError>
-    where
-        Self::Storage: Sized,
-        Self: Sized,
-    {
-        let packet = Packet { inner: raw };
-
+    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseError> {
         let len = packet.inner.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
@@ -216,29 +193,16 @@ impl<S: Storage + ?Sized> WireBuf for Packet<S> {
             return Err(ParseError::ProtocolUnknown);
         }
 
-        Ok(packet)
+        Ok(())
     }
 
     type BuildError = BuildError;
-
-    fn build_default(payload: Buf<Self::Storage>) -> Result<Self, BuildError>
-    where
-        Self::Storage: Sized,
-        Self: Sized,
-    {
-        if !payload.is_empty() {
-            return Err(BuildError::PayloadNotEmpty);
-        }
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = Packet { inner };
-
+    fn build_default<S: Storage>(packet: &mut Packet<S>, _: usize) -> Result<(), BuildError> {
         packet.set_hardware_type(Hardware::Ethernet);
         packet.set_protocol_type(Protocol::Ipv4);
         packet.set_hardware_len(HARDWARE_LEN);
         packet.set_protocol_len(PROTOCOL_LEN);
-
-        Ok(packet)
+        Ok(())
     }
 }
 
@@ -274,7 +238,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::wire::WireBufExt;
+    use crate::storage::Buf;
 
     const PACKET_BYTES: [u8; 28] = [
         0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x21,
@@ -284,7 +248,7 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut fb = PACKET_BYTES;
-        let packet = Packet { inner: Buf::full(&mut fb[..]) };
+        let packet = Packet::parse(Buf::full(&mut fb[..]), ()).unwrap();
 
         assert_eq!(packet.hardware_type(), Hardware::Ethernet);
         assert_eq!(packet.protocol_type(), Protocol::Ipv4);
@@ -312,7 +276,7 @@ mod tests {
     #[test]
     fn test_construct() {
         let bytes = vec![0xa5; 28];
-        let payload = Buf::builder(bytes).reserve_for::<Packet<_>>().build();
+        let payload = Buf::builder(bytes).reserve_for::<ArpV4>().build();
 
         let packet = Packet::builder(payload).unwrap();
         let packet = packet
@@ -329,28 +293,5 @@ mod tests {
             ))
             .build();
         assert_eq!(packet.into_raw().data(), &PACKET_BYTES[..]);
-    }
-
-    #[test]
-    fn test_parse() {
-        let mut fb = PACKET_BYTES;
-        let packet = Packet::parse(Buf::full(&mut fb[..]), ()).unwrap();
-        assert_eq!(packet.operation(), Operation::Request);
-        assert_eq!(
-            packet.source_hardware_addr(),
-            ethernet::Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])
-        );
-        assert_eq!(
-            packet.source_protocol_addr(),
-            Ipv4Addr::from([0x21, 0x22, 0x23, 0x24])
-        );
-        assert_eq!(
-            packet.target_hardware_addr(),
-            ethernet::Addr([0x31, 0x32, 0x33, 0x34, 0x35, 0x36])
-        );
-        assert_eq!(
-            packet.target_protocol_addr(),
-            Ipv4Addr::from([0x41, 0x42, 0x43, 0x44])
-        );
     }
 }

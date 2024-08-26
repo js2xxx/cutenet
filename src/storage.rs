@@ -2,7 +2,7 @@ use core::ops::{Bound, DerefMut, RangeBounds};
 
 use stable_deref_trait::StableDeref;
 
-use crate::wire::WireBuf;
+use crate::wire::Wire;
 
 pub trait Storage: DerefMut<Target = [u8]> + StableDeref {}
 impl<T: DerefMut<Target = [u8]> + StableDeref + ?Sized> Storage for T {}
@@ -33,8 +33,8 @@ impl<S: Storage> ReserveBuf<S> {
         self
     }
 
-    pub fn reserve_for<W: WireBuf<Storage = S>>(self) -> Self {
-        self.add_reservation(W::HEADER_LEN)
+    pub fn reserve_for<W: Wire>(self) -> Self {
+        self.add_reservation(W::HEAD_LEN)
     }
 
     pub fn build(self) -> Buf<S> {

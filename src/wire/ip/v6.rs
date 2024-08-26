@@ -11,8 +11,8 @@ use byteorder::{ByteOrder, NetworkEndian};
 pub use self::cidr::Cidr;
 use super::{IpAddrExt, ParseError, Protocol};
 use crate::{
-    storage::{Buf, Storage},
-    wire::{Builder, Dst, Ends, Src, WireBuf},
+    storage::Storage,
+    wire::{Builder, Dst, Ends, Src, Wire},
 };
 
 pub trait Ipv6AddrExt {
@@ -99,16 +99,10 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
-#[derive(Debug)]
-pub struct Packet<S: Storage + ?Sized> {
-    inner: Buf<S>,
-}
+pub enum Ipv6 {}
+pub type Packet<S: Storage + ?Sized> = crate::wire::Packet<Ipv6, S>;
 
 impl<S: Storage + ?Sized> Packet<S> {
-    pub const fn header_len(&self) -> usize {
-        field::DST_ADDR.end
-    }
-
     pub fn version(&self) -> u8 {
         self.inner.data()[field::VER_TC_FLOW.start] >> 4
     }
@@ -158,7 +152,7 @@ impl<S: Storage + ?Sized> Packet<S> {
 
     /// Return the payload length added to the known header length.
     pub fn total_len(&self) -> usize {
-        self.header_len() + usize::from(self.payload_len())
+        HEADER_LEN + usize::from(self.payload_len())
     }
 
     /// Return the next header field.
@@ -206,13 +200,46 @@ impl<S: Storage + ?Sized> Packet<S> {
     pub fn addr(&self) -> Ends<Ipv6Addr> {
         (Src(self.src_addr()), Dst(self.dst_addr()))
     }
+}
 
-    fn payload_range(&self) -> Range<usize> {
-        self.header_len()..self.total_len()
+impl Wire for Ipv6 {
+    const EMPTY_PAYLOAD: bool = false;
+
+    const HEAD_LEN: usize = HEADER_LEN;
+    const TAIL_LEN: usize = 0;
+
+    fn payload_range<S: Storage + ?Sized>(packet: &Packet<S>) -> Range<usize> {
+        HEADER_LEN..packet.total_len()
     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.inner.data()[self.payload_range()]
+    type ParseError = ParseError;
+    type ParseArg<'a> = ();
+    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseError> {
+        let len = packet.inner.len();
+        if len < field::DST_ADDR.end || len < packet.total_len() {
+            return Err(ParseError::PacketTooShort);
+        }
+        if packet.version() != 6 {
+            return Err(ParseError::VersionInvalid);
+        }
+        Ok(())
+    }
+
+    type BuildError = BuildError;
+    fn build_default<S: Storage>(
+        packet: &mut Packet<S>,
+        payload_len: usize,
+    ) -> Result<(), BuildError> {
+        let payload_len = u16::try_from(payload_len).map_err(|_| BuildError::PayloadTooLong)?;
+
+        packet.set_version(6);
+        packet.set_traffic_class(0);
+        packet.set_flow_label(0);
+        packet.set_payload_len(payload_len);
+        packet.set_hop_limit(64);
+        packet.set_next_header(Protocol::Unknown(0));
+
+        Ok(())
     }
 }
 
@@ -235,67 +262,6 @@ impl<S: Storage> Builder<Packet<S>> {
     }
 }
 
-impl<S: Storage + ?Sized> WireBuf for Packet<S> {
-    type Storage = S;
-
-    const HEADER_LEN: usize = HEADER_LEN;
-
-    fn into_raw(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        self.inner
-    }
-
-    fn into_payload(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        let range = self.payload_range();
-        self.inner.slice_into(range)
-    }
-
-    type ParseError = ParseError;
-    type ParseArg<'a> = ();
-
-    fn parse(raw: Buf<Self::Storage>, _: ()) -> Result<Self, Self::ParseError>
-    where
-        Self::Storage: Sized,
-        Self: Sized,
-    {
-        let packet = Packet { inner: raw };
-        let len = packet.inner.len();
-        if len < field::DST_ADDR.end || len < packet.total_len() {
-            return Err(ParseError::PacketTooShort);
-        }
-        if packet.version() != 6 {
-            return Err(ParseError::VersionInvalid);
-        }
-        Ok(packet)
-    }
-
-    type BuildError = BuildError;
-    fn build_default(payload: Buf<Self::Storage>) -> Result<Self, Self::BuildError>
-    where
-        Self::Storage: Sized,
-        Self: Sized,
-    {
-        let len = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLong)?;
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = Packet { inner };
-
-        packet.set_version(6);
-        packet.set_traffic_class(0);
-        packet.set_flow_label(0);
-        packet.set_payload_len(len);
-        packet.set_hop_limit(64);
-        packet.set_next_header(Protocol::Unknown(0));
-
-        Ok(packet)
-    }
-}
-
 #[derive(Debug)]
 pub enum BuildError {
     PayloadTooLong,
@@ -306,7 +272,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::wire::WireBufExt;
+    use crate::storage::Buf;
 
     const REPR_PACKET_BYTES: [u8; 52] = [
         0x60, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x11, 0x40, 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -321,7 +287,7 @@ mod tests {
     #[test]
     fn test_packet_deconstruction() {
         let mut pb = REPR_PACKET_BYTES;
-        let packet = Packet { inner: Buf::full(&mut pb[..]) };
+        let packet = Packet::parse(Buf::full(&mut pb[..]), ()).unwrap();
 
         assert_eq!(packet.version(), 6);
         assert_eq!(packet.traffic_class(), 0);
@@ -338,7 +304,7 @@ mod tests {
     #[test]
     fn test_packet_construction() {
         let bytes = vec![0xff; 52];
-        let mut payload = Buf::builder(bytes).reserve_for::<Packet<_>>().build();
+        let mut payload = Buf::builder(bytes).reserve_for::<Ipv6>().build();
         payload.append_slice(&REPR_PAYLOAD_BYTES);
 
         let packet = Packet::builder(payload).unwrap();
@@ -359,7 +325,7 @@ mod tests {
         let mut pb = vec![];
         pb.extend(REPR_PACKET_BYTES);
         pb.push(0);
-        let packet = Packet { inner: Buf::full(&mut pb[..]) };
+        let packet = Packet::parse(Buf::full(&mut pb[..]), ()).unwrap();
 
         assert_eq!(packet.payload().len(), REPR_PAYLOAD_BYTES.len());
     }

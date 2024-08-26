@@ -8,8 +8,8 @@ use byteorder::{ByteOrder, NetworkEndian};
 pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, ParseError, Protocol};
 use crate::{
-    storage::{Buf, Storage},
-    wire::{Builder, Dst, Ends, Src, VerifyChecksum, WireBuf},
+    storage::Storage,
+    wire::{Builder, Dst, Ends, Src, VerifyChecksum, Wire},
 };
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -36,12 +36,8 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
-#[derive(Debug)]
-pub struct Packet<S: Storage + ?Sized> {
-    inner: Buf<S>,
-}
-
-impl<S: Storage> Packet<S> {}
+pub enum Ipv4 {}
+pub type Packet<S: Storage + ?Sized> = crate::wire::Packet<Ipv4, S>;
 
 impl<S: Storage + ?Sized> Packet<S> {
     pub fn version(&self) -> u8 {
@@ -205,13 +201,67 @@ impl<S: Storage + ?Sized> Packet<S> {
             protocol: self.next_header(),
         }
     }
+}
 
-    fn payload_range(&self) -> Range<usize> {
-        usize::from(self.header_len())..usize::from(self.total_len())
+impl Wire for Ipv4 {
+    const EMPTY_PAYLOAD: bool = false;
+
+    const HEAD_LEN: usize = HEADER_LEN;
+    const TAIL_LEN: usize = 0;
+
+    fn payload_range<S: Storage + ?Sized>(packet: &Packet<S>) -> Range<usize> {
+        usize::from(packet.header_len())..usize::from(packet.total_len())
     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.inner.data()[self.payload_range()]
+    type ParseError = ParseError;
+    type ParseArg<'a> = VerifyChecksum<bool>;
+    fn parse<S: Storage>(
+        packet: &Packet<S>,
+        VerifyChecksum(verify_checksum): VerifyChecksum<bool>,
+    ) -> Result<(), ParseError> {
+        let len = packet.inner.len();
+        if len < field::DST_ADDR.end
+            || len < usize::from(packet.header_len())
+            || u16::from(packet.header_len()) > packet.total_len()
+            || len < usize::from(packet.total_len())
+        {
+            return Err(ParseError::PacketTooShort);
+        }
+
+        if packet.version() != 4 {
+            return Err(ParseError::VersionInvalid);
+        }
+
+        if verify_checksum && !packet.verify_checksum() {
+            return Err(ParseError::ChecksumInvalid);
+        }
+
+        Ok(())
+    }
+
+    type BuildError = BuildError;
+    fn build_default<S>(packet: &mut Packet<S>, payload_len: usize) -> Result<(), BuildError>
+    where
+        S: Storage,
+    {
+        packet.set_version(4);
+        packet.set_header_len(u8::try_from(field::DST_ADDR.end).unwrap());
+        packet.set_dscp(0);
+        packet.set_ecn(0);
+
+        let total_len = usize::from(packet.header_len()) + payload_len;
+        packet.set_total_len(u16::try_from(total_len).map_err(|_| BuildError::PayloadTooLong)?);
+
+        packet.set_ident(0);
+        packet.clear_flags();
+        packet.set_more_frags(false);
+        packet.set_dont_frag(true);
+        packet.set_frag_offset(0);
+        packet.set_hop_limit(64);
+        packet.set_next_header(Protocol::Unknown(0));
+        packet.set_checksum(0);
+
+        Ok(())
     }
 }
 
@@ -241,92 +291,6 @@ impl<S: Storage> Builder<Packet<S>> {
     }
 }
 
-impl<S: Storage + ?Sized> WireBuf for Packet<S> {
-    type Storage = S;
-
-    const HEADER_LEN: usize = HEADER_LEN;
-
-    fn into_raw(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        self.inner
-    }
-
-    fn into_payload(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        let range = self.payload_range();
-        self.inner.slice_into(range)
-    }
-
-    type ParseError = ParseError;
-
-    type ParseArg<'a> = VerifyChecksum<bool>;
-
-    fn parse(
-        raw: Buf<Self::Storage>,
-        VerifyChecksum(verify_checksum): VerifyChecksum<bool>,
-    ) -> Result<Self, Self::ParseError>
-    where
-        Self::Storage: Sized,
-        Self: Sized,
-    {
-        let packet = Packet { inner: raw };
-
-        let len = packet.inner.len();
-        if len < field::DST_ADDR.end
-            || len < usize::from(packet.header_len())
-            || u16::from(packet.header_len()) > packet.total_len()
-            || len < usize::from(packet.total_len())
-        {
-            return Err(ParseError::PacketTooShort);
-        }
-
-        if packet.version() != 4 {
-            return Err(ParseError::VersionInvalid);
-        }
-
-        if verify_checksum && !packet.verify_checksum() {
-            return Err(ParseError::ChecksumInvalid);
-        }
-
-        Ok(packet)
-    }
-
-    type BuildError = BuildError;
-    fn build_default(payload: Buf<Self::Storage>) -> Result<Self, BuildError>
-    where
-        S: Sized,
-        Self: Sized,
-    {
-        let len = payload.len();
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = Packet { inner };
-
-        packet.set_version(4);
-        packet.set_header_len(u8::try_from(field::DST_ADDR.end).unwrap());
-        packet.set_dscp(0);
-        packet.set_ecn(0);
-
-        let total_len = usize::from(packet.header_len()) + len;
-        packet.set_total_len(u16::try_from(total_len).map_err(|_| BuildError::PayloadTooLong)?);
-
-        packet.set_ident(0);
-        packet.clear_flags();
-        packet.set_more_frags(false);
-        packet.set_dont_frag(true);
-        packet.set_frag_offset(0);
-        packet.set_hop_limit(64);
-        packet.set_next_header(Protocol::Unknown(0));
-        packet.set_checksum(0);
-
-        Ok(packet)
-    }
-}
-
 #[derive(Debug)]
 pub enum BuildError {
     PayloadTooLong,
@@ -338,7 +302,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::wire::WireBufExt;
+    use crate::storage::Buf;
 
     const INGRESS_PACKET_BYTES: [u8; 30] = [
         0x45, 0x00, 0x00, 0x1e, 0x01, 0x02, 0x62, 0x03, 0x1a, 0x01, 0xd5, 0x6e, 0x11, 0x12, 0x13,
@@ -355,7 +319,7 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut pb = INGRESS_PACKET_BYTES;
-        let packet = Packet { inner: Buf::full(&mut pb[..]) };
+        let packet = Packet::parse(Buf::full(&mut pb[..]), VerifyChecksum(true)).unwrap();
         assert_eq!(packet.version(), 4);
         assert_eq!(packet.header_len(), 20);
         assert_eq!(packet.dscp(), 0);
@@ -377,7 +341,7 @@ mod tests {
     #[test]
     fn test_construct() {
         let bytes = vec![0xa5; 30];
-        let mut payload = Buf::builder(bytes).reserve_for::<Packet<_>>().build();
+        let mut payload = Buf::builder(bytes).reserve_for::<Ipv4>().build();
         payload.append_slice(&PAYLOAD_BYTES);
 
         let packet = Packet::builder(payload).unwrap();
@@ -398,26 +362,9 @@ mod tests {
         let mut pb = vec![];
         pb.extend(INGRESS_PACKET_BYTES);
         pb.push(0);
-        let packet = Packet { inner: Buf::full(&mut pb[..]) };
-
-        assert_eq!(packet.payload().len(), PAYLOAD_BYTES.len());
-    }
-
-    const REPR_PACKET_BYTES: [u8; 24] = [
-        0x45, 0x00, 0x00, 0x18, 0x00, 0x00, 0x40, 0x00, 0x40, 0x01, 0xd2, 0x79, 0x11, 0x12, 0x13,
-        0x14, 0x21, 0x22, 0x23, 0x24, 0xaa, 0x00, 0x00, 0xff,
-    ];
-
-    #[test]
-    fn test_parse() {
-        let mut pb = REPR_PACKET_BYTES;
         let packet = Packet::parse(Buf::full(&mut pb[..]), VerifyChecksum(true)).unwrap();
 
-        assert_eq!(packet.src_addr(), Ipv4Addr::from([0x11, 0x12, 0x13, 0x14]));
-        assert_eq!(packet.dst_addr(), Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]));
-        assert_eq!(packet.next_header(), Protocol::Icmp);
-        assert_eq!(packet.payload().len(), 4);
-        assert_eq!(packet.hop_limit(), 64);
+        assert_eq!(packet.payload().len(), PAYLOAD_BYTES.len());
     }
 
     #[test]

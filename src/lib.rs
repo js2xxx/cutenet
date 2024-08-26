@@ -5,7 +5,9 @@
 #![allow(edition_2024_expr_fragment_specifier)]
 #![deny(trivial_casts)]
 #![deny(trivial_numeric_casts)]
+#![allow(incomplete_features)]
 #![feature(ip)]
+#![feature(lazy_type_alias)]
 #![feature(let_chains)]
 
 #[cfg(test)]
