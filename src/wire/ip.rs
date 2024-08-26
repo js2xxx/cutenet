@@ -46,7 +46,7 @@ enum_with_unknown! {
         IpSecAh   = 0x33,
         Icmpv6    = 0x3a,
         Ipv6NoNxt = 0x3b,
-        Ipv6Opts  = 0x3c
+        Ipv6Opts  = 0x3c,
     }
 }
 

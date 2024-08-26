@@ -1,5 +1,6 @@
 use crate::storage::{Buf, Storage};
 
+pub mod arp;
 pub mod ethernet;
 pub mod ip;
 pub mod udp;
