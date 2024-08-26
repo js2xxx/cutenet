@@ -5,7 +5,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 use super::{
     ethernet::{self, Protocol},
     ip::IpAddrExt,
-    Builder, Dst, Ends, Src, Wire,
+    Builder, Dst, Ends, ParseErrorKind, Src, Wire,
 };
 use crate::storage::Storage;
 
@@ -166,14 +166,13 @@ impl Wire for ArpV4 {
     const HEAD_LEN: usize = HEADER_LEN;
     const TAIL_LEN: usize = 0;
 
-    type ParseError = ParseError;
     type ParseArg<'a> = ();
-    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseError> {
+    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
         let len = packet.inner.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
         {
-            return Err(ParseError::PacketTooShort);
+            return Err(ParseErrorKind::PacketTooShort);
         }
 
         if !matches!(
@@ -190,7 +189,7 @@ impl Wire for ArpV4 {
                 PROTOCOL_LEN,
             )
         ) {
-            return Err(ParseError::ProtocolUnknown);
+            return Err(ParseErrorKind::ProtocolUnknown);
         }
 
         Ok(())
@@ -220,12 +219,6 @@ impl<S: Storage> Builder<Packet<S>> {
         self.0.set_target_protocol_addr(dst_ip);
         self
     }
-}
-
-#[derive(Debug)]
-pub enum ParseError {
-    PacketTooShort,
-    ProtocolUnknown,
 }
 
 #[derive(Debug)]

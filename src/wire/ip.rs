@@ -14,11 +14,11 @@ pub enum Version {
 }
 
 impl Version {
-    pub const fn of_packet(data: &[u8]) -> Result<Version, ParseError> {
+    pub const fn of_packet(data: &[u8]) -> Option<Version> {
         match data[0] >> 4 {
-            4 => Ok(Version::Ipv4),
-            6 => Ok(Version::Ipv6),
-            _ => Err(ParseError::VersionInvalid),
+            4 => Some(Version::Ipv4),
+            6 => Some(Version::Ipv6),
+            _ => None,
         }
     }
 }
@@ -165,12 +165,4 @@ impl IpAddrExt for IpAddr {
             IpAddr::V6(v6) => v6.prefix_len(),
         }
     }
-}
-
-#[derive(Debug)]
-pub enum ParseError {
-    VersionInvalid,
-    NetmaskInvalid,
-    PacketTooShort,
-    ChecksumInvalid,
 }

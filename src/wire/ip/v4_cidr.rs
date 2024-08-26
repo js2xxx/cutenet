@@ -1,7 +1,5 @@
 use core::{fmt, net::Ipv4Addr};
 
-use crate::wire::ip::ParseError;
-
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct Cidr {
     address: Ipv4Addr,
@@ -19,7 +17,7 @@ impl Cidr {
     }
 
     /// Create an IPv4 CIDR block from the given address and network mask.
-    pub fn from_netmask(addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<Cidr, ParseError> {
+    pub fn from_netmask(addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<Cidr, FromNetmaskError> {
         let netmask = netmask.to_bits();
         if netmask.leading_zeros() == 0 && netmask.trailing_zeros() == netmask.count_zeros() {
             Ok(Cidr {
@@ -27,7 +25,7 @@ impl Cidr {
                 prefix_len: netmask.count_ones() as u8,
             })
         } else {
-            Err(ParseError::NetmaskInvalid)
+            Err(FromNetmaskError(()))
         }
     }
 
@@ -100,6 +98,9 @@ impl fmt::Display for Cidr {
         write!(f, "{}/{}", self.address, self.prefix_len)
     }
 }
+
+#[derive(Debug)]
+pub struct FromNetmaskError(());
 
 #[cfg(test)]
 mod test_cidr {

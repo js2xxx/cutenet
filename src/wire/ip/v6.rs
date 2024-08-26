@@ -9,10 +9,10 @@ use core::{
 use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
-use super::{IpAddrExt, ParseError, Protocol};
+use super::{IpAddrExt, Protocol};
 use crate::{
     storage::Storage,
-    wire::{Builder, Dst, Ends, Src, Wire},
+    wire::{Builder, Dst, Ends, ParseErrorKind, Src, Wire},
 };
 
 pub trait Ipv6AddrExt {
@@ -212,15 +212,14 @@ impl Wire for Ipv6 {
         HEADER_LEN..packet.total_len()
     }
 
-    type ParseError = ParseError;
     type ParseArg<'a> = ();
-    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseError> {
+    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
         let len = packet.inner.len();
         if len < field::DST_ADDR.end || len < packet.total_len() {
-            return Err(ParseError::PacketTooShort);
+            return Err(ParseErrorKind::PacketTooShort);
         }
         if packet.version() != 6 {
-            return Err(ParseError::VersionInvalid);
+            return Err(ParseErrorKind::VersionInvalid);
         }
         Ok(())
     }

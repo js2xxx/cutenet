@@ -2,7 +2,7 @@ use core::{convert::Infallible, fmt};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Builder, Dst, Ends, Src, Wire};
+use super::{Builder, Dst, Ends, ParseErrorKind, Src, Wire};
 use crate::storage::Storage;
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
@@ -128,11 +128,10 @@ impl Wire for Ethernet {
     const HEAD_LEN: usize = HEADER_LEN;
     const TAIL_LEN: usize = 0;
 
-    type ParseError = ParseError;
     type ParseArg<'a> = ();
-    fn parse<S: Storage>(frame: &Frame<S>, _: ()) -> Result<(), ParseError> {
+    fn parse<S: Storage>(frame: &Frame<S>, _: ()) -> Result<(), ParseErrorKind> {
         if frame.inner.len() < HEADER_LEN {
-            return Err(ParseError(()));
+            return Err(ParseErrorKind::PacketTooShort);
         }
         Ok(())
     }
@@ -143,11 +142,8 @@ impl Wire for Ethernet {
     }
 }
 
-#[derive(Debug)]
-pub struct ParseError(());
-
 #[cfg(test)]
-mod test {
+mod tests {
     // Tests that are valid with any combination of
     // "proto-*" features.
     use super::*;

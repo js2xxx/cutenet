@@ -6,10 +6,10 @@ use core::{net::Ipv4Addr, ops::Range};
 use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
-use super::{checksum, IpAddrExt, ParseError, Protocol};
+use super::{checksum, IpAddrExt, Protocol};
 use crate::{
     storage::Storage,
-    wire::{Builder, Dst, Ends, Src, VerifyChecksum, Wire},
+    wire::{Builder, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire},
 };
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -213,27 +213,26 @@ impl Wire for Ipv4 {
         usize::from(packet.header_len())..usize::from(packet.total_len())
     }
 
-    type ParseError = ParseError;
     type ParseArg<'a> = VerifyChecksum<bool>;
     fn parse<S: Storage>(
         packet: &Packet<S>,
         VerifyChecksum(verify_checksum): VerifyChecksum<bool>,
-    ) -> Result<(), ParseError> {
+    ) -> Result<(), ParseErrorKind> {
         let len = packet.inner.len();
         if len < field::DST_ADDR.end
             || len < usize::from(packet.header_len())
             || u16::from(packet.header_len()) > packet.total_len()
             || len < usize::from(packet.total_len())
         {
-            return Err(ParseError::PacketTooShort);
+            return Err(ParseErrorKind::PacketTooShort);
         }
 
         if packet.version() != 4 {
-            return Err(ParseError::VersionInvalid);
+            return Err(ParseErrorKind::VersionInvalid);
         }
 
         if verify_checksum && !packet.verify_checksum() {
-            return Err(ParseError::ChecksumInvalid);
+            return Err(ParseErrorKind::ChecksumInvalid);
         }
 
         Ok(())

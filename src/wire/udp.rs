@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{
     ip::{self, checksum},
-    Builder, Dst, Ends, Src, VerifyChecksum, Wire,
+    Builder, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire,
 };
 use crate::storage::Storage;
 
@@ -87,34 +87,33 @@ impl Wire for Udp {
     const HEAD_LEN: usize = HEADER_LEN;
     const TAIL_LEN: usize = 0;
 
-    type ParseError = ParseError;
     type ParseArg<'a> = VerifyChecksum<Option<Ends<IpAddr>>>;
     fn parse<S>(
         packet: &Packet<S>,
         VerifyChecksum(verify_checksum): VerifyChecksum<Option<Ends<IpAddr>>>,
-    ) -> Result<(), ParseError>
+    ) -> Result<(), ParseErrorKind>
     where
         S: Storage,
     {
         let buffer_len = packet.inner.len();
         if buffer_len < HEADER_LEN {
-            return Err(ParseError::PacketTooShort);
+            return Err(ParseErrorKind::PacketTooShort);
         } else {
             let field_len = usize::from(packet.len());
             if buffer_len < field_len || field_len < HEADER_LEN {
-                return Err(ParseError::PacketTooShort);
+                return Err(ParseErrorKind::PacketTooShort);
             }
         }
 
         if packet.dst_port() == 0 {
-            return Err(ParseError::DstInvalid);
+            return Err(ParseErrorKind::DstInvalid);
         }
 
         if let Some(addr) = verify_checksum
             && !packet.verify_checksum(addr)
             && !matches!(addr, (Src(IpAddr::V4(_)), Dst(IpAddr::V4(_))) if packet.checksum() == 0)
         {
-            return Err(ParseError::ChecksumInvalid);
+            return Err(ParseErrorKind::ChecksumInvalid);
         }
 
         Ok(())
@@ -154,13 +153,6 @@ impl<S: Storage> Builder<Packet<S>> {
 
 #[derive(Debug)]
 pub struct BuildError(());
-
-#[derive(Debug)]
-pub enum ParseError {
-    PacketTooShort,
-    DstInvalid,
-    ChecksumInvalid,
-}
 
 #[cfg(test)]
 mod test {

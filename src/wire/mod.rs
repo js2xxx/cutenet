@@ -58,9 +58,8 @@ pub trait Wire: Sized {
         Self::HEAD_LEN..(packet.inner.len() - Self::TAIL_LEN)
     }
 
-    type ParseError;
     type ParseArg<'a>;
-    fn parse<S>(packet: &Packet<Self, S>, arg: Self::ParseArg<'_>) -> Result<(), Self::ParseError>
+    fn parse<S>(packet: &Packet<Self, S>, arg: Self::ParseArg<'_>) -> Result<(), ParseErrorKind>
     where
         S: Storage;
 
@@ -84,9 +83,12 @@ impl<Tag: Wire, S: Storage> Packet<Tag, S> {
         &self.inner.data()[s]
     }
 
-    pub fn parse(raw: Buf<S>, arg: Tag::ParseArg<'_>) -> Result<Self, Tag::ParseError> {
+    pub fn parse(raw: Buf<S>, arg: Tag::ParseArg<'_>) -> Result<Self, ParseError<S>> {
         let packet = Packet { marker: PhantomData, inner: raw };
-        Tag::parse(&packet, arg)?;
+        match Tag::parse(&packet, arg) {
+            Ok(()) => {}
+            Err(kind) => return Err(ParseError { buf: packet.inner, kind }),
+        }
         Ok(packet)
     }
 
@@ -102,6 +104,21 @@ impl<Tag: Wire, S: Storage> Packet<Tag, S> {
 
         Ok(Builder(packet))
     }
+}
+
+#[derive(Debug)]
+pub enum ParseErrorKind {
+    PacketTooShort,
+    ProtocolUnknown,
+    ChecksumInvalid,
+    VersionInvalid,
+    DstInvalid,
+}
+
+#[derive(Debug)]
+pub struct ParseError<S: Storage + ?Sized> {
+    pub kind: ParseErrorKind,
+    pub buf: Buf<S>,
 }
 
 #[derive(Debug)]
