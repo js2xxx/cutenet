@@ -187,45 +187,13 @@ impl<S: Storage + ?Sized> Packet<S> {
 }
 
 pub struct PacketBuilder<S: Storage + ?Sized> {
-    inner: Buf<S>,
+    packet: Packet<S>,
 }
 
-impl<S: Storage> PacketBuilder<S> {
-    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
-        let len = payload.len();
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut ret = PacketBuilder { inner };
-
-        ret.set_version(4);
-        ret.set_header_len(u8::try_from(field::DST_ADDR.end).unwrap());
-        ret.set_dscp(0);
-        ret.set_ecn(0);
-
-        let total_len = usize::from(ret.header_len()) + len;
-        ret.set_total_len(u16::try_from(total_len).map_err(|_| BuildError::PayloadTooLong)?);
-
-        ret.set_ident(0);
-        ret.clear_flags();
-        ret.set_more_frags(false);
-        ret.set_dont_frag(true);
-        ret.set_frag_offset(0);
-        ret.set_hop_limit(64);
-        ret.set_next_header(Protocol::Unknown(0));
-        ret.set_checksum(0);
-
-        Ok(ret)
-    }
-}
-
-impl<S: Storage + ?Sized> PacketBuilder<S> {
+impl<S: Storage + ?Sized> Packet<S> {
     fn set_version(&mut self, value: u8) {
         self.inner.data_mut()[field::VER_IHL] =
             (self.inner.data_mut()[field::VER_IHL] & !0xf0) | (value << 4);
-    }
-
-    fn header_len(&self) -> u8 {
-        (self.inner.data()[field::VER_IHL] & 0x0f) * 4
     }
 
     /// Set the header length, in octets.
@@ -315,32 +283,59 @@ impl<S: Storage + ?Sized> PacketBuilder<S> {
 }
 
 impl<S: Storage> PacketBuilder<S> {
+    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
+        let len = payload.len();
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        let mut packet = Packet { inner };
+
+        packet.set_version(4);
+        packet.set_header_len(u8::try_from(field::DST_ADDR.end).unwrap());
+        packet.set_dscp(0);
+        packet.set_ecn(0);
+
+        let total_len = usize::from(packet.header_len()) + len;
+        packet.set_total_len(u16::try_from(total_len).map_err(|_| BuildError::PayloadTooLong)?);
+
+        packet.set_ident(0);
+        packet.clear_flags();
+        packet.set_more_frags(false);
+        packet.set_dont_frag(true);
+        packet.set_frag_offset(0);
+        packet.set_hop_limit(64);
+        packet.set_next_header(Protocol::Unknown(0));
+        packet.set_checksum(0);
+
+        Ok(PacketBuilder { packet })
+    }
+
     pub fn addr(mut self, addr: Ends<Ipv4Addr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.set_src_addr(src);
-        self.set_dst_addr(dst);
+        self.packet.set_src_addr(src);
+        self.packet.set_dst_addr(dst);
         self
     }
 
     pub fn hop_limit(mut self, hop_limit: u8) -> Self {
-        self.set_hop_limit(hop_limit);
+        self.packet.set_hop_limit(hop_limit);
         self
     }
 
     pub fn next_header(mut self, prot: Protocol) -> Self {
-        self.set_next_header(prot);
+        self.packet.set_next_header(prot);
         self
     }
 
     pub fn checksum(mut self) -> Self {
-        self.set_checksum(0);
-        let checksum = !checksum::data(&self.inner.data()[..self.header_len() as usize]);
-        self.set_checksum(checksum);
+        self.packet.set_checksum(0);
+        let checksum =
+            !checksum::data(&self.packet.inner.data()[..self.packet.header_len() as usize]);
+        self.packet.set_checksum(checksum);
         self
     }
 
     pub fn build(self) -> Packet<S> {
-        Packet { inner: self.inner }
+        self.packet
     }
 }
 

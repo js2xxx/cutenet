@@ -205,28 +205,10 @@ impl<S: Storage + ?Sized> Packet<S> {
 }
 
 pub struct PacketBuilder<S: Storage + ?Sized> {
-    inner: Buf<S>,
+    packet: Packet<S>,
 }
 
-impl<S: Storage> PacketBuilder<S> {
-    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
-        let len = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLong)?;
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = PacketBuilder { inner };
-
-        packet.set_version(6);
-        packet.set_traffic_class(0);
-        packet.set_flow_label(0);
-        packet.set_payload_len(len);
-        packet.set_hop_limit(64);
-        packet.set_next_header(Protocol::Unknown(0));
-
-        Ok(packet)
-    }
-}
-
-impl<S: Storage + ?Sized> PacketBuilder<S> {
+impl<S: Storage + ?Sized> Packet<S> {
     fn set_version(&mut self, value: u8) {
         let data = self.inner.data_mut();
         // Make sure to retain the lower order bits which contain
@@ -282,25 +264,41 @@ impl<S: Storage + ?Sized> PacketBuilder<S> {
 }
 
 impl<S: Storage> PacketBuilder<S> {
+    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
+        let len = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLong)?;
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        let mut packet = Packet { inner };
+
+        packet.set_version(6);
+        packet.set_traffic_class(0);
+        packet.set_flow_label(0);
+        packet.set_payload_len(len);
+        packet.set_hop_limit(64);
+        packet.set_next_header(Protocol::Unknown(0));
+
+        Ok(PacketBuilder { packet })
+    }
+
     pub fn addr(mut self, addr: Ends<Ipv6Addr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.set_src_addr(src);
-        self.set_dst_addr(dst);
+        self.packet.set_src_addr(src);
+        self.packet.set_dst_addr(dst);
         self
     }
 
     pub fn hop_limit(mut self, hop_limit: u8) -> Self {
-        self.set_hop_limit(hop_limit);
+        self.packet.set_hop_limit(hop_limit);
         self
     }
 
     pub fn next_header(mut self, prot: Protocol) -> Self {
-        self.set_next_header(prot);
+        self.packet.set_next_header(prot);
         self
     }
 
     pub fn build(self) -> Packet<S> {
-        Packet { inner: self.inner }
+        self.packet
     }
 }
 

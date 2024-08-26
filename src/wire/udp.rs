@@ -127,20 +127,16 @@ impl<S: Storage + ?Sized> Packet<S> {
 }
 
 pub struct PacketBuilder<S: Storage + ?Sized> {
-    inner: Buf<S>,
+    packet: Packet<S>,
 }
 
-impl<S: Storage + ?Sized> PacketBuilder<S> {
+impl<S: Storage + ?Sized> Packet<S> {
     fn set_src_port(&mut self, value: u16) {
         NetworkEndian::write_u16(&mut self.inner.data_mut()[field::SRC_PORT], value)
     }
 
     fn set_dst_port(&mut self, value: u16) {
         NetworkEndian::write_u16(&mut self.inner.data_mut()[field::DST_PORT], value)
-    }
-
-    fn len(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::LENGTH])
     }
 
     fn set_len(&mut self, value: u16) {
@@ -156,34 +152,37 @@ impl<S: Storage> PacketBuilder<S> {
     fn new(payload: Buf<S>) -> Result<Self, BuildError> {
         let mut inner = payload;
         inner.prepend_fixed::<HEADER_LEN>();
-        let mut ret = PacketBuilder { inner };
+        let mut packet = Packet { inner };
 
-        let len = u16::try_from(ret.inner.len()).map_err(|_| BuildError(()))?;
-        ret.set_len(len);
-        ret.set_checksum(0);
-        Ok(ret)
+        let len = u16::try_from(packet.inner.len()).map_err(|_| BuildError(()))?;
+        packet.set_len(len);
+        packet.set_checksum(0);
+        Ok(PacketBuilder { packet })
     }
 
     pub fn port(mut self, port: Ends<u16>) -> Self {
         let (Src(src), Dst(dst)) = port;
-        self.set_src_port(src);
-        self.set_dst_port(dst);
+        self.packet.set_src_port(src);
+        self.packet.set_dst_port(dst);
         self
     }
 
     pub fn checksum(mut self, addr: Ends<IpAddr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.set_checksum(0);
+        self.packet.set_checksum(0);
+
+        let len = self.packet.len();
         let checksum = !checksum::combine(&[
-            checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, self.len() as u32),
-            checksum::data(&self.inner.data()[..self.len() as usize]),
+            checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, len as u32),
+            checksum::data(&self.packet.inner.data()[..self.packet.len() as usize]),
         ]);
-        self.set_checksum(if checksum == 0 { 0xffff } else { checksum });
+        self.packet
+            .set_checksum(if checksum == 0 { 0xffff } else { checksum });
         self
     }
 
     pub fn build(self) -> Packet<S> {
-        Packet { inner: self.inner }
+        self.packet
     }
 }
 

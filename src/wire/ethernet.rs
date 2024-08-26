@@ -131,10 +131,10 @@ impl<S: Storage + ?Sized> Frame<S> {
 }
 
 pub struct FrameBuilder<S: Storage + ?Sized> {
-    inner: Buf<S>,
+    frame: Frame<S>,
 }
 
-impl<S: Storage + ?Sized> FrameBuilder<S> {
+impl<S: Storage + ?Sized> Frame<S> {
     fn set_dst_addr(&mut self, value: Addr) {
         self.inner.data_mut()[field::DESTINATION].copy_from_slice(value.as_bytes())
     }
@@ -143,7 +143,7 @@ impl<S: Storage + ?Sized> FrameBuilder<S> {
         self.inner.data_mut()[field::SOURCE].copy_from_slice(value.as_bytes())
     }
 
-    fn set_ethertype(&mut self, value: Protocol) {
+    fn set_protocol(&mut self, value: Protocol) {
         NetworkEndian::write_u16(&mut self.inner.data_mut()[field::ETHERTYPE], value.into())
     }
 }
@@ -152,19 +152,19 @@ impl<S: Storage> FrameBuilder<S> {
     fn new(payload: Buf<S>) -> Self {
         let mut inner = payload;
         inner.prepend_fixed::<HEADER_LEN>();
-        FrameBuilder { inner }
+        FrameBuilder { frame: Frame { inner } }
     }
 
     pub fn addr(mut self, addr: Ends<Addr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.set_src_addr(src);
-        self.set_dst_addr(dst);
+        self.frame.set_src_addr(src);
+        self.frame.set_dst_addr(dst);
         self
     }
 
     pub fn build(mut self, ty: Protocol) -> Frame<S> {
-        self.set_ethertype(ty);
-        Frame { inner: self.inner }
+        self.frame.set_protocol(ty);
+        self.frame
     }
 }
 
