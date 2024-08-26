@@ -18,7 +18,7 @@ impl Version {
         match data[0] >> 4 {
             4 => Ok(Version::Ipv4),
             6 => Ok(Version::Ipv6),
-            _ => Err(ParseError::VersionUnknown),
+            _ => Err(ParseError::VersionInvalid),
         }
     }
 }
@@ -169,7 +169,7 @@ impl IpAddrExt for IpAddr {
 
 #[derive(Debug)]
 pub enum ParseError {
-    VersionUnknown,
+    VersionInvalid,
     NetmaskInvalid,
     PacketTooShort,
     ChecksumInvalid,

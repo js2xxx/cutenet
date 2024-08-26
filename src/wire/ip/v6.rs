@@ -1,9 +1,19 @@
+#[path = "v6_cidr.rs"]
+mod cidr;
+
 use core::{
-    fmt,
     net::{Ipv4Addr, Ipv6Addr, Ipv6MulticastScope},
+    ops::Range,
 };
 
-use super::IpAddrExt;
+use byteorder::{ByteOrder, NetworkEndian};
+
+pub use self::cidr::Cidr;
+use super::{IpAddrExt, ParseError, Protocol};
+use crate::{
+    storage::{Buf, Storage},
+    wire::{Dst, Ends, Src, WireBuf},
+};
 
 pub trait Ipv6AddrExt {
     const LINK_LOCAL_ALL_NODES: Ipv6Addr;
@@ -67,438 +77,315 @@ impl Ipv6AddrExt for Ipv6Addr {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct Cidr {
-    address: Ipv6Addr,
-    prefix_len: u8,
+mod field {
+    use crate::wire::field::*;
+
+    // 4-bit version number, 8-bit traffic class, and the
+    // 20-bit flow label.
+    pub const VER_TC_FLOW: Field = 0..4;
+    // 16-bit value representing the length of the payload.
+    // Note: Options are included in this length.
+    pub const LENGTH: Field = 4..6;
+    // 8-bit value identifying the type of header following this
+    // one. Note: The same numbers are used in IPv4.
+    pub const NXT_HDR: usize = 6;
+    // 8-bit value decremented by each node that forwards this
+    // packet. The packet is discarded when the value is 0.
+    pub const HOP_LIMIT: usize = 7;
+    // IPv6 address of the source node.
+    pub const SRC_ADDR: Field = 8..24;
+    // IPv6 address of the destination node.
+    pub const DST_ADDR: Field = 24..40;
+}
+pub const HEADER_LEN: usize = field::DST_ADDR.end;
+
+pub struct Packet<S: Storage + ?Sized> {
+    inner: Buf<S>,
 }
 
-impl Cidr {
-    /// The [solicited node prefix].
-    ///
-    /// [solicited node prefix]: https://tools.ietf.org/html/rfc4291#section-2.7.1
-    pub const SOLICITED_NODE_PREFIX: Cidr = Cidr {
-        address: Ipv6Addr::new(
-            0xff02, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, 0xff00, 0x0000,
-        ),
-        prefix_len: 104,
-    };
-
-    /// Create an IPv6 CIDR block from the given address and prefix length.
-    ///
-    /// # Panics
-    /// This function panics if the prefix length is larger than 128.
-    pub const fn new(address: Ipv6Addr, prefix_len: u8) -> Cidr {
-        assert!(prefix_len <= 128);
-        Cidr { address, prefix_len }
+impl<S: Storage> Packet<S> {
+    pub fn builder(payload: Buf<S>) -> Result<PacketBuilder<S>, BuildError> {
+        PacketBuilder::new(payload)
     }
 
-    /// Return the address of this IPv6 CIDR block.
-    pub const fn address(&self) -> Ipv6Addr {
-        self.address
-    }
-
-    /// Return the prefix length of this IPv6 CIDR block.
-    pub const fn prefix_len(&self) -> u8 {
-        self.prefix_len
-    }
-
-    /// Query whether the subnetwork described by this IPv6 CIDR block contains
-    /// the given address.
-    pub fn contains_addr(&self, addr: &Ipv6Addr) -> bool {
-        // right shift by 128 is not legal
-        if self.prefix_len == 0 {
-            return true;
+    pub fn parse(raw: Buf<S>) -> Result<Packet<S>, ParseError> {
+        let packet = Packet { inner: raw };
+        let len = packet.inner.len();
+        if len < field::DST_ADDR.end || len < packet.total_len() {
+            return Err(ParseError::PacketTooShort);
         }
-
-        self.address.mask(self.prefix_len) == addr.mask(self.prefix_len)
-    }
-
-    /// Query whether the subnetwork described by this IPV6 CIDR block contains
-    /// the subnetwork described by the given IPv6 CIDR block.
-    pub fn contains_subnet(&self, subnet: &Cidr) -> bool {
-        self.prefix_len <= subnet.prefix_len && self.contains_addr(&subnet.address)
+        if packet.version() != 6 {
+            return Err(ParseError::VersionInvalid);
+        }
+        Ok(packet)
     }
 }
 
-impl fmt::Display for Cidr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // https://tools.ietf.org/html/rfc4291#section-2.3
-        write!(f, "{}/{}", self.address, self.prefix_len)
+impl<S: Storage + ?Sized> WireBuf for Packet<S> {
+    type Storage = S;
+
+    const HEADER_LEN: usize = HEADER_LEN;
+
+    fn into_inner(self) -> Buf<S>
+    where
+        S: Sized,
+    {
+        self.inner
     }
+
+    fn into_payload(self) -> Buf<S>
+    where
+        S: Sized,
+    {
+        let range = self.payload_range();
+        self.inner.slice_into(range)
+    }
+}
+
+impl<S: Storage + ?Sized> Packet<S> {
+    pub const fn header_len(&self) -> usize {
+        field::DST_ADDR.end
+    }
+
+    pub fn version(&self) -> u8 {
+        self.inner.data()[field::VER_TC_FLOW.start] >> 4
+    }
+
+    /// Return the traffic class.
+    pub fn traffic_class(&self) -> u8 {
+        ((NetworkEndian::read_u16(&self.inner.data()[0..2]) & 0x0ff0) >> 4) as u8
+    }
+
+    /// Return the flow label field.
+    pub fn flow_label(&self) -> u32 {
+        NetworkEndian::read_u24(&self.inner.data()[1..4]) & 0x000fffff
+    }
+
+    /// Return the payload length field.
+    pub fn payload_len(&self) -> u16 {
+        NetworkEndian::read_u16(&self.inner.data()[field::LENGTH])
+    }
+
+    /// Return the payload length added to the known header length.
+    pub fn total_len(&self) -> usize {
+        self.header_len() + self.payload_len() as usize
+    }
+
+    /// Return the next header field.
+    pub fn next_header(&self) -> Protocol {
+        let data = self.inner.data();
+        Protocol::from(data[field::NXT_HDR])
+    }
+
+    /// Return the hop limit field.
+    pub fn hop_limit(&self) -> u8 {
+        let data = self.inner.data();
+        data[field::HOP_LIMIT]
+    }
+
+    /// Return the source address field.
+    pub fn src_addr(&self) -> Ipv6Addr {
+        let data = self.inner.data();
+        Ipv6Addr::from_bytes(&data[field::SRC_ADDR])
+    }
+
+    /// Return the destination address field.
+    pub fn dst_addr(&self) -> Ipv6Addr {
+        let data = self.inner.data();
+        Ipv6Addr::from_bytes(&data[field::DST_ADDR])
+    }
+
+    fn payload_range(&self) -> Range<usize> {
+        self.header_len()..self.total_len()
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.inner.data()[self.payload_range()]
+    }
+}
+
+pub struct PacketBuilder<S: Storage + ?Sized> {
+    inner: Buf<S>,
+}
+
+impl<S: Storage> PacketBuilder<S> {
+    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
+        let len = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLong)?;
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        let mut packet = PacketBuilder { inner };
+
+        packet.set_version(6);
+        packet.set_traffic_class(0);
+        packet.set_flow_label(0);
+        packet.set_payload_len(len);
+        packet.set_hop_limit(64);
+        packet.set_next_header(Protocol::Unknown(0));
+
+        Ok(packet)
+    }
+}
+
+impl<S: Storage + ?Sized> PacketBuilder<S> {
+    fn set_version(&mut self, value: u8) {
+        let data = self.inner.data_mut();
+        // Make sure to retain the lower order bits which contain
+        // the higher order bits of the traffic class
+        data[0] = (data[0] & 0x0f) | ((value & 0x0f) << 4);
+    }
+
+    /// Set the traffic class field.
+    fn set_traffic_class(&mut self, value: u8) {
+        let data = self.inner.data_mut();
+        // Put the higher order 4-bits of value in the lower order
+        // 4-bits of the first byte
+        data[0] = (data[0] & 0xf0) | ((value & 0xf0) >> 4);
+        // Put the lower order 4-bits of value in the higher order
+        // 4-bits of the second byte
+        data[1] = (data[1] & 0x0f) | ((value & 0x0f) << 4);
+    }
+
+    /// Set the flow label field.
+    fn set_flow_label(&mut self, value: u32) {
+        let data = self.inner.data_mut();
+        // Retain the lower order 4-bits of the traffic class
+        let raw = (((data[1] & 0xf0) as u32) << 16) | (value & 0x0fffff);
+        NetworkEndian::write_u24(&mut data[1..4], raw);
+    }
+
+    /// Set the payload length field.
+    fn set_payload_len(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::LENGTH], value);
+    }
+
+    /// Set the next header field.
+    fn set_next_header(&mut self, value: Protocol) {
+        self.inner.data_mut()[field::NXT_HDR] = value.into();
+    }
+
+    /// Set the hop limit field.
+    fn set_hop_limit(&mut self, value: u8) {
+        self.inner.data_mut()[field::HOP_LIMIT] = value;
+    }
+
+    /// Set the source address field.
+    fn set_src_addr(&mut self, value: Ipv6Addr) {
+        let data = self.inner.data_mut();
+        data[field::SRC_ADDR].copy_from_slice(&value.octets());
+    }
+
+    /// Set the destination address field.
+    fn set_dst_addr(&mut self, value: Ipv6Addr) {
+        let data = self.inner.data_mut();
+        data[field::DST_ADDR].copy_from_slice(&value.octets());
+    }
+}
+
+impl<S: Storage> PacketBuilder<S> {
+    pub fn addr(mut self, addr: Ends<Ipv6Addr>) -> Self {
+        let (Src(src), Dst(dst)) = addr;
+        self.set_src_addr(src);
+        self.set_dst_addr(dst);
+        self
+    }
+
+    pub fn hop_limit(mut self, hop_limit: u8) -> Self {
+        self.set_hop_limit(hop_limit);
+        self
+    }
+
+    pub fn next_header(mut self, prot: Protocol) -> Self {
+        self.set_next_header(prot);
+        self
+    }
+
+    pub fn build(self) -> Packet<S> {
+        Packet { inner: self.inner }
+    }
+}
+
+#[derive(Debug)]
+pub enum BuildError {
+    PayloadTooLong,
 }
 
 #[cfg(test)]
-pub(crate) mod test {
-    use core::net::Ipv4Addr;
-    use std::format;
+mod tests {
+    use std::vec;
 
-    use super::{Cidr, Ipv6Addr};
-    use crate::wire::ip::{v6::Ipv6AddrExt, IpAddrExt};
+    use super::*;
 
-    #[allow(unused)]
-    pub(crate) const MOCK_IP_ADDR_1: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-    #[allow(unused)]
-    pub(crate) const MOCK_IP_ADDR_2: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
-    #[allow(unused)]
-    pub(crate) const MOCK_IP_ADDR_3: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 3);
-    #[allow(unused)]
-    pub(crate) const MOCK_IP_ADDR_4: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 4);
-    #[allow(unused)]
-    pub(crate) const MOCK_UNSPECIFIED: Ipv6Addr = Ipv6Addr::UNSPECIFIED;
-
-    const LINK_LOCAL_ADDR: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-    const UNIQUE_LOCAL_ADDR: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 201, 1, 1, 1, 1);
-    const GLOBAL_UNICAST_ADDR: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0x3, 0, 0, 0, 0, 1);
+    const REPR_PACKET_BYTES: [u8; 52] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x11, 0x40, 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x02, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00,
+        0x0c, 0x02, 0x4e, 0xff, 0xff, 0xff, 0xff,
+    ];
+    const REPR_PAYLOAD_BYTES: [u8; 12] = [
+        0x00, 0x01, 0x00, 0x02, 0x00, 0x0c, 0x02, 0x4e, 0xff, 0xff, 0xff, 0xff,
+    ];
 
     #[test]
-    fn test_basic_multicast() {
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_ROUTERS.is_unspecified());
-        assert!(Ipv6Addr::LINK_LOCAL_ALL_ROUTERS.is_multicast());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_ROUTERS.is_link_local());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_ROUTERS.is_loopback());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_ROUTERS.is_unique_local());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_ROUTERS.is_global_unicast());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_NODES.is_unspecified());
-        assert!(Ipv6Addr::LINK_LOCAL_ALL_NODES.is_multicast());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_NODES.is_link_local());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_NODES.is_loopback());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_NODES.is_unique_local());
-        assert!(!Ipv6Addr::LINK_LOCAL_ALL_NODES.is_global_unicast());
+    fn test_packet_deconstruction() {
+        let mut pb = REPR_PACKET_BYTES;
+        let packet = Packet { inner: Buf::full(&mut pb[..]) };
+
+        assert_eq!(packet.version(), 6);
+        assert_eq!(packet.traffic_class(), 0);
+        assert_eq!(packet.flow_label(), 0);
+        assert_eq!(packet.total_len(), 0x34);
+        assert_eq!(packet.payload_len() as usize, REPR_PAYLOAD_BYTES.len());
+        assert_eq!(packet.next_header(), Protocol::Udp);
+        assert_eq!(packet.hop_limit(), 0x40);
+        assert_eq!(packet.src_addr(), Ipv6Addr::LINK_LOCAL_ALL_ROUTERS);
+        assert_eq!(packet.dst_addr(), Ipv6Addr::LINK_LOCAL_ALL_NODES);
+        assert_eq!(packet.payload(), &REPR_PAYLOAD_BYTES[..]);
     }
 
     #[test]
-    fn test_basic_link_local() {
-        assert!(!LINK_LOCAL_ADDR.is_unspecified());
-        assert!(!LINK_LOCAL_ADDR.is_multicast());
-        assert!(LINK_LOCAL_ADDR.is_link_local());
-        assert!(!LINK_LOCAL_ADDR.is_loopback());
-        assert!(!LINK_LOCAL_ADDR.is_unique_local());
-        assert!(!LINK_LOCAL_ADDR.is_global_unicast());
+    fn test_packet_construction() {
+        let bytes = vec![0xff; 52];
+        let mut payload = Buf::builder(bytes).reserve_for::<Packet<_>>().build();
+        payload.append_slice(&REPR_PAYLOAD_BYTES);
+
+        let packet = Packet::builder(payload).unwrap();
+        let packet = packet
+            .next_header(Protocol::Udp)
+            .hop_limit(0x40)
+            .addr((
+                Src(Ipv6Addr::LINK_LOCAL_ALL_ROUTERS),
+                Dst(Ipv6Addr::LINK_LOCAL_ALL_NODES),
+            ))
+            .build();
+
+        assert_eq!(packet.into_inner().data(), &REPR_PACKET_BYTES);
     }
 
     #[test]
-    fn test_basic_loopback() {
-        assert!(!Ipv6Addr::LOOPBACK.is_unspecified());
-        assert!(!Ipv6Addr::LOOPBACK.is_multicast());
-        assert!(!Ipv6Addr::LOOPBACK.is_link_local());
-        assert!(Ipv6Addr::LOOPBACK.is_loopback());
-        assert!(!Ipv6Addr::LOOPBACK.is_unique_local());
-        assert!(!Ipv6Addr::LOOPBACK.is_global_unicast());
+    fn test_overlong() {
+        let mut pb = vec![];
+        pb.extend(REPR_PACKET_BYTES);
+        pb.push(0);
+        let packet = Packet { inner: Buf::full(&mut pb[..]) };
+
+        assert_eq!(packet.payload().len(), REPR_PAYLOAD_BYTES.len());
     }
 
     #[test]
-    fn test_unique_local() {
-        assert!(!UNIQUE_LOCAL_ADDR.is_unspecified());
-        assert!(!UNIQUE_LOCAL_ADDR.is_multicast());
-        assert!(!UNIQUE_LOCAL_ADDR.is_link_local());
-        assert!(!UNIQUE_LOCAL_ADDR.is_loopback());
-        assert!(UNIQUE_LOCAL_ADDR.is_unique_local());
-        assert!(!UNIQUE_LOCAL_ADDR.is_global_unicast());
+    fn test_repr_parse_valid() {
+        let mut pb = REPR_PACKET_BYTES;
+        let packet = Packet::parse(Buf::full(&mut pb[..])).unwrap();
+        assert_eq!(packet.src_addr(), Ipv6Addr::LINK_LOCAL_ALL_ROUTERS);
+        assert_eq!(packet.dst_addr(), Ipv6Addr::LINK_LOCAL_ALL_NODES);
+        assert_eq!(packet.next_header(), Protocol::Udp);
+        assert_eq!(packet.payload_len(), 12);
+        assert_eq!(packet.hop_limit(), 64);
     }
 
     #[test]
-    fn test_global_unicast() {
-        assert!(!GLOBAL_UNICAST_ADDR.is_unspecified());
-        assert!(!GLOBAL_UNICAST_ADDR.is_multicast());
-        assert!(!GLOBAL_UNICAST_ADDR.is_link_local());
-        assert!(!GLOBAL_UNICAST_ADDR.is_loopback());
-        assert!(!GLOBAL_UNICAST_ADDR.is_unique_local());
-        assert!(GLOBAL_UNICAST_ADDR.is_global_unicast());
-    }
-
-    #[test]
-    fn test_address_format() {
-        assert_eq!("ff02::1", format!("{}", Ipv6Addr::LINK_LOCAL_ALL_NODES));
-        assert_eq!("fe80::1", format!("{LINK_LOCAL_ADDR}"));
-        assert_eq!(
-            "fe80::7f00:0:1",
-            format!(
-                "{}",
-                Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0x7f00, 0x0000, 0x0001)
-            )
-        );
-        assert_eq!("::", format!("{}", Ipv6Addr::UNSPECIFIED));
-        assert_eq!("::1", format!("{}", Ipv6Addr::LOOPBACK));
-
-        assert_eq!(
-            "::ffff:192.168.1.1",
-            format!(
-                "{}",
-                Ipv6Addr::from_ipv4_mapped(Ipv4Addr::new(192, 168, 1, 1))
-            )
-        );
-    }
-
-    #[test]
-    fn test_new() {
-        assert_eq!(
-            Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1),
-            Ipv6Addr::LINK_LOCAL_ALL_NODES
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 2),
-            Ipv6Addr::LINK_LOCAL_ALL_ROUTERS
-        );
-        assert_eq!(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), Ipv6Addr::LOOPBACK);
-        assert_eq!(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), Ipv6Addr::UNSPECIFIED);
-        assert_eq!(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), LINK_LOCAL_ADDR);
-    }
-
-    #[test]
-    fn test_from_parts() {
-        assert_eq!(
-            Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1),
-            Ipv6Addr::LINK_LOCAL_ALL_NODES
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 2),
-            Ipv6Addr::LINK_LOCAL_ALL_ROUTERS
-        );
-        assert_eq!(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), Ipv6Addr::LOOPBACK);
-        assert_eq!(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), Ipv6Addr::UNSPECIFIED);
-        assert_eq!(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), LINK_LOCAL_ADDR);
-    }
-
-    #[test]
-    fn test_mask() {
-        let addr = Ipv6Addr::new(0x0123, 0x4567, 0x89ab, 0, 0, 0, 0, 1);
-        assert_eq!(addr.mask(11).octets(), [
-            0x01, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ]);
-        assert_eq!(addr.mask(15).octets(), [
-            0x01, 0x22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ]);
-        assert_eq!(addr.mask(26).octets(), [
-            0x01, 0x23, 0x45, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ]);
-        assert_eq!(addr.mask(128).octets(), [
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1
-        ]);
-        assert_eq!(addr.mask(127).octets(), [
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ]);
-    }
-
-    #[test]
-    fn test_is_ipv4_mapped() {
-        assert!(!Ipv6Addr::UNSPECIFIED.is_ipv4_mapped());
-        assert!(Ipv6Addr::from_ipv4_mapped(Ipv4Addr::new(192, 168, 1, 1)).is_ipv4_mapped());
-    }
-
-    #[test]
-    fn test_as_ipv4() {
-        assert_eq!(None, Ipv6Addr::UNSPECIFIED.to_ipv4_mapped());
-
-        let ipv4 = Ipv4Addr::new(192, 168, 1, 1);
-        assert_eq!(
-            Some(ipv4),
-            Ipv6Addr::from_ipv4_mapped(ipv4).to_ipv4_mapped()
-        );
-    }
-
-    #[test]
-    fn test_from_ipv4_address() {
-        assert_eq!(
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, (192 << 8) + 168, (1 << 8) + 1),
-            Ipv6Addr::from_ipv4_mapped(Ipv4Addr::new(192, 168, 1, 1))
-        );
-        assert_eq!(
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, (222 << 8) + 1, (41 << 8) + 90),
-            Ipv6Addr::from_ipv4_mapped(Ipv4Addr::new(222, 1, 41, 90))
-        );
-    }
-
-    #[test]
-    fn test_cidr() {
-        // fe80::1/56
-        // 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-        let cidr = Cidr::new(LINK_LOCAL_ADDR, 56);
-
-        let inside_subnet = [
-            // fe80::2
-            [
-                0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x02,
-            ],
-            // fe80::1122:3344:5566:7788
-            [
-                0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
-                0x77, 0x88,
-            ],
-            // fe80::ff00:0:0:0
-            [
-                0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00,
-            ],
-            // fe80::ff
-            [
-                0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0xff,
-            ],
-        ];
-
-        let outside_subnet = [
-            // fe80:0:0:101::1
-            [
-                0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x01,
-            ],
-            // ::1
-            [
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x01,
-            ],
-            // ff02::1
-            [
-                0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x01,
-            ],
-            // ff02::2
-            [
-                0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x02,
-            ],
-        ];
-
-        let subnets = [
-            // fe80::ffff:ffff:ffff:ffff/65
-            (
-                [
-                    0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff,
-                ],
-                65,
-            ),
-            // fe80::1/128
-            (
-                [
-                    0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x01,
-                ],
-                128,
-            ),
-            // fe80::1234:5678/96
-            (
-                [
-                    0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12,
-                    0x34, 0x56, 0x78,
-                ],
-                96,
-            ),
-        ];
-
-        let not_subnets = [
-            // fe80::101:ffff:ffff:ffff:ffff/55
-            (
-                [
-                    0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff,
-                ],
-                55,
-            ),
-            // fe80::101:ffff:ffff:ffff:ffff/56
-            (
-                [
-                    0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff,
-                ],
-                56,
-            ),
-            // fe80::101:ffff:ffff:ffff:ffff/57
-            (
-                [
-                    0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff,
-                ],
-                57,
-            ),
-            // ::1/128
-            (
-                [
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x01,
-                ],
-                128,
-            ),
-        ];
-
-        for addr in inside_subnet.into_iter().map(Ipv6Addr::from) {
-            assert!(cidr.contains_addr(&addr));
-        }
-
-        for addr in outside_subnet.into_iter().map(Ipv6Addr::from) {
-            assert!(!cidr.contains_addr(&addr));
-        }
-
-        for subnet in subnets
-            .into_iter()
-            .map(|(a, p)| Cidr::new(Ipv6Addr::from(a), p))
-        {
-            assert!(cidr.contains_subnet(&subnet));
-        }
-
-        for subnet in not_subnets
-            .into_iter()
-            .map(|(a, p)| Cidr::new(Ipv6Addr::from(a), p))
-        {
-            assert!(!cidr.contains_subnet(&subnet));
-        }
-
-        let cidr_without_prefix = Cidr::new(LINK_LOCAL_ADDR, 0);
-        assert!(cidr_without_prefix.contains_addr(&Ipv6Addr::LOOPBACK));
-    }
-
-    #[test]
-    fn test_scope() {
-        use super::*;
-        assert_eq!(
-            Ipv6Addr::new(0xff01, 0, 0, 0, 0, 0, 0, 1).multicast_scope(),
-            Some(Ipv6MulticastScope::InterfaceLocal)
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1).multicast_scope(),
-            Some(Ipv6MulticastScope::LinkLocal)
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff03, 0, 0, 0, 0, 0, 0, 1).multicast_scope(),
-            Some(Ipv6MulticastScope::RealmLocal)
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff04, 0, 0, 0, 0, 0, 0, 1).multicast_scope(),
-            Some(Ipv6MulticastScope::AdminLocal)
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 1).multicast_scope(),
-            Some(Ipv6MulticastScope::SiteLocal)
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff08, 0, 0, 0, 0, 0, 0, 1).multicast_scope(),
-            Some(Ipv6MulticastScope::OrganizationLocal)
-        );
-        assert_eq!(
-            Ipv6Addr::new(0xff0e, 0, 0, 0, 0, 0, 0, 1).multicast_scope(),
-            Some(Ipv6MulticastScope::Global)
-        );
-
-        assert_eq!(
-            Ipv6Addr::LINK_LOCAL_ALL_NODES.multicast_scope(),
-            Some(Ipv6MulticastScope::LinkLocal)
-        );
-
-        // For source address selection, unicast addresses also have a scope:
-        assert_eq!(
-            LINK_LOCAL_ADDR.unicast_scope(),
-            Some(Ipv6MulticastScope::LinkLocal)
-        );
-        assert_eq!(
-            GLOBAL_UNICAST_ADDR.unicast_scope(),
-            Some(Ipv6MulticastScope::Global)
-        );
-        assert_eq!(
-            UNIQUE_LOCAL_ADDR.unicast_scope(),
-            Some(Ipv6MulticastScope::Global)
-        );
+    fn test_repr_parse_smaller_than_header() {
+        let mut bytes = [0; 40];
+        bytes[0] = 0x09;
+        assert!(Packet::parse(Buf::full(&mut bytes[..])).is_err());
     }
 }
