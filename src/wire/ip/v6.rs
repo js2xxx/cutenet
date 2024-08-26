@@ -63,17 +63,7 @@ impl Ipv6AddrExt for Ipv6Addr {
     }
 
     fn from_ipv4_mapped(v4: Ipv4Addr) -> Self {
-        let [a, b, c, d] = v4.octets();
-        Ipv6Addr::new(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0xffff,
-            u16::from_be_bytes([a, b]),
-            u16::from_be_bytes([c, d]),
-        )
+        v4.to_ipv6_mapped()
     }
 }
 

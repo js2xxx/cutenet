@@ -108,12 +108,18 @@ fn mask_impl<const N: usize>(input: [u8; N], prefix_len: u8) -> [u8; N] {
 }
 
 pub trait IpAddrExt {
+    fn from_bytes(bytes: &[u8]) -> Self;
+
     fn mask(&self, prefix_len: u8) -> Self;
 
     fn prefix_len(&self) -> Option<u8>;
 }
 
 impl IpAddrExt for Ipv4Addr {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        From::<[u8; 4]>::from(bytes.try_into().unwrap())
+    }
+
     fn mask(&self, prefix_len: u8) -> Self {
         Ipv4Addr::from(mask_impl(self.octets(), prefix_len))
     }
@@ -124,6 +130,10 @@ impl IpAddrExt for Ipv4Addr {
 }
 
 impl IpAddrExt for Ipv6Addr {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        From::<[u8; 16]>::from(bytes.try_into().unwrap())
+    }
+
     fn mask(&self, prefix_len: u8) -> Self {
         Ipv6Addr::from(mask_impl(self.octets(), prefix_len))
     }
@@ -134,6 +144,14 @@ impl IpAddrExt for Ipv6Addr {
 }
 
 impl IpAddrExt for IpAddr {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        match bytes.len() {
+            4 => IpAddr::V4(Ipv4Addr::from_bytes(bytes)),
+            16 => IpAddr::V6(Ipv6Addr::from_bytes(bytes)),
+            _ => panic!("invalid byte length for IP addresses"),
+        }
+    }
+
     fn mask(&self, prefix_len: u8) -> Self {
         match self {
             IpAddr::V4(v4) => IpAddr::V4(v4.mask(prefix_len)),
@@ -153,4 +171,6 @@ impl IpAddrExt for IpAddr {
 pub enum ParseError {
     VersionUnknown,
     NetmaskInvalid,
+    PacketTooShort,
+    ChecksumInvalid,
 }

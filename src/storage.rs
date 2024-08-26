@@ -1,4 +1,4 @@
-use core::ops::DerefMut;
+use core::ops::{Bound, DerefMut, RangeBounds};
 
 use stable_deref_trait::StableDeref;
 
@@ -33,7 +33,7 @@ impl<S: Storage> ReserveBuf<S> {
     }
 
     pub fn reserve_for<W: WireBuf<Storage = S>>(self) -> Self {
-        self.add_reservation(W::RESERVE)
+        self.add_reservation(W::HEADER_LEN)
     }
 
     pub fn build(self) -> Buf<S> {
@@ -213,31 +213,41 @@ impl<S: Storage + ?Sized> Buf<S> {
         // SAFETY: slice.len() == N
         unsafe { slice.unwrap_unchecked() }
     }
+}
+
+impl<S: Storage> Buf<S> {
+    fn bounds(&self, s: impl RangeBounds<usize>) -> [usize; 2] {
+        [
+            match s.start_bound() {
+                Bound::Included(&bound) => self.head + bound,
+                Bound::Excluded(&bound) => self.head + bound + 1,
+                Bound::Unbounded => self.head,
+            },
+            match s.end_bound() {
+                Bound::Included(&bound) => self.head + bound - 1,
+                Bound::Excluded(&bound) => self.head + bound,
+                Bound::Unbounded => self.tail,
+            },
+        ]
+    }
 
     /// # Safety
     ///
-    /// `size` must not exceeds `len()`.
-    pub unsafe fn append_head_unchecked(&mut self, size: usize) -> &mut [u8] {
-        let start = self.head;
-        self.head += size;
-        // SAFETY: 0 <= start (old head) <= head <= tail <= storage.len()
-        unsafe { self.storage.get_unchecked_mut(start..self.head) }
+    /// `s` must reside with the current range (0..len).
+    pub unsafe fn slice_into_unchecked(mut self, s: impl RangeBounds<usize>) -> Self {
+        let [head, tail] = self.bounds(s);
+        (self.head, self.tail) = (head, tail);
+        self
     }
 
-    pub fn append_head(&mut self, size: usize) -> &mut [u8] {
+    pub fn slice_into(mut self, s: impl RangeBounds<usize>) -> Self {
+        let [head, tail] = self.bounds(s);
         assert!(
-            size <= self.len(),
-            "head-appending failed: size ({size}) must not exceeds len ({})",
-            self.len(),
+            self.head <= head && head <= tail && tail <= self.tail,
+            "s must reside within the range (0..len)"
         );
-        // SAFETY: size <= len().
-        unsafe { self.append_head_unchecked(size) }
-    }
-
-    pub fn append_head_fixed<const N: usize>(&mut self) -> &mut [u8; N] {
-        let slice = self.append_head(N).try_into();
-        // SAFETY: slice.len() == N
-        unsafe { slice.unwrap_unchecked() }
+        (self.head, self.tail) = (head, tail);
+        self
     }
 }
 
@@ -267,11 +277,10 @@ mod tests {
     #[test]
     fn append_prepend() {
         let mut buf = Buf::builder(vec![0; 10]).add_reservation(5).build();
-        *buf.prepend_fixed() = [0, 1, 2];
-        *buf.append_head_fixed() = [10];
+        *buf.prepend_fixed() = [1, 2];
         *buf.append_fixed() = [3, 4, 5];
 
-        assert_eq!(buf.head(), &[0, 0, 10]);
+        assert_eq!(buf.head(), &[0, 0, 0]);
         assert_eq!(buf.data(), &[1, 2, 3, 4, 5]);
         assert_eq!(buf.tail(), &[0, 0]);
     }

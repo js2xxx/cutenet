@@ -22,7 +22,7 @@ pub type Ends<T> = (Src<T>, Dst<T>);
 pub trait WireBuf {
     type Storage: Storage + ?Sized;
 
-    const RESERVE: usize;
+    const HEADER_LEN: usize;
 
     fn into_inner(self) -> Buf<Self::Storage>
     where

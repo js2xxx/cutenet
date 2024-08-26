@@ -94,7 +94,7 @@ impl<S: Storage> Frame<S> {
 impl<S: Storage + ?Sized> WireBuf for Frame<S> {
     type Storage = S;
 
-    const RESERVE: usize = HEADER_LEN;
+    const HEADER_LEN: usize = HEADER_LEN;
 
     fn into_inner(self) -> Buf<Self::Storage>
     where
@@ -103,12 +103,11 @@ impl<S: Storage + ?Sized> WireBuf for Frame<S> {
         self.inner
     }
 
-    fn into_payload(mut self) -> Buf<Self::Storage>
+    fn into_payload(self) -> Buf<Self::Storage>
     where
         S: Sized,
     {
-        self.inner.append_head_fixed::<HEADER_LEN>();
-        self.inner
+        self.inner.slice_into(HEADER_LEN..)
     }
 }
 
