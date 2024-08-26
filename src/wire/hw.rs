@@ -4,6 +4,7 @@ use super::{EthernetAddr, Ieee802154Addr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HwAddr {
+    Ip,
     Ethernet(EthernetAddr),
     Ieee802154(Ieee802154Addr),
 }
@@ -24,15 +25,23 @@ impl HwAddr {
     pub fn ethernet(self) -> Option<EthernetAddr> {
         match self {
             HwAddr::Ethernet(eth) => Some(eth),
-            HwAddr::Ieee802154(_) => None,
+            HwAddr::Ip | HwAddr::Ieee802154(_) => None,
         }
+    }
+
+    pub fn unwrap_ethernet(self) -> EthernetAddr {
+        self.ethernet().expect("expeced Ethernet address")
     }
 
     pub fn ieee802154(self) -> Option<Ieee802154Addr> {
         match self {
-            HwAddr::Ethernet(_) => None,
             HwAddr::Ieee802154(ieee) => Some(ieee),
+            HwAddr::Ip | HwAddr::Ethernet(_) => None,
         }
+    }
+
+    pub fn unwrap_ieee802154(self) -> Ieee802154Addr {
+        self.ieee802154().expect("expeced IEEE.802154 address")
     }
 }
 
@@ -97,6 +106,10 @@ impl fmt::Display for RawHwAddr {
 impl From<HwAddr> for RawHwAddr {
     fn from(value: HwAddr) -> Self {
         match value {
+            HwAddr::Ip => RawHwAddr {
+                len: 0,
+                data: [0; HWADDR_MAX_LEN],
+            },
             HwAddr::Ethernet(eth) => eth.into(),
             HwAddr::Ieee802154(ieee) => ieee.into(),
         }

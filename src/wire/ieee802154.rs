@@ -768,6 +768,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
+    fn buffer_len(&self) -> usize {
+        self.header_len() + self.payload_len()
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let header_len = self.header_len();
 
@@ -876,7 +880,7 @@ mod tests {
         let buffer_len = repr.header_len();
 
         let buf = Buf::builder(&mut buffer[..buffer_len])
-            .reserve_for(repr)
+            .reserve_for(&repr)
             .build();
 
         let buf: Buf<_> = repr.sub_payload(|_| buf).build(&mut false.into()).unwrap();

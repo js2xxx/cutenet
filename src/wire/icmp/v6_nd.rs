@@ -314,7 +314,7 @@ mod tests {
         let repr = create_repr(NoPayloadHolder);
 
         let bytes = vec![0x0; 24];
-        let buf = Buf::builder(bytes).reserve_for(repr);
+        let buf = Buf::builder(bytes).reserve_for(&repr);
 
         let packet: Buf<_> = repr.sub_no_payload(|_| buf).build(&mut { CX }).unwrap();
         assert_eq!(packet.data(), &ROUTER_ADVERT_BYTES[..]);

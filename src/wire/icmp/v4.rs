@@ -304,6 +304,17 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
+    fn buffer_len(&self) -> usize {
+        match self {
+            Packet::EchoRequest { payload, .. } | Packet::EchoReply { payload, .. } => {
+                field::ECHO_SEQNO.end + payload.buffer_len()
+            }
+            Packet::DstUnreachable { payload, .. } | Packet::TimeExceeded { payload, .. } => {
+                field::UNUSED.end + payload.buffer_len()
+            }
+        }
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let do_checksum = cx.do_checksum;
         let checksum = |mut packet: RawPacket<&mut [u8]>| {
@@ -399,7 +410,7 @@ mod tests {
         };
 
         let bytes = vec![0xa5; 12];
-        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&ECHO_DATA_BYTES);
 
         let packet = tag

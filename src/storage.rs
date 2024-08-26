@@ -5,7 +5,7 @@ use core::{
 
 use stable_deref_trait::StableDeref;
 
-use crate::wire::{PayloadHolder, WireBuild};
+use crate::wire::WireBuild;
 
 pub trait Storage: DerefMut<Target = [u8]> + StableDeref {}
 impl<T: DerefMut<Target = [u8]> + StableDeref + ?Sized> Storage for T {}
@@ -43,7 +43,7 @@ impl<S: Storage> ReserveBuf<S> {
         self
     }
 
-    pub fn reserve_for<W: WireBuild<Payload = PayloadHolder> + Copy>(self, w: W) -> Self {
+    pub fn reserve_for<W: WireBuild>(self, w: &W) -> Self {
         let payload_len = w.payload_len();
         self.add_reservation(w.buffer_len() - payload_len)
     }
@@ -87,6 +87,16 @@ impl<S: Storage + ?Sized> ReserveBuf<S> {
         // SAFETY: size <= len() - reserved.
         unsafe { self.reserve_unchecked(size) };
     }
+
+    pub fn try_reserve(&mut self, size: usize) -> bool {
+        if size <= self.storage.len() - self.reserved {
+            // SAFETY: size <= len() - reserved.
+            unsafe { self.reserve_unchecked(size) };
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // INVARIANT: 0 <= head <= tail <= storage.len()
@@ -111,6 +121,13 @@ impl<S: Storage> Buf<S> {
             head: 0,
             tail: storage.len(),
             storage,
+        }
+    }
+
+    pub fn reset(self) -> ReserveBuf<S> {
+        ReserveBuf {
+            reserved: 0,
+            storage: self.storage,
         }
     }
 }
@@ -210,6 +227,43 @@ impl<S: Storage + ?Sized> Buf<S> {
                 } else {
                     false
                 }
+            }
+        }
+    }
+
+    /// - Positive: moving towards the tail;
+    /// - Negative: moving towards the head.
+    pub fn move_truncate(&mut self, offset: isize) {
+        match offset.cmp(&0) {
+            cmp::Ordering::Equal => {}
+            cmp::Ordering::Greater => {
+                let offset = offset as usize;
+
+                let new_head = self.head + offset;
+                let new_tail = self.tail + offset;
+
+                let bleed = new_tail.saturating_sub(self.capacity());
+                let new_tail = new_tail - bleed;
+                let new_head = new_head.min(new_tail);
+
+                if bleed < self.len() && new_head < self.capacity() {
+                    self.storage
+                        .copy_within(self.head..(self.tail - bleed), new_head);
+                }
+                (self.head, self.tail) = (new_head, new_tail);
+            }
+            cmp::Ordering::Less => {
+                let offset = -offset as usize;
+
+                let bleed = offset.saturating_sub(self.head);
+                let new_head = self.head + bleed - offset;
+                let new_tail = self.tail.saturating_sub(offset);
+
+                if bleed < self.len() && new_tail > 0 {
+                    self.storage
+                        .copy_within((self.head + bleed)..self.tail, new_head);
+                }
+                (self.head, self.tail) = (new_head, new_tail);
             }
         }
     }
@@ -347,5 +401,22 @@ mod tests {
         assert_eq!(buf.head(), &[0, 0, 0]);
         assert_eq!(buf.data(), &[1, 2, 3, 4, 5]);
         assert_eq!(buf.tail(), &[0, 0]);
+    }
+
+    #[test]
+    fn move_truncate() {
+        let mut buf = Buf::builder(vec![0; 10]).add_reservation(5).build();
+        *buf.prepend_fixed() = [1, 2];
+        *buf.append_fixed() = [3, 4, 5];
+
+        buf.move_truncate(-2);
+        assert_eq!(buf.data(), &[1, 2, 3, 4, 5]);
+        buf.move_truncate(-3);
+        assert_eq!(buf.data(), &[3, 4, 5]);
+
+        buf.move_truncate(4);
+        assert_eq!(buf.data(), &[3, 4, 5]);
+        buf.move_truncate(4);
+        assert_eq!(buf.data(), &[3, 4]);
     }
 }

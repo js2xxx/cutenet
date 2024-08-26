@@ -427,6 +427,14 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
+    fn buffer_len(&self) -> usize {
+        self.header_len() + self.payload_len()
+    }
+
+    fn header_len(&self) -> usize {
+        self.header_len()
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let header_len = self.header_len();
 
@@ -623,7 +631,7 @@ mod tests {
     fn test_construct() {
         let repr = packet_repr(PayloadHolder(PAYLOAD_BYTES.len()));
         let bytes = vec![0xa5; repr.buffer_len()];
-        let mut payload = Buf::builder(bytes).reserve_for(repr).build();
+        let mut payload = Buf::builder(bytes).reserve_for(&repr).build();
         payload.append_slice(&PAYLOAD_BYTES);
 
         let packet = repr.sub_payload(|_| payload).build(&mut { CX }).unwrap();

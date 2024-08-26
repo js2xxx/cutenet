@@ -129,6 +129,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
+    fn buffer_len(&self) -> usize {
+        HEADER_LEN + self.payload_len()
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Frame {
             addr: Ends { src, dst },
@@ -143,6 +147,52 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
             frame.set_protocol(proto);
             Ok(())
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub enum EthernetPayload<#[wire] T, #[no_payload] U> {
+    Arp(#[wire] super::ArpPacket<U>),
+    Ip(#[wire] super::IpPacket<T>),
+}
+
+impl<T, U> EthernetPayload<T, U> {}
+
+impl<T, P, U> EthernetPayload<T, U>
+where
+    T: WireParse<Payload = P>,
+    P: PayloadParse<NoPayload = U> + super::Data,
+    U: NoPayload<Init = P>,
+{
+    pub fn parse(cx: &mut WireCx, protocol: Protocol, raw: P) -> Result<Self, ParseError<P>> {
+        Ok(match protocol {
+            Protocol::Arp => EthernetPayload::Arp(super::ArpPacket::parse(cx, raw)?),
+            Protocol::Ipv4 | Protocol::Ipv6 => {
+                EthernetPayload::Ip(super::IpPacket::parse(cx, protocol, raw)?)
+            }
+            _ => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
+        })
+    }
+}
+
+impl<T, P, U> WireBuild for EthernetPayload<T, U>
+where
+    T: WireBuild<Payload = P>,
+    P: PayloadBuild<NoPayload = U>,
+    U: NoPayload<Init = P>,
+{
+    fn buffer_len(&self) -> usize {
+        match self {
+            EthernetPayload::Arp(packet) => packet.buffer_len(),
+            EthernetPayload::Ip(packet) => packet.buffer_len(),
+        }
+    }
+
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+        match self {
+            EthernetPayload::Arp(packet) => packet.build(cx),
+            EthernetPayload::Ip(packet) => packet.build(cx),
+        }
     }
 }
 
@@ -208,7 +258,7 @@ mod test_ipv4 {
         };
 
         let bytes = vec![0xa5; 64];
-        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&PAYLOAD_BYTES[..]);
 
         let frame = tag
@@ -266,7 +316,7 @@ mod test_ipv6 {
 
         let bytes = vec![0xa5; 54];
 
-        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&PAYLOAD_BYTES[..]);
 
         let frame = tag

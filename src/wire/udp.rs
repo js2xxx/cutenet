@@ -125,6 +125,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
+    fn buffer_len(&self) -> usize {
+        HEADER_LEN + self.payload_len()
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet { port: Ends { src, dst }, payload } = self;
 
@@ -188,7 +192,7 @@ mod tests {
         };
 
         let bytes = vec![0xa5; 12];
-        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&PAYLOAD_BYTES[..]);
 
         let packet = tag.sub_payload(|_| payload).build(&mut { CX }).unwrap();
@@ -202,7 +206,7 @@ mod tests {
             payload: PayloadHolder(0),
         };
 
-        let payload = Buf::builder(vec![0; 8]).reserve_for(tag).build();
+        let payload = Buf::builder(vec![0; 8]).reserve_for(&tag).build();
         let packet = tag.sub_payload(|_| payload).build(&mut { CX }).unwrap();
         assert_eq!(packet.data(), &[0, 1, 0x7c, 0x89, 0, 8, 0xff, 0xff]);
     }
@@ -214,7 +218,7 @@ mod tests {
             payload: PayloadHolder(0),
         };
 
-        let payload = Buf::builder(vec![0; 8]).reserve_for(tag).build();
+        let payload = Buf::builder(vec![0; 8]).reserve_for(&tag).build();
         let packet = tag
             .sub_payload(|_| payload)
             .build(&mut false.into())

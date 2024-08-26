@@ -226,6 +226,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
+    fn buffer_len(&self) -> usize {
+        HEADER_LEN + self.payload_len()
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             addr,
@@ -257,6 +261,57 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         })
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub enum Ipv6Payload<#[wire] T, #[no_payload] U> {
+    Icmp(#[wire] crate::wire::Icmpv6Packet<T, U>),
+    Udp(#[wire] crate::wire::UdpPacket<T>),
+    Tcp(#[wire] crate::wire::TcpPacket<T>),
+}
+
+impl<T, P, U> Ipv6Payload<T, U>
+where
+    T: WireParse<Payload = P>,
+    P: PayloadParse<NoPayload = U> + Data,
+    U: NoPayload<Init = P>,
+{
+    pub fn parse(
+        cx: &mut WireCx,
+        next_header: Protocol,
+        raw: P,
+    ) -> Result<Self, ParseError<P>> {
+        Ok(match next_header {
+            Protocol::Icmpv6 => Ipv6Payload::Icmp(crate::wire::Icmpv6Packet::parse(cx, raw)?),
+            Protocol::Tcp => Ipv6Payload::Tcp(crate::wire::TcpPacket::parse(cx, raw)?),
+            Protocol::Udp => Ipv6Payload::Udp(crate::wire::UdpPacket::parse(cx, raw)?),
+            _ => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
+        })
+    }
+}
+
+impl<T, P, U> WireBuild for Ipv6Payload<T, U>
+where
+    T: WireBuild<Payload = P>,
+    P: PayloadBuild<NoPayload = U>,
+    U: NoPayload<Init = P>,
+{
+    fn buffer_len(&self) -> usize {
+        match self {
+            Ipv6Payload::Icmp(packet) => packet.buffer_len(),
+            Ipv6Payload::Tcp(packet) => packet.buffer_len(),
+            Ipv6Payload::Udp(packet) => packet.buffer_len(),
+        }
+    }
+
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+        match self {
+            Ipv6Payload::Icmp(packet) => packet.build(cx),
+            Ipv6Payload::Tcp(packet) => packet.build(cx),
+            Ipv6Payload::Udp(packet) => packet.build(cx),
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -304,7 +359,7 @@ mod tests {
         let tag = ip;
 
         let bytes = vec![0xff; 52];
-        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&REPR_PAYLOAD_BYTES);
 
         let packet = tag

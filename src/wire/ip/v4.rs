@@ -221,6 +221,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 }
 
 impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
+    fn buffer_len(&self) -> usize {
+        HEADER_LEN + self.payload_len()
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             addr,
@@ -269,6 +273,52 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             }
             Ok(())
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub enum Ipv4Payload<#[wire] T> {
+    Icmp(#[wire] crate::wire::Icmpv4Packet<T>),
+    Udp(#[wire] crate::wire::UdpPacket<T>),
+    Tcp(#[wire] crate::wire::TcpPacket<T>),
+}
+
+impl<T, P, U> Ipv4Payload<T>
+where
+    T: WireParse<Payload = P>,
+    P: PayloadParse<NoPayload = U> + Data,
+    U: NoPayload<Init = P>,
+{
+    pub fn parse(cx: &mut WireCx, next_header: Protocol, raw: P) -> Result<Self, ParseError<P>> {
+        Ok(match next_header {
+            Protocol::Icmp => Ipv4Payload::Icmp(crate::wire::Icmpv4Packet::parse(cx, raw)?),
+            Protocol::Tcp => Ipv4Payload::Tcp(crate::wire::TcpPacket::parse(cx, raw)?),
+            Protocol::Udp => Ipv4Payload::Udp(crate::wire::UdpPacket::parse(cx, raw)?),
+            _ => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
+        })
+    }
+}
+
+impl<T, P, U> WireBuild for Ipv4Payload<T>
+where
+    T: WireBuild<Payload = P>,
+    P: PayloadBuild<NoPayload = U>,
+    U: NoPayload<Init = P>,
+{
+    fn buffer_len(&self) -> usize {
+        match self {
+            Ipv4Payload::Icmp(packet) => packet.buffer_len(),
+            Ipv4Payload::Tcp(packet) => packet.buffer_len(),
+            Ipv4Payload::Udp(packet) => packet.buffer_len(),
+        }
+    }
+
+    fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
+        match self {
+            Ipv4Payload::Icmp(packet) => packet.build(cx),
+            Ipv4Payload::Tcp(packet) => packet.build(cx),
+            Ipv4Payload::Udp(packet) => packet.build(cx),
+        }
     }
 }
 
@@ -332,7 +382,7 @@ mod tests {
         };
 
         let bytes = vec![0xa5; 30];
-        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
         payload.append_slice(&PAYLOAD_BYTES);
 
         let packet = tag

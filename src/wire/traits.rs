@@ -132,14 +132,13 @@ impl From<bool> for WireCx {
 }
 
 pub trait WireBuild: Wire + Sized {
-    fn build(self, cx: &mut WireCx) -> Result<Self::Payload, BuildError<Self::Payload>>;
+    fn buffer_len(&self) -> usize;
 
-    fn buffer_len(&self) -> usize
-    where
-        Self: WireBuild<Payload = PayloadHolder> + Copy,
-    {
-        (*self).build(&mut false.into()).unwrap().0
+    fn header_len(&self) -> usize {
+        self.buffer_len() - self.payload_len()
     }
+
+    fn build(self, cx: &mut WireCx) -> Result<Self::Payload, BuildError<Self::Payload>>;
 }
 
 pub trait WireParse: Wire + Sized {
@@ -167,6 +166,10 @@ impl<T: Payload, U: Payload> WireSubstitute<U> for T {
 }
 
 impl<T: Payload + Wire<Payload = T>> WireBuild for T {
+    fn buffer_len(&self) -> usize {
+        self.len()
+    }
+
     fn build(self, _: &mut WireCx) -> Result<T, BuildError<T>> {
         Ok(self)
     }

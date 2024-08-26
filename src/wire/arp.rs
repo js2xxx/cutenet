@@ -183,6 +183,10 @@ where
     P: PayloadBuild<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
+    fn buffer_len(&self) -> usize {
+        HEADER_LEN + self.payload_len()
+    }
+
     fn build(self, _: &mut WireCx) -> Result<P, BuildError<P>> {
         let Packet {
             operation,
@@ -259,7 +263,7 @@ mod tests {
         };
 
         let bytes = vec![0xa5; 28];
-        let payload = Buf::builder(bytes).reserve_for(tag);
+        let payload = Buf::builder(bytes).reserve_for(&tag);
 
         let packet: Buf<_> = tag
             .sub_no_payload(|_| payload)

@@ -518,6 +518,19 @@ where
     T: WireBuild<Payload = P>,
     U: NoPayload<Init = P>,
 {
+    fn buffer_len(&self) -> usize {
+        MAX_ERROR_PACKET_LEN.min(match self {
+            Packet::DstUnreachable { header, .. } => field::UNUSED.end + header.buffer_len(),
+            Packet::PktTooBig { header, .. } => field::MTU.end + header.buffer_len(),
+            Packet::TimeExceeded { header, .. } => field::UNUSED.end + header.buffer_len(),
+            Packet::ParamProblem { header, .. } => field::POINTER.end + header.buffer_len(),
+            Packet::EchoRequest { payload, .. } | Packet::EchoReply { payload, .. } => {
+                field::ECHO_SEQNO.end + payload.buffer_len()
+            }
+            Packet::Nd { nd, payload: _ } => nd.len(),
+        })
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         let cxc = *cx;
         let checksum = |mut packet: RawPacket<&mut [u8]>| {
@@ -651,7 +664,7 @@ mod tests {
             payload: PayloadHolder(ECHO_PACKET_PAYLOAD.len()),
         };
         let bytes = vec![0xa5; repr.buffer_len()];
-        let mut buf = Buf::builder(bytes).reserve_for(repr).build();
+        let mut buf = Buf::builder(bytes).reserve_for(&repr).build();
         buf.append_slice(&ECHO_PACKET_PAYLOAD);
         let packet = repr.sub_payload(|_| buf).build(&mut { CX }).unwrap();
         assert_eq!(packet.data(), &ECHO_PACKET_BYTES[..]);
@@ -683,7 +696,7 @@ mod tests {
             },
         };
         let bytes = vec![0xa5; repr.buffer_len()];
-        let mut buf = Buf::builder(bytes).reserve_for(repr).build();
+        let mut buf = Buf::builder(bytes).reserve_for(&repr).build();
         buf.append_slice(&PKT_TOO_BIG_UDP_PAYLOAD);
 
         let packet = repr.sub_payload(|_| buf).build(&mut { CX }).unwrap();

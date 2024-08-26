@@ -442,31 +442,28 @@ impl IpCidrExt for Cidr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub enum Packet<#[wire] T, #[no_payload] U> {
-    Arp(#[wire] super::ArpPacket<U>),
+pub enum Packet<#[wire] T> {
     V4(#[wire] v4::Packet<T>),
     V6(#[wire] v6::Packet<T>),
 }
 
-impl<T, U> Packet<T, U> {
+impl<T> Packet<T> {
     pub fn ip_addr(&self) -> Ends<IpAddr> {
         match *self {
-            Packet::Arp(super::ArpPacket { addr, .. }) => addr.map(|(_hw, ip)| IpAddr::V4(ip)),
             Packet::V4(v4::Packet { addr, .. }) => addr.map(IpAddr::V4),
             Packet::V6(v6::Packet { addr, .. }) => addr.map(IpAddr::V6),
         }
     }
 
-    pub fn eth_protocol(&self) -> EthernetProtocol {
-        match self {
-            Packet::Arp(_) => EthernetProtocol::Arp,
-            Packet::V4(_) => EthernetProtocol::Ipv4,
-            Packet::V6(_) => EthernetProtocol::Ipv6,
+    pub fn next_header(&self) -> Protocol {
+        match *self {
+            Packet::V4(v4::Packet { next_header, .. }) => next_header,
+            Packet::V6(v6::Packet { next_header, .. }) => next_header,
         }
     }
 }
 
-impl<T, P, U> Packet<T, U>
+impl<T, P, U> Packet<T>
 where
     T: WireParse<Payload = P>,
     P: PayloadParse<NoPayload = U> + super::Data,
@@ -478,7 +475,6 @@ where
         raw: P,
     ) -> Result<Self, ParseError<P>> {
         Ok(match protocol {
-            EthernetProtocol::Arp => Packet::Arp(super::ArpPacket::parse(cx, raw)?),
             EthernetProtocol::Ipv4 => Packet::V4(v4::Packet::parse(cx, raw)?),
             EthernetProtocol::Ipv6 => Packet::V6(v6::Packet::parse(cx, raw)?),
             _ => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
@@ -486,15 +482,21 @@ where
     }
 }
 
-impl<T, P, U> WireBuild for Packet<T, U>
+impl<T, P, U> WireBuild for Packet<T>
 where
     T: WireBuild<Payload = P>,
     P: PayloadBuild<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
+    fn buffer_len(&self) -> usize {
+        match self {
+            Packet::V4(packet) => packet.buffer_len(),
+            Packet::V6(packet) => packet.buffer_len(),
+        }
+    }
+
     fn build(self, cx: &mut WireCx) -> Result<P, BuildError<P>> {
         match self {
-            Packet::Arp(packet) => packet.build(cx),
             Packet::V4(packet) => packet.build(cx),
             Packet::V6(packet) => packet.build(cx),
         }

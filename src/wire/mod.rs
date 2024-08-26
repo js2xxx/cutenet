@@ -17,7 +17,7 @@ pub use self::arp::{
 
 mod ethernet;
 pub use self::ethernet::{
-    Addr as EthernetAddr, Frame as EthernetFrame, Protocol as EthernetProtocol,
+    Addr as EthernetAddr, EthernetPayload, Frame as EthernetFrame, Protocol as EthernetProtocol,
     HEADER_LEN as ETHERNET_HEADER_LEN,
 };
 
@@ -47,12 +47,12 @@ pub use self::ieee802154::{
 mod ip;
 pub use self::ip::{
     v4::{
-        Cidr as Ipv4Cidr, FragInfo as Ipv4FragInfo, Key as Ipv4Key, Packet as Ipv4Packet,
-        HEADER_LEN as IPV4_HEADER_LEN,
+        Cidr as Ipv4Cidr, FragInfo as Ipv4FragInfo, Ipv4Payload, Key as Ipv4Key,
+        Packet as Ipv4Packet, HEADER_LEN as IPV4_HEADER_LEN,
     },
     v6::{
-        Cidr as Ipv6Cidr, Ipv6AddrExt, Packet as Ipv6Packet, HEADER_LEN as IPV6_HEADER_LEN,
-        MIN_MTU as IPV6_MIN_MTU,
+        Cidr as Ipv6Cidr, Ipv6AddrExt, Ipv6Payload, Packet as Ipv6Packet,
+        HEADER_LEN as IPV6_HEADER_LEN, MIN_MTU as IPV6_MIN_MTU,
     },
     Cidr as IpCidr, IpAddrExt, IpCidrExt, Packet as IpPacket, Protocol as IpProtocol,
     Version as IpVersion,
