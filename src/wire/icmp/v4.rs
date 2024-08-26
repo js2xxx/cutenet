@@ -1,10 +1,15 @@
-use core::{fmt, ops::Range};
+use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::wire::{
-    ip::{self, checksum, v4::Ipv4},
-    BuildErrorKind, Data, DataMut, ParseErrorKind, VerifyChecksum, Wire, WireExt,
+use crate as cutenet;
+use crate::{
+    provide_any::{request_ref, Provider},
+    wire::{
+        ip::{checksum, v4::Ipv4},
+        prelude::*,
+        CheckPayloadLen, Checksum, Data, DataMut,
+    },
 };
 
 enum_with_unknown! {
@@ -161,7 +166,7 @@ enum_with_unknown! {
     }
 }
 
-pub type Packet<T: ?Sized> = crate::wire::Packet<Icmpv4, T>;
+struct Packet<T: ?Sized>(T);
 
 mod field {
     use crate::wire::field::*;
@@ -190,6 +195,7 @@ wire!(impl Packet {
         |data, value| data[field::CODE] = value;
 
     /// Return the checksum field.
+    #[allow(unused)]
     checksum/set_checksum: u16 =>
         |data| NetworkEndian::read_u16(&data[field::CHECKSUM]);
         |data, value| NetworkEndian::write_u16(&mut data[field::CHECKSUM], value);
@@ -216,192 +222,155 @@ wire!(impl Packet {
 });
 
 impl<T: Data + ?Sized> Packet<T> {
-    /// Return the header length.
-    /// The result depends on the value of the message type field.
-    pub fn header_len(&self) -> usize {
-        match self.msg_type() {
-            Message::EchoRequest | Message::EchoReply => field::ECHO_SEQNO.end,
-            Message::DstUnreachable | Message::TimeExceeded => field::UNUSED.end,
-            _ => field::UNUSED.end, // make a conservative assumption
-        }
-    }
-
-    pub fn header_full_len(&self) -> usize {
-        match self.msg_type() {
-            Message::EchoRequest | Message::EchoReply => field::ECHO_SEQNO.end,
-            Message::DstUnreachable | Message::TimeExceeded => {
-                field::UNUSED.end + ip::v4::HEADER_LEN
-            }
-            _ => field::UNUSED.end, // make a conservative assumption
-        }
-    }
-
     /// Validate the header checksum.
     pub fn verify_checksum(&self) -> bool {
-        checksum::data(self.inner.as_ref()) == !0
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.inner.as_ref()[self.header_len()..]
+        checksum::data(self.0.as_ref()) == !0
     }
 }
 
 impl<T: DataMut + ?Sized> Packet<T> {
     pub fn fill_checksum(&mut self) {
         self.set_checksum(0);
-        let checksum = !checksum::data(self.inner.as_ref());
+        let checksum = !checksum::data(self.0.as_ref());
         self.set_checksum(checksum)
-    }
-
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        let header_len = self.header_len();
-        &mut self.inner.as_mut()[header_len..]
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
 #[non_exhaustive]
-pub enum Icmpv4 {
+pub enum Icmpv4<#[wire] T> {
     EchoRequest {
         ident: u16,
         seq_no: u16,
+        #[wire]
+        payload: T,
     },
     EchoReply {
         ident: u16,
         seq_no: u16,
+        #[wire]
+        payload: T,
     },
     DstUnreachable {
         reason: DstUnreachable,
-        header: Ipv4,
+        #[wire]
+        payload: Ipv4<T>,
     },
     TimeExceeded {
         reason: TimeExceeded,
-        header: Ipv4,
+        #[wire]
+        payload: Ipv4<T>,
     },
 }
 
-impl Wire for Icmpv4 {
-    const EMPTY_PAYLOAD: bool = false;
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Icmpv4<T> {
+    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+        let packet = Packet(raw);
 
-    fn header_len(&self) -> usize {
-        match self {
-            Icmpv4::EchoRequest { .. } | Icmpv4::EchoReply { .. } => field::ECHO_SEQNO.end,
-            Icmpv4::DstUnreachable { header, .. } | Icmpv4::TimeExceeded { header, .. } => {
-                field::UNUSED.end + header.header_len()
-            }
-        }
-    }
-
-    fn buffer_len(&self, payload_len: usize) -> usize {
-        self.header_len() + payload_len
-    }
-
-    fn payload_range(packet: Packet<&[u8]>) -> Range<usize> {
-        packet.header_full_len()..packet.inner.len()
-    }
-
-    type ParseArg<'a> = VerifyChecksum<bool>;
-
-    fn parse_packet(
-        packet: Packet<&[u8]>,
-        VerifyChecksum(verify_checksum): VerifyChecksum<bool>,
-    ) -> Result<Icmpv4, ParseErrorKind> {
-        let len = packet.inner.len();
+        let len = packet.0.len();
         if len < field::HEADER_END {
-            return Err(ParseErrorKind::PacketTooShort);
+            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
         }
 
-        if verify_checksum && !packet.verify_checksum() {
-            return Err(ParseErrorKind::ChecksumInvalid);
+        if let Some(Checksum) = request_ref(cx)
+            && !packet.verify_checksum()
+        {
+            return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
         }
 
         match (packet.msg_type(), packet.msg_code()) {
             (Message::EchoRequest, 0) => Ok(Icmpv4::EchoRequest {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
+                payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
 
             (Message::EchoReply, 0) => Ok(Icmpv4::EchoReply {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
+                payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
 
-            (Message::DstUnreachable, code) => {
-                let header =
-                    Ipv4::parse(packet.data(), VerifyChecksum(false)).map_err(|e| e.kind)?;
+            (Message::DstUnreachable, code) => Ok(Icmpv4::DstUnreachable {
+                reason: DstUnreachable::from(code),
+                payload: Ipv4::parse(
+                    &(CheckPayloadLen(8),),
+                    packet.0.pop(field::UNUSED.end..len)?,
+                )?,
+            }),
 
-                // RFC 792 requires exactly eight bytes to be returned.
-                // We allow more, since there isn't a reason not to, but require at least eight.
-                if packet.payload().len() < 8 {
-                    return Err(ParseErrorKind::PacketTooShort);
-                }
+            (Message::TimeExceeded, code) => Ok(Icmpv4::TimeExceeded {
+                reason: TimeExceeded::from(code),
+                payload: Ipv4::parse(
+                    &(CheckPayloadLen(8),),
+                    packet.0.pop(field::UNUSED.end..len)?,
+                )?,
+            }),
 
-                Ok(Icmpv4::DstUnreachable {
-                    reason: DstUnreachable::from(code),
-                    header,
-                })
-            }
-
-            (Message::TimeExceeded, code) => {
-                let header =
-                    Ipv4::parse(packet.data(), VerifyChecksum(false)).map_err(|e| e.kind)?;
-
-                // RFC 792 requires exactly eight bytes to be returned.
-                // We allow more, since there isn't a reason not to, but require at least eight.
-                if packet.payload().len() < 8 {
-                    return Err(ParseErrorKind::PacketTooShort);
-                }
-
-                Ok(Icmpv4::TimeExceeded {
-                    reason: TimeExceeded::from(code),
-                    header,
-                })
-            }
-
-            _ => Err(ParseErrorKind::ProtocolUnknown),
+            _ => Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
         }
     }
+}
 
-    fn build_packet(
-        self,
-        mut packet: Packet<&mut [u8]>,
-        payload_len: usize,
-    ) -> Result<(), BuildErrorKind> {
-        packet.set_msg_code(0);
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Icmpv4<T> {
+    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
+        let checksum = |mut packet: Packet<&mut [u8]>| {
+            if let Some(Checksum) = request_ref(cx) {
+                packet.fill_checksum();
+            } else {
+                // make sure we get a consistently zeroed checksum,
+                // since implementations might rely on it
+                packet.set_checksum(0);
+            }
+            Ok(())
+        };
+
         match self {
-            Icmpv4::EchoRequest { ident, seq_no } => {
-                packet.set_msg_type(Message::EchoRequest);
-                packet.set_msg_code(0);
-                packet.set_echo_ident(ident);
-                packet.set_echo_seq_no(seq_no);
+            Icmpv4::EchoRequest { ident, seq_no, payload } => {
+                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
+                    let mut packet = Packet(buf);
+
+                    packet.set_msg_type(Message::EchoRequest);
+                    packet.set_msg_code(0);
+                    packet.set_echo_ident(ident);
+                    packet.set_echo_seq_no(seq_no);
+
+                    checksum(packet)
+                })
             }
+            Icmpv4::EchoReply { ident, seq_no, payload } => {
+                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
+                    let mut packet = Packet(buf);
 
-            Icmpv4::EchoReply { ident, seq_no } => {
-                packet.set_msg_type(Message::EchoReply);
-                packet.set_msg_code(0);
-                packet.set_echo_ident(ident);
-                packet.set_echo_seq_no(seq_no);
+                    packet.set_msg_type(Message::EchoReply);
+                    packet.set_msg_code(0);
+                    packet.set_echo_ident(ident);
+                    packet.set_echo_seq_no(seq_no);
+
+                    checksum(packet)
+                })
             }
+            Icmpv4::DstUnreachable { reason, payload } => {
+                payload.build(&())?.push(field::UNUSED.end, |buf| {
+                    let mut packet = Packet(buf);
 
-            Icmpv4::DstUnreachable { reason, header } => {
-                packet.set_msg_type(Message::DstUnreachable);
-                packet.set_msg_code(reason.into());
+                    packet.set_msg_type(Message::DstUnreachable);
+                    packet.set_msg_code(reason.into());
 
-                ip::v4::Packet::build_at(packet.data_mut(), header, payload_len)?;
+                    checksum(packet)
+                })
             }
+            Icmpv4::TimeExceeded { reason, payload } => {
+                payload.build(&())?.push(field::UNUSED.end, |buf| {
+                    let mut packet = Packet(buf);
 
-            Icmpv4::TimeExceeded { reason, header } => {
-                packet.set_msg_type(Message::TimeExceeded);
-                packet.set_msg_code(reason.into());
+                    packet.set_msg_type(Message::TimeExceeded);
+                    packet.set_msg_code(reason.into());
 
-                ip::v4::Packet::build_at(packet.data_mut(), header, payload_len)?;
+                    checksum(packet)
+                })
             }
         }
-
-        // make sure we get a consistently zeroed checksum,
-        // since implementations might rely on it
-        packet.set_checksum(0);
-        Ok(())
     }
 }
 
@@ -420,25 +389,30 @@ mod tests {
 
     #[test]
     fn test_echo_deconstruct() {
-        let packet = Packet::parse(&ECHO_PACKET_BYTES[..], VerifyChecksum(true)).unwrap();
-        assert_eq!(packet.msg_type(), Message::EchoRequest);
-        assert_eq!(packet.msg_code(), 0);
-        assert_eq!(packet.checksum(), 0x8efe);
-        assert_eq!(packet.echo_ident(), 0x1234);
-        assert_eq!(packet.echo_seq_no(), 0xabcd);
-        assert_eq!(packet.data(), &ECHO_DATA_BYTES[..]);
+        let packet: Icmpv4<&[u8]> = Icmpv4::parse(&(Checksum,), &ECHO_PACKET_BYTES[..]).unwrap();
+        assert_eq!(packet, Icmpv4::EchoRequest {
+            ident: 0x1234,
+            seq_no: 0xabcd,
+            payload: &ECHO_DATA_BYTES[..]
+        });
     }
 
     #[test]
     fn test_echo_construct() {
-        let tag = Icmpv4::EchoRequest { ident: 0x1234, seq_no: 0xabcd };
+        let tag = Icmpv4::EchoRequest {
+            ident: 0x1234,
+            seq_no: 0xabcd,
+            payload: PayloadHolder(ECHO_DATA_BYTES.len()),
+        };
 
         let bytes = vec![0xa5; 12];
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
         payload.append_slice(&ECHO_DATA_BYTES);
 
-        let mut packet = Packet::build(payload, tag).unwrap();
-        packet.fill_checksum();
-        assert_eq!(packet.into_raw().data(), &ECHO_PACKET_BYTES[..]);
+        let packet = tag
+            .substitute(|_| payload, |_| unreachable!())
+            .build(&(Checksum,))
+            .unwrap();
+        assert_eq!(packet.data(), &ECHO_PACKET_BYTES[..]);
     }
 }

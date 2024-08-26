@@ -1,3 +1,6 @@
+[workspace]
+members = ["macros"]
+
 [package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -5,11 +8,19 @@ name = "cutenet"
 version = "0.1.0"
 
 [features]
-alloc = ["stable_deref_trait/alloc"]
+alloc = [
+  "stable_deref_trait/alloc",
+]
 default = ["std", "alloc"]
-std = ["stable_deref_trait/std"]
+std = [
+  "stable_deref_trait/std",
+]
 
 [dependencies]
+# Local crates
+cutenet-macros = {path = "macros"}
+# External crates
 bitflags = "2.6"
 byteorder = {version = "1.5", default-features = false}
+either = {version = "1.13", default-features = false}
 stable_deref_trait = {version = "1.2", default-features = false}

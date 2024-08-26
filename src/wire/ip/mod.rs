@@ -3,7 +3,8 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
-use super::Ends;
+use crate as cutenet;
+use crate::wire::prelude::*;
 
 pub(super) mod checksum;
 pub mod v4;
@@ -117,6 +118,10 @@ pub trait IpAddrExt {
     fn mask(&self, prefix_len: u8) -> Self;
 
     fn prefix_len(&self) -> Option<u8>;
+
+    fn unwrap_v4(self) -> Ipv4Addr;
+
+    fn unwrap_v6(self) -> Ipv6Addr;
 }
 
 impl IpAddrExt for Ipv4Addr {
@@ -135,6 +140,14 @@ impl IpAddrExt for Ipv4Addr {
     fn prefix_len(&self) -> Option<u8> {
         prefix_len_impl(&self.octets())
     }
+
+    fn unwrap_v4(self) -> Ipv4Addr {
+        self
+    }
+
+    fn unwrap_v6(self) -> Ipv6Addr {
+        unreachable!("IPv4 => IPv6")
+    }
 }
 
 impl IpAddrExt for Ipv6Addr {
@@ -152,6 +165,14 @@ impl IpAddrExt for Ipv6Addr {
 
     fn prefix_len(&self) -> Option<u8> {
         prefix_len_impl(&self.octets())
+    }
+
+    fn unwrap_v4(self) -> Ipv4Addr {
+        unreachable!("IPv6 => IPv4")
+    }
+
+    fn unwrap_v6(self) -> Ipv6Addr {
+        self
     }
 }
 
@@ -181,17 +202,24 @@ impl IpAddrExt for IpAddr {
             IpAddr::V6(v6) => v6.prefix_len(),
         }
     }
+
+    fn unwrap_v4(self) -> Ipv4Addr {
+        match self {
+            IpAddr::V4(v4) => v4.unwrap_v4(),
+            IpAddr::V6(v6) => v6.unwrap_v4(),
+        }
+    }
+
+    fn unwrap_v6(self) -> Ipv6Addr {
+        match self {
+            IpAddr::V4(v4) => v4.unwrap_v6(),
+            IpAddr::V6(v6) => v6.unwrap_v6(),
+        }
+    }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct IpImpl<Addr> {
-    pub addr: Ends<Addr>,
-    pub next_header: Protocol,
-    pub hop_limit: u8,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Ip {
-    V4(v4::Ipv4),
-    V6(v6::Ipv6),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub enum Ip<#[wire] T> {
+    V4(#[wire] v4::Ipv4<T>),
+    V6(#[wire] v6::Ipv6<T>),
 }

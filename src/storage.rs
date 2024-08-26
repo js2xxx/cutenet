@@ -2,7 +2,7 @@ use core::ops::{Bound, DerefMut, RangeBounds};
 
 use stable_deref_trait::StableDeref;
 
-use crate::wire::{BuildError, Packet, Wire};
+use crate::wire::{PayloadHolder, WireBuild};
 
 pub trait Storage: DerefMut<Target = [u8]> + StableDeref {}
 impl<T: DerefMut<Target = [u8]> + StableDeref + ?Sized> Storage for T {}
@@ -19,6 +19,13 @@ impl<S: Storage> ReserveBuf<S> {
         ReserveBuf { reserved: 0, storage }
     }
 
+    pub fn from_buf_truncate(buf: Buf<S>) -> Self {
+        ReserveBuf {
+            reserved: buf.head,
+            storage: buf.storage,
+        }
+    }
+
     /// # Safety
     ///
     /// `size` must not exceeds `len() - reserved()`.
@@ -33,8 +40,9 @@ impl<S: Storage> ReserveBuf<S> {
         self
     }
 
-    pub fn reserve_for<W: Wire>(self, w: &W) -> Self {
-        self.add_reservation(w.header_len())
+    pub fn reserve_for<W: WireBuild<Payload = PayloadHolder>>(self, w: W) -> Self {
+        let payload_len = w.payload_len();
+        self.add_reservation(w.build(&()).unwrap().0 - payload_len)
     }
 
     pub fn build(self) -> Buf<S> {
@@ -208,6 +216,13 @@ impl<S: Storage + ?Sized> Buf<S> {
         unsafe { self.storage.get_unchecked_mut(self.head..end) }
     }
 
+    pub fn try_prepend(&mut self, size: usize) -> Option<&mut [u8]> {
+        (size <= self.head_len()).then(|| {
+            // SAFETY: size <= head_len().
+            unsafe { self.prepend_unchecked(size) }
+        })
+    }
+
     pub fn prepend(&mut self, size: usize) -> &mut [u8] {
         assert!(
             size <= self.head_len(),
@@ -248,26 +263,18 @@ impl<S: Storage> Buf<S> {
     /// # Safety
     ///
     /// `s` must reside with the current range (0..len).
-    pub unsafe fn slice_into_unchecked(mut self, s: impl RangeBounds<usize>) -> Self {
+    pub unsafe fn slice_into_unchecked(&mut self, s: impl RangeBounds<usize>) {
         let [head, tail] = self.bounds(s);
         (self.head, self.tail) = (head, tail);
-        self
     }
 
-    pub fn slice_into(mut self, s: impl RangeBounds<usize>) -> Self {
+    pub fn slice_into(&mut self, s: impl RangeBounds<usize>) {
         let [head, tail] = self.bounds(s);
         assert!(
             self.head <= head && head <= tail && tail <= self.tail,
             "s must reside within the range (0..len)"
         );
         (self.head, self.tail) = (head, tail);
-        self
-    }
-}
-
-impl<S: Storage> Buf<S> {
-    pub fn build<Tag: Wire>(self, tag: Tag) -> Result<Packet<Tag, Self>, BuildError<Self>> {
-        Packet::build(self, tag)
     }
 }
 

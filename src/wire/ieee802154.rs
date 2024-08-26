@@ -1,8 +1,12 @@
-use core::{fmt, net::Ipv6Addr, ops::Range};
+use core::{fmt, net::Ipv6Addr};
 
 use byteorder::{ByteOrder, LittleEndian};
 
-use super::{ip::IpAddrExt, BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire};
+use crate as cutenet;
+use crate::{
+    provide_any::Provider,
+    wire::{ip::IpAddrExt, prelude::*, Data, DataMut, Dst, Ends, Src},
+};
 
 enum_with_unknown! {
     /// IEEE 802.15.4 frame type.
@@ -201,7 +205,7 @@ macro_rules! fc_bit_field {
         where
             T: DataMut,
         {
-            let data = &mut self.inner.as_mut()[field::FRAMECONTROL];
+            let data = &mut self.0.as_mut()[field::FRAMECONTROL];
             let mut raw = LittleEndian::read_u16(data);
             raw |= ((val as u16) << $bit);
 
@@ -210,8 +214,9 @@ macro_rules! fc_bit_field {
     };
     ($field:ident, $bit:literal) => {
         #[inline]
+        #[allow(unused)]
         pub fn $field(&self) -> bool {
-            let data = self.inner.as_ref();
+            let data = self.0.as_ref();
             let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
 
             ((raw >> $bit) & 0b1) == 0b1
@@ -219,7 +224,7 @@ macro_rules! fc_bit_field {
     };
 }
 
-pub type Frame<T: ?Sized> = super::Packet<Ieee802154, T>;
+struct Frame<T: ?Sized>(T);
 
 mod field {
     use crate::wire::field::*;
@@ -306,7 +311,7 @@ impl<T: Data + ?Sized> Frame<T> {
             | FrameType::Data
             | FrameType::Acknowledgement
             | FrameType::MacCommand
-            | FrameType::Multipurpose => Some(self.inner.as_ref()[field::SEQUENCE_NUMBER]),
+            | FrameType::Multipurpose => Some(self.0.as_ref()[field::SEQUENCE_NUMBER]),
             FrameType::Extended | FrameType::FragmentOrFrak | FrameType::Unknown(_) => None,
         }
     }
@@ -315,7 +320,7 @@ impl<T: Data + ?Sized> Frame<T> {
     where
         T: DataMut,
     {
-        self.inner.as_mut()[field::SEQUENCE_NUMBER] = value;
+        self.0.as_mut()[field::SEQUENCE_NUMBER] = value;
     }
 
     /// Return the destination PAN field.
@@ -337,7 +342,7 @@ impl<T: Data + ?Sized> Frame<T> {
         // This is the reason why we set it to Extended.
         self.set_dst_addressing_mode(AddressingMode::Extended);
 
-        let data = self.inner.as_mut();
+        let data = self.0.as_mut();
         data[field::ADDRESSING][..2].copy_from_slice(&value.as_bytes());
     }
 
@@ -378,14 +383,14 @@ impl<T: Data + ?Sized> Frame<T> {
             Addr::Short(mut value) => {
                 value.reverse();
                 self.set_dst_addressing_mode(AddressingMode::Short);
-                let data = self.inner.as_mut();
+                let data = self.0.as_mut();
                 data[field::ADDRESSING][2..2 + 2].copy_from_slice(&value);
                 value.reverse();
             }
             Addr::Extended(mut value) => {
                 value.reverse();
                 self.set_dst_addressing_mode(AddressingMode::Extended);
-                let data = &mut self.inner.as_mut()[field::ADDRESSING];
+                let data = &mut self.0.as_mut()[field::ADDRESSING];
                 data[2..2 + 8].copy_from_slice(&value);
                 value.reverse();
             }
@@ -418,7 +423,7 @@ impl<T: Data + ?Sized> Frame<T> {
             _ => unreachable!(),
         } + 2;
 
-        let data = &mut self.inner.as_mut()[field::ADDRESSING];
+        let data = &mut self.0.as_mut()[field::ADDRESSING];
         data[offset..offset + 2].copy_from_slice(&value.as_bytes());
     }
 
@@ -470,14 +475,14 @@ impl<T: Data + ?Sized> Frame<T> {
             Addr::Short(mut value) => {
                 value.reverse();
                 self.set_src_addressing_mode(AddressingMode::Short);
-                let data = &mut self.inner.as_mut()[field::ADDRESSING];
+                let data = &mut self.0.as_mut()[field::ADDRESSING];
                 data[offset..offset + 2].copy_from_slice(&value);
                 value.reverse();
             }
             Addr::Extended(mut value) => {
                 value.reverse();
                 self.set_src_addressing_mode(AddressingMode::Extended);
-                let data = &mut self.inner.as_mut()[field::ADDRESSING];
+                let data = &mut self.0.as_mut()[field::ADDRESSING];
                 data[offset..offset + 8].copy_from_slice(&value);
                 value.reverse();
             }
@@ -505,7 +510,7 @@ impl<T: Data + ?Sized> Frame<T> {
             offset += if src_pan_id { 2 } else { 0 };
             offset += src_addr.size();
 
-            let data = self.inner.as_ref();
+            let data = self.0.as_ref();
             Some(&data[field::ADDRESSING][..offset])
         } else {
             None
@@ -587,17 +592,6 @@ impl<T: Data + ?Sized> Frame<T> {
         size
     }
 
-    /// Return the index where the payload starts.
-    fn payload_start(&self) -> usize {
-        let mut index = self.aux_security_header_start();
-
-        if self.security_enabled() {
-            index += self.security_header_len();
-        }
-
-        index
-    }
-
     /// Return the length of the key identifier field.
     fn key_identifier_length(&self) -> Option<u8> {
         Some(match self.key_identifier_mode() {
@@ -612,14 +606,14 @@ impl<T: Data + ?Sized> Frame<T> {
     /// Return the security level of the auxiliary security header.
     pub fn security_level(&self) -> u8 {
         let index = self.aux_security_header_start();
-        let b = self.inner.as_ref()[index..][0];
+        let b = self.0.as_ref()[index..][0];
         b & 0b111
     }
 
     /// Return the key identifier mode used by the auxiliary security header.
     pub fn key_identifier_mode(&self) -> u8 {
         let index = self.aux_security_header_start();
-        let b = self.inner.as_ref()[index..][0];
+        let b = self.0.as_ref()[index..][0];
         (b >> 3) & 0b11
     }
 
@@ -627,17 +621,19 @@ impl<T: Data + ?Sized> Frame<T> {
     /// suppressed.
     pub fn frame_counter_suppressed(&self) -> bool {
         let index = self.aux_security_header_start();
-        let b = self.inner.as_ref()[index..][0];
+        let b = self.0.as_ref()[index..][0];
         ((b >> 5) & 0b1) == 0b1
     }
 
     /// Return the frame counter field.
+
+    #[allow(unused)]
     pub fn frame_counter(&self) -> Option<u32> {
         if self.frame_counter_suppressed() {
             None
         } else {
             let index = self.aux_security_header_start();
-            let b = &self.inner.as_ref()[index..];
+            let b = &self.0.as_ref()[index..];
             Some(LittleEndian::read_u32(&b[1..1 + 4]))
         }
     }
@@ -645,7 +641,7 @@ impl<T: Data + ?Sized> Frame<T> {
     /// Return the Key Identifier field.
     fn key_identifier(&self) -> &[u8] {
         let index = self.aux_security_header_start();
-        let b = &self.inner.as_ref()[index..];
+        let b = &self.0.as_ref()[index..];
         let length = if let Some(len) = self.key_identifier_length() {
             len as usize
         } else {
@@ -655,6 +651,7 @@ impl<T: Data + ?Sized> Frame<T> {
     }
 
     /// Return the Key Source field.
+    #[allow(unused)]
     pub fn key_source(&self) -> Option<&[u8]> {
         let ki = self.key_identifier();
         let len = ki.len();
@@ -666,6 +663,7 @@ impl<T: Data + ?Sized> Frame<T> {
     }
 
     /// Return the Key Index field.
+    #[allow(unused)]
     pub fn key_index(&self) -> Option<u8> {
         let ki = self.key_identifier();
         let len = ki.len();
@@ -678,6 +676,7 @@ impl<T: Data + ?Sized> Frame<T> {
     }
 
     /// Return the Message Integrity Code (MIC).
+    #[allow(unused)]
     pub fn message_integrity_code(&self) -> Option<&[u8]> {
         let mic_len = match self.security_level() {
             0 | 4 => return None,
@@ -687,21 +686,15 @@ impl<T: Data + ?Sized> Frame<T> {
             _ => panic!(),
         };
 
-        let data = &self.inner.as_ref();
+        let data = &self.0.as_ref();
         let len = data.len();
 
         Some(&data[len - mic_len..])
     }
-
-    /// Return the MAC header.
-    pub fn mac_header(&self) -> &[u8] {
-        let data = &self.inner.as_ref();
-        &data[..self.payload_start()]
-    }
 }
 
-#[derive(Debug)]
-pub struct Ieee802154 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub struct Ieee802154<#[wire] T> {
     pub frame_type: FrameType,
     pub security_enabled: bool,
     pub frame_pending: bool,
@@ -710,11 +703,121 @@ pub struct Ieee802154 {
     pub pan_id_compression: bool,
     pub frame_version: FrameVersion,
     pub ends: Ends<(Option<Pan>, Option<Addr>)>,
+    #[wire]
+    pub payload: T,
 }
 
-impl Wire for Ieee802154 {
-    const EMPTY_PAYLOAD: bool = false;
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ieee802154<T> {
+    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+        let frame = Frame(raw);
 
+        let len = frame.0.len();
+
+        // We need at least 3 bytes
+        if len < 3 {
+            return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+        }
+
+        // We don't handle frames with a payload larger than 127 bytes.
+        if len > 127 {
+            return Err(ParseErrorKind::PacketTooLong.with(frame.0));
+        }
+
+        let mut offset = field::ADDRESSING.start
+            + if let Some((dst_pan_id, dst_addr, src_pan_id, src_addr)) = frame.addr_present_flags()
+            {
+                let mut offset = if dst_pan_id { 2 } else { 0 };
+                offset += dst_addr.size();
+                offset += if src_pan_id { 2 } else { 0 };
+                offset += src_addr.size();
+
+                if offset > len {
+                    return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+                }
+                offset
+            } else {
+                0
+            };
+
+        if frame.security_enabled() {
+            // First check that we can access the security header control bits.
+            if offset + 1 > len {
+                return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+            }
+
+            offset += frame.security_header_len();
+        }
+
+        if offset > len {
+            return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+        }
+
+        Ok(Ieee802154 {
+            frame_type: frame.frame_type(),
+            security_enabled: frame.security_enabled(),
+            frame_pending: frame.frame_pending(),
+            ack_request: frame.ack_request(),
+            sequence_number: frame.sequence_number(),
+            pan_id_compression: frame.pan_id_compression(),
+            frame_version: frame.frame_version(),
+            ends: frame.ends(),
+
+            payload: T::parse(cx, frame.0.pop(offset..len)?)?,
+        })
+    }
+}
+
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ieee802154<T> {
+    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
+        let header_len = self.header_len();
+
+        let Ieee802154 {
+            frame_type,
+            security_enabled,
+            frame_pending,
+            ack_request,
+            sequence_number,
+            pan_id_compression,
+            frame_version,
+            ends: (Src((src_pan_id, src_addr)), Dst((dst_pan_id, dst_addr))),
+            payload,
+        } = self;
+
+        payload.build(cx)?.push(header_len, |buf| {
+            let mut frame = Frame(buf);
+
+            frame.set_frame_type(frame_type);
+            frame.set_security_enabled(security_enabled);
+            frame.set_frame_pending(frame_pending);
+            frame.set_ack_request(ack_request);
+            frame.set_pan_id_compression(pan_id_compression);
+            frame.set_frame_version(frame_version);
+
+            if let Some(sequence_number) = sequence_number {
+                frame.set_sequence_number(sequence_number);
+            }
+
+            if let Some(dst_pan_id) = dst_pan_id {
+                frame.set_dst_pan_id(dst_pan_id);
+            }
+            if let Some(dst_addr) = dst_addr {
+                frame.set_dst_addr(dst_addr);
+            }
+
+            if !pan_id_compression && let Some(src_pan_id) = src_pan_id {
+                frame.set_src_pan_id(src_pan_id);
+            }
+
+            if let Some(src_addr) = src_addr {
+                frame.set_src_addr(src_addr);
+            }
+
+            Ok(())
+        })
+    }
+}
+
+impl<T> Ieee802154<T> {
     fn header_len(&self) -> usize {
         let (Src((_, src_addr)), Dst((_, dst_addr))) = self.ends;
         3 + 2
@@ -729,113 +832,6 @@ impl Wire for Ieee802154 {
                 Some(Addr::Short(_)) => 2,
                 Some(Addr::Extended(_)) => 8,
             }
-    }
-
-    fn buffer_len(&self, payload_len: usize) -> usize {
-        unimplemented!("requires compression for the length {payload_len}")
-    }
-
-    fn payload_range(frame: Frame<&[u8]>) -> Range<usize> {
-        match frame.frame_type() {
-            FrameType::Data => frame.payload_start()..frame.inner.len(),
-            _ => 0..0,
-        }
-    }
-
-    type ParseArg<'a> = ();
-
-    fn parse_packet(frame: Frame<&[u8]>, _: ()) -> Result<Ieee802154, ParseErrorKind> {
-        let len = frame.inner.len();
-
-        // We need at least 3 bytes
-        if len < 3 {
-            return Err(ParseErrorKind::PacketTooShort);
-        }
-
-        // We don't handle frames with a payload larger than 127 bytes.
-        if len > 127 {
-            return Err(ParseErrorKind::PacketTooLong);
-        }
-
-        let mut offset = field::ADDRESSING.start
-            + if let Some((dst_pan_id, dst_addr, src_pan_id, src_addr)) = frame.addr_present_flags()
-            {
-                let mut offset = if dst_pan_id { 2 } else { 0 };
-                offset += dst_addr.size();
-                offset += if src_pan_id { 2 } else { 0 };
-                offset += src_addr.size();
-
-                if offset > len {
-                    return Err(ParseErrorKind::PacketTooShort);
-                }
-                offset
-            } else {
-                0
-            };
-
-        if frame.security_enabled() {
-            // First check that we can access the security header control bits.
-            if offset + 1 > len {
-                return Err(ParseErrorKind::PacketTooShort);
-            }
-
-            offset += frame.security_header_len();
-        }
-
-        if offset > len {
-            return Err(ParseErrorKind::PacketTooShort);
-        }
-
-        Ok(Ieee802154 {
-            frame_type: frame.frame_type(),
-            security_enabled: frame.security_enabled(),
-            frame_pending: frame.frame_pending(),
-            ack_request: frame.ack_request(),
-            sequence_number: frame.sequence_number(),
-            pan_id_compression: frame.pan_id_compression(),
-            frame_version: frame.frame_version(),
-            ends: frame.ends(),
-        })
-    }
-
-    fn build_packet(self, mut frame: Frame<&mut [u8]>, _: usize) -> Result<(), BuildErrorKind> {
-        let Ieee802154 {
-            frame_type,
-            security_enabled,
-            frame_pending,
-            ack_request,
-            sequence_number,
-            pan_id_compression,
-            frame_version,
-            ends: (Src((src_pan_id, src_addr)), Dst((dst_pan_id, dst_addr))),
-        } = self;
-
-        frame.set_frame_type(frame_type);
-        frame.set_security_enabled(security_enabled);
-        frame.set_frame_pending(frame_pending);
-        frame.set_ack_request(ack_request);
-        frame.set_pan_id_compression(pan_id_compression);
-        frame.set_frame_version(frame_version);
-
-        if let Some(sequence_number) = sequence_number {
-            frame.set_sequence_number(sequence_number);
-        }
-
-        if let Some(dst_pan_id) = dst_pan_id {
-            frame.set_dst_pan_id(dst_pan_id);
-        }
-        if let Some(dst_addr) = dst_addr {
-            frame.set_dst_addr(dst_addr);
-        }
-
-        if !pan_id_compression && let Some(src_pan_id) = src_pan_id {
-            frame.set_src_pan_id(src_pan_id);
-        }
-
-        if let Some(src_addr) = src_addr {
-            frame.set_src_addr(src_addr);
-        }
-        Ok(())
     }
 }
 
@@ -871,32 +867,42 @@ mod tests {
                 )),
                 Dst((Some(Pan(0xabcd)), Some(Addr::BROADCAST))),
             ),
+            payload: PayloadHolder(10),
         };
 
         let buffer_len = repr.header_len();
 
         let buf = Buf::builder(&mut buffer[..buffer_len])
-            .reserve_for(&repr)
+            .reserve_for(repr)
             .build();
-        let frame = Frame::build(buf, repr).unwrap();
+
+        let buf: Buf<_> = repr
+            .substitute(|_| buf, |_| unreachable!())
+            .build(&())
+            .unwrap();
 
         // println!("{frame:2x?}");
 
-        assert_eq!(frame.frame_type(), FrameType::Data);
-        assert!(!frame.security_enabled());
-        assert!(!frame.frame_pending());
-        assert!(frame.ack_request());
-        assert!(frame.pan_id_compression());
-        assert_eq!(frame.frame_version(), FrameVersion::Ieee802154);
-        assert_eq!(frame.sequence_number(), Some(1));
-        assert_eq!(frame.dst_pan_id(), Some(Pan(0xabcd)));
-        assert_eq!(frame.dst_addr(), Some(Addr::BROADCAST));
-        assert_eq!(frame.src_pan_id(), None);
+        let frame: Ieee802154<Buf<_>> = Ieee802154::parse(&(), buf).unwrap();
+
+        assert_eq!(frame.frame_type, FrameType::Data);
+        assert!(!frame.security_enabled);
+        assert!(!frame.frame_pending);
+        assert!(frame.ack_request);
+        assert!(frame.pan_id_compression);
+        assert_eq!(frame.frame_version, FrameVersion::Ieee802154);
+        assert_eq!(frame.sequence_number, Some(1));
         assert_eq!(
-            frame.src_addr(),
-            Some(Addr::Extended([
-                0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00
-            ]))
+            frame.ends,
+            (
+                Src((
+                    None,
+                    Some(Addr::Extended([
+                        0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00,
+                    ])),
+                )),
+                Dst((Some(Pan(0xabcd)), Some(Addr::BROADCAST))),
+            )
         );
     }
 
@@ -905,11 +911,11 @@ mod tests {
             #[test]
             #[allow(clippy::bool_assert_comparison)]
             fn $name() {
-                let frame = &mut $bytes[..];
-                let frame = Frame::parse(Buf::full(frame), ()).unwrap();
+                let frame = &$bytes[..];
+                let frame: Ieee802154<&[u8]> = Ieee802154::parse(&(), frame).unwrap();
 
                 $(
-                    assert_eq!(frame.$test_method(), $expected, stringify!($test_method));
+                    assert_eq!(frame.$test_method, $expected, stringify!($test_method));
                 )*
             }
         }
@@ -926,9 +932,10 @@ mod tests {
             0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, // src addr
         ];
         frame_type -> FrameType::Data,
-        dst_addr -> Some(Addr::Extended([0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00])),
-        src_addr -> Some(Addr::Extended([0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00])),
-        dst_pan_id -> Some(Pan(0xabcd)),
+        ends -> (
+            Src((Some(Pan(0x0403)), Some(Addr::Extended([0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00])))),
+            Dst((Some(Pan(0xabcd)), Some(Addr::Extended([0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00])))),
+        ),
     }
 
     vector_test! {
@@ -944,13 +951,11 @@ mod tests {
         frame_pending -> false,
         ack_request -> false,
         pan_id_compression -> false,
-        dst_addressing_mode -> AddressingMode::Short,
         frame_version -> FrameVersion::Ieee802154_2006,
-        src_addressing_mode -> AddressingMode::Short,
-        dst_pan_id -> Some(Pan(0x1234)),
-        dst_addr -> Some(Addr::Short([0x56, 0x78])),
-        src_pan_id -> Some(Pan(0x1234)),
-        src_addr -> Some(Addr::Short([0x9a, 0xbc])),
+        ends -> (
+            Src((Some(Pan(0x1234)), Some(Addr::Short([0x9a, 0xbc])))),
+            Dst((Some(Pan(0x1234)), Some(Addr::Short([0x56, 0x78])))),
+        ),
     }
 
     vector_test! {
@@ -968,9 +973,7 @@ mod tests {
         frame_pending -> false,
         ack_request -> false,
         pan_id_compression -> true,
-        dst_addressing_mode -> AddressingMode::Short,
         frame_version -> FrameVersion::Ieee802154_2006,
-        src_addressing_mode -> AddressingMode::Extended,
         payload -> &[0x2b, 0x00, 0x00, 0x00][..],
     }
 
@@ -992,28 +995,20 @@ mod tests {
         frame_pending -> false,
         ack_request -> true,
         pan_id_compression -> true,
-        dst_addressing_mode -> AddressingMode::Extended,
         frame_version -> FrameVersion::Ieee802154_2006,
-        src_addressing_mode -> AddressingMode::Extended,
-        dst_pan_id -> Some(Pan(0xabcd)),
-        dst_addr -> Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x06,0x15,0x9b,0xbf])),
-        src_pan_id -> None,
-        src_addr -> Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x14,0xb5,0xd9,0xc7])),
-        security_level -> 5,
-        key_identifier_mode -> 0,
-        frame_counter -> Some(305),
-        key_source -> None,
-        key_index -> None,
-        payload -> &[0x3e,0xe8,0xfb,0x85,0xe4,0xcc,0xf4,0x48,0x90,0xfe,0x56,0x66,0xf7,0x1c,0x65,0x9e,0xf9,0x93,0xc8,0x34,0x2e][..],
-        message_integrity_code -> Some(&[0x93, 0xC8, 0x34, 0x2E][..]),
-        mac_header -> &[
-            0x69,0xdc, // frame control
-            0x32, // sequence number
-            0xcd,0xab, // destination PAN id
-            0xbf,0x9b,0x15,0x06,0x00,0x4b,0x12,0x00, // extended destination address
-            0xc7,0xd9,0xb5,0x14,0x00,0x4b,0x12,0x00, // extended source address
-            0x05, // security control field
-            0x31,0x01,0x00,0x00, // frame counter
+        ends -> (
+            Src((None, Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x14,0xb5,0xd9,0xc7])))),
+            Dst((Some(Pan(0xabcd)), Some(Addr::Extended([0x00,0x12,0x4b,0x00,0x06,0x15,0x9b,0xbf])))),
+        ),
+        // security_level -> 5,
+        // key_identifier_mode -> 0,
+        // frame_counter -> Some(305),
+        // key_source -> None,
+        // key_index -> None,
+        payload -> &[
+            0x3e,0xe8,0xfb,0x85,0xe4,0xcc,0xf4,0x48,0x90,0xfe,0x56,0x66,
+            0xf7,0x1c,0x65,0x9e,0xf9,0x93,0xc8,0x34,0x2e
         ][..],
+        // message_integrity_code -> Some(&[0x93, 0xC8, 0x34, 0x2E][..]),
     }
 }

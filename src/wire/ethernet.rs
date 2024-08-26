@@ -1,8 +1,12 @@
-use core::{fmt, ops::Range};
+use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire};
+use crate::{
+    self as cutenet,
+    provide_any::Provider,
+    wire::{prelude::*, Data, DataMut, Dst, Ends, Src},
+};
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 pub struct Addr(pub [u8; 6]);
@@ -63,7 +67,7 @@ enum_with_unknown! {
     }
 }
 
-pub type Frame<T: ?Sized> = super::Packet<Ethernet, T>;
+struct Frame<T: ?Sized>(T);
 
 pub mod field {
     use crate::wire::field::*;
@@ -95,47 +99,47 @@ impl<T: Data + ?Sized> Frame<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct Ethernet {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub struct Ethernet<#[wire] T> {
     pub addr: Ends<Addr>,
-    pub proto: Protocol,
+    pub protocol: Protocol,
+    #[wire]
+    pub payload: T,
 }
 
-impl Wire for Ethernet {
-    const EMPTY_PAYLOAD: bool = false;
-
-    fn header_len(&self) -> usize {
-        HEADER_LEN
-    }
-
-    fn buffer_len(&self, payload_len: usize) -> usize {
-        HEADER_LEN + payload_len
-    }
-
-    fn payload_range(frame: Frame<&[u8]>) -> Range<usize> {
-        HEADER_LEN..frame.inner.len()
-    }
-
-    type ParseArg<'a> = ();
-    fn parse_packet(frame: Frame<&[u8]>, _: ()) -> Result<Ethernet, ParseErrorKind> {
-        if frame.inner.len() < HEADER_LEN {
-            return Err(ParseErrorKind::PacketTooShort);
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ethernet<T> {
+    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+        let len = raw.len();
+        if len < HEADER_LEN {
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
+
+        let frame = Frame(raw);
+
         Ok(Ethernet {
             addr: frame.addr(),
-            proto: frame.protocol(),
+            protocol: frame.protocol(),
+
+            payload: T::parse(cx, frame.0.pop(HEADER_LEN..len)?)?,
         })
     }
+}
 
-    fn build_packet(self, mut frame: Frame<&mut [u8]>, _: usize) -> Result<(), BuildErrorKind> {
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ethernet<T> {
+    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
         let Ethernet {
             addr: (Src(src), Dst(dst)),
-            proto,
+            protocol: proto,
+            payload,
         } = self;
-        frame.set_src_addr(src);
-        frame.set_dst_addr(dst);
-        frame.set_protocol(proto);
-        Ok(())
+
+        payload.build(cx)?.push(HEADER_LEN, |buf| {
+            let mut frame = Frame(buf);
+            frame.set_src_addr(src);
+            frame.set_dst_addr(dst);
+            frame.set_protocol(proto);
+            Ok(())
+        })
     }
 }
 
@@ -160,7 +164,7 @@ mod test_ipv4 {
 
     // Tests that are valid only with "proto-ipv4"
     use super::*;
-    use crate::{storage::Buf, wire::WireExt};
+    use crate::storage::Buf;
 
     const FRAME_BYTES: [u8; 64] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x08, 0x00, 0xaa,
@@ -180,11 +184,16 @@ mod test_ipv4 {
     #[test]
     fn test_deconstruct() {
         let mut fb = FRAME_BYTES;
-        let frame = Frame::parse(Buf::full(&mut fb[..]), ()).unwrap();
-        assert_eq!(frame.dst_addr(), Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
-        assert_eq!(frame.src_addr(), Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
-        assert_eq!(frame.protocol(), Protocol::Ipv4);
-        assert_eq!(frame.payload(), &PAYLOAD_BYTES[..]);
+        let frame: Ethernet<Buf<_>> = Ethernet::parse(&(), Buf::full(&mut fb[..])).unwrap();
+        assert_eq!(
+            frame.addr,
+            (
+                Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
+                Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
+            ),
+        );
+        assert_eq!(frame.protocol, Protocol::Ipv4);
+        assert_eq!(frame.payload.data(), &PAYLOAD_BYTES[..]);
     }
 
     #[test]
@@ -194,17 +203,21 @@ mod test_ipv4 {
                 Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
                 Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
             ),
-            proto: Protocol::Ipv4,
+            protocol: Protocol::Ipv4,
+            payload: PayloadHolder(PAYLOAD_BYTES.len()),
         };
 
         let bytes = vec![0xa5; 64];
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
         payload
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = tag.build(payload).unwrap();
-        assert_eq!(frame.into_raw().data(), &FRAME_BYTES[..]);
+        let frame = tag
+            .substitute(|_| payload, |_| unreachable!())
+            .build(&())
+            .unwrap();
+        assert_eq!(frame.data(), &FRAME_BYTES[..]);
     }
 }
 
@@ -214,7 +227,7 @@ mod test_ipv6 {
 
     // Tests that are valid only with "proto-ipv6"
     use super::*;
-    use crate::{storage::Buf, wire::WireExt};
+    use crate::storage::Buf;
 
     const FRAME_BYTES: [u8; 54] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x86, 0xdd, 0x60,
@@ -232,11 +245,16 @@ mod test_ipv6 {
     #[test]
     fn test_deconstruct() {
         let mut binding = FRAME_BYTES;
-        let frame = Frame::parse(Buf::full(&mut binding[..]), ()).unwrap();
-        assert_eq!(frame.dst_addr(), Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
-        assert_eq!(frame.src_addr(), Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
-        assert_eq!(frame.protocol(), Protocol::Ipv6);
-        assert_eq!(frame.payload(), &PAYLOAD_BYTES[..]);
+        let frame: Ethernet<Buf<_>> = Ethernet::parse(&(), Buf::full(&mut binding[..])).unwrap();
+        assert_eq!(
+            frame.addr,
+            (
+                Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
+                Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]))
+            )
+        );
+        assert_eq!(frame.protocol, Protocol::Ipv6);
+        assert_eq!(frame.payload.data(), &PAYLOAD_BYTES[..]);
     }
 
     #[test]
@@ -246,17 +264,21 @@ mod test_ipv6 {
                 Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
                 Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
             ),
-            proto: Protocol::Ipv6,
+            protocol: Protocol::Ipv6,
+            payload: PayloadHolder(PAYLOAD_BYTES.len()),
         };
 
         let bytes = vec![0xa5; 54];
 
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
         payload
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = tag.build(payload).unwrap();
-        assert_eq!(frame.into_raw().data(), &FRAME_BYTES[..]);
+        let frame = tag
+            .substitute(|_| payload, |_| unreachable!())
+            .build(&())
+            .unwrap();
+        assert_eq!(frame.data(), &FRAME_BYTES[..]);
     }
 }

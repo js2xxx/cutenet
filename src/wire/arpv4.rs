@@ -1,11 +1,11 @@
-use core::{net::Ipv4Addr, ops::Range};
+use core::net::Ipv4Addr;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{
-    ethernet::{self, Protocol},
-    ip::IpAddrExt,
-    BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire,
+use crate::{
+    self as cutenet,
+    provide_any::Provider,
+    wire::{ethernet, ip::IpAddrExt, prelude::*, Data, DataMut, Dst, Ends, Src},
 };
 
 enum_with_unknown! {
@@ -23,7 +23,7 @@ enum_with_unknown! {
     }
 }
 
-pub type Packet<T: ?Sized> = super::Packet<ArpV4, T>;
+struct Packet<T: ?Sized>(T);
 
 mod field {
     #![allow(non_snake_case)]
@@ -72,8 +72,8 @@ wire!(impl Packet {
         |data, value| NetworkEndian::write_u16(&mut data[field::HTYPE], value.into());
 
     /// Return the protocol type field.
-    protocol_type/set_protocol_type: Protocol =>
-        |data| Protocol::from(NetworkEndian::read_u16(&data[field::PTYPE]));
+    protocol_type/set_protocol_type: ethernet::Protocol =>
+        |data| ethernet::Protocol::from(NetworkEndian::read_u16(&data[field::PTYPE]));
         |data, value| NetworkEndian::write_u16(&mut data[field::PTYPE], value.into());
 
     /// Return the hardware length field.
@@ -131,34 +131,26 @@ impl<T: Data + ?Sized> Packet<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct ArpV4 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub struct ArpV4<U> {
     pub operation: Operation,
     pub addr: Ends<(ethernet::Addr, Ipv4Addr)>,
+    #[no_payload]
+    pub payload: U,
 }
 
-impl Wire for ArpV4 {
-    const EMPTY_PAYLOAD: bool = true;
-
-    fn header_len(&self) -> usize {
-        HEADER_LEN
-    }
-
-    fn buffer_len(&self, _: usize) -> usize {
-        HEADER_LEN
-    }
-
-    fn payload_range(packet: Packet<&[u8]>) -> Range<usize> {
-        HEADER_LEN..packet.inner.len()
-    }
-
-    type ParseArg<'a> = ();
-    fn parse_packet(packet: Packet<&[u8]>, _: ()) -> Result<ArpV4, ParseErrorKind> {
-        let len = packet.inner.len();
+impl<P, U> WireParse for ArpV4<U>
+where
+    P: PayloadParse<NoPayload = U> + Data,
+    U: NoPayload<Init = P>,
+{
+    fn parse(_: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+        let packet = Packet(raw);
+        let len = packet.0.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
         {
-            return Err(ParseErrorKind::PacketTooShort);
+            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
         }
 
         if !matches!(
@@ -170,37 +162,50 @@ impl Wire for ArpV4 {
             ),
             (
                 Hardware::Ethernet,
-                Protocol::Ipv4,
+                ethernet::Protocol::Ipv4,
                 HARDWARE_LEN,
                 PROTOCOL_LEN,
             )
         ) {
-            return Err(ParseErrorKind::ProtocolUnknown);
+            return Err(ParseErrorKind::ProtocolUnknown.with(packet.0));
         }
 
         Ok(ArpV4 {
             operation: packet.operation(),
             addr: packet.addr(),
+            payload: packet.0.truncate(),
         })
     }
+}
 
-    fn build_packet(self, mut packet: Packet<&mut [u8]>, _: usize) -> Result<(), BuildErrorKind> {
-        packet.set_hardware_type(Hardware::Ethernet);
-        packet.set_protocol_type(Protocol::Ipv4);
-        packet.set_hardware_len(HARDWARE_LEN);
-        packet.set_protocol_len(PROTOCOL_LEN);
-
+impl<P, U> WireBuild for ArpV4<U>
+where
+    P: PayloadBuild<NoPayload = U>,
+    U: NoPayload<Init = P>,
+{
+    fn build(self, _: &dyn Provider) -> Result<P, BuildError<P>> {
         let ArpV4 {
             operation,
             addr: (Src((src_hw, src_ip)), Dst((dst_hw, dst_ip))),
+            payload,
         } = self;
 
-        packet.set_operation(operation);
-        packet.set_source_hardware_addr(src_hw);
-        packet.set_source_protocol_addr(src_ip);
-        packet.set_target_hardware_addr(dst_hw);
-        packet.set_target_protocol_addr(dst_ip);
-        Ok(())
+        payload.init().push(HEADER_LEN, |buf| {
+            let mut packet = Packet(buf);
+
+            packet.set_hardware_type(Hardware::Ethernet);
+            packet.set_protocol_type(ethernet::Protocol::Ipv4);
+            packet.set_hardware_len(HARDWARE_LEN);
+            packet.set_protocol_len(PROTOCOL_LEN);
+
+            packet.set_operation(operation);
+            packet.set_source_hardware_addr(src_hw);
+            packet.set_source_protocol_addr(src_ip);
+            packet.set_target_hardware_addr(dst_hw);
+            packet.set_target_protocol_addr(dst_ip);
+
+            Ok(())
+        })
     }
 }
 
@@ -209,7 +214,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::{storage::Buf, wire::WireExt};
+    use crate::storage::Buf;
 
     const PACKET_BYTES: [u8; 28] = [
         0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x21,
@@ -219,28 +224,21 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut fb = PACKET_BYTES;
-        let packet = Packet::parse(Buf::full(&mut fb[..]), ()).unwrap();
+        let packet = ArpV4::parse(&(), Buf::full(&mut fb[..])).unwrap();
 
-        assert_eq!(packet.hardware_type(), Hardware::Ethernet);
-        assert_eq!(packet.protocol_type(), Protocol::Ipv4);
-        assert_eq!(packet.hardware_len(), HARDWARE_LEN);
-        assert_eq!(packet.protocol_len(), PROTOCOL_LEN);
-        assert_eq!(packet.operation(), Operation::Request);
+        assert_eq!(packet.operation, Operation::Request);
         assert_eq!(
-            packet.source_hardware_addr(),
-            ethernet::Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])
-        );
-        assert_eq!(
-            packet.source_protocol_addr(),
-            Ipv4Addr::from([0x21, 0x22, 0x23, 0x24])
-        );
-        assert_eq!(
-            packet.target_hardware_addr(),
-            ethernet::Addr([0x31, 0x32, 0x33, 0x34, 0x35, 0x36])
-        );
-        assert_eq!(
-            packet.target_protocol_addr(),
-            Ipv4Addr::from([0x41, 0x42, 0x43, 0x44])
+            packet.addr,
+            (
+                Src((
+                    ethernet::Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
+                    Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]),
+                )),
+                Dst((
+                    ethernet::Addr([0x31, 0x32, 0x33, 0x34, 0x35, 0x36]),
+                    Ipv4Addr::from([0x41, 0x42, 0x43, 0x44]),
+                )),
+            )
         );
     }
 
@@ -258,12 +256,16 @@ mod tests {
                     Ipv4Addr::from([0x41, 0x42, 0x43, 0x44]),
                 )),
             ),
+            payload: NoPayloadHolder,
         };
 
         let bytes = vec![0xa5; 28];
-        let payload = Buf::builder(bytes).reserve_for(&tag).build();
+        let payload = Buf::builder(bytes).reserve_for(tag);
 
-        let packet = tag.build(payload).unwrap();
-        assert_eq!(packet.into_raw().data(), &PACKET_BYTES[..]);
+        let packet: Buf<_> = tag
+            .substitute(|_| -> Buf<_> { unreachable!() }, |_| payload)
+            .build(&())
+            .unwrap();
+        assert_eq!(packet.data(), &PACKET_BYTES[..]);
     }
 }

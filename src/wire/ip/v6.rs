@@ -1,16 +1,20 @@
-#[path = "v6_cidr.rs"]
-mod cidr;
-
 use core::{
-    net::{Ipv4Addr, Ipv6Addr, Ipv6MulticastScope},
-    ops::Range,
+    cmp,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope},
 };
 
 use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
-use crate::wire::{BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire};
+use crate::{
+    self as cutenet,
+    provide_any::{request_ref, Provider},
+    wire::{prelude::*, CheckPayloadLen, Data, DataMut, Dst, Ends, Src},
+};
+
+#[path = "v6_cidr.rs"]
+mod cidr;
 
 /// Minimum MTU required of all links supporting IPv6. See [RFC 8200 § 5].
 ///
@@ -79,7 +83,7 @@ impl Ipv6AddrExt for Ipv6Addr {
     }
 }
 
-pub type Packet<T: ?Sized> = crate::wire::Packet<Ipv6, T>;
+struct Packet<T: ?Sized>(T);
 
 mod field {
     use crate::wire::field::*;
@@ -113,6 +117,7 @@ wire!(impl Packet {
         };
 
     /// Return the traffic class.
+    #[allow(unused)]
     traffic_class/set_traffic_class: u8 =>
         |data| ((NetworkEndian::read_u16(&data[0..2]) & 0x0ff0) >> 4) as u8;
         |data, value| {
@@ -125,6 +130,7 @@ wire!(impl Packet {
         };
 
     /// Return the flow label field.
+    #[allow(unused)]
     flow_label/set_flow_label: u32 =>
         |data| NetworkEndian::read_u24(&data[1..4]) & 0x000fffff;
         |data, value| {
@@ -170,65 +176,84 @@ impl<T: Data + ?Sized> Packet<T> {
     }
 }
 
-pub type Ipv6 = super::IpImpl<Ipv6Addr>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+pub struct Ipv6<#[wire] T> {
+    pub addr: Ends<Ipv6Addr>,
+    pub next_header: Protocol,
+    pub hop_limit: u8,
+    #[wire]
+    pub payload: T,
+}
 
-impl Wire for Ipv6 {
-    const EMPTY_PAYLOAD: bool = false;
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv6<T> {
+    fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
+        let packet = Packet(raw);
 
-    fn header_len(&self) -> usize {
-        HEADER_LEN
-    }
-
-    fn buffer_len(&self, payload_len: usize) -> usize {
-        HEADER_LEN + payload_len
-    }
-
-    fn payload_range(packet: Packet<&[u8]>) -> Range<usize> {
-        HEADER_LEN..packet.total_len()
-    }
-
-    type ParseArg<'a> = ();
-    fn parse_packet(packet: Packet<&[u8]>, _: ()) -> Result<Ipv6, ParseErrorKind> {
-        let len = packet.inner.len();
-        if len < field::DST_ADDR.end || len < packet.total_len() {
-            return Err(ParseErrorKind::PacketTooShort);
+        let len = packet.0.len();
+        let total_len = packet.total_len();
+        if len < field::DST_ADDR.end || len < total_len {
+            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
         }
         if packet.version() != 6 {
-            return Err(ParseErrorKind::VersionInvalid);
+            return Err(ParseErrorKind::VersionInvalid.with(packet.0));
         }
 
+        let addr @ (Src(src), Dst(dst)) = packet.addr();
+        let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
+
         Ok(Ipv6 {
-            addr: packet.addr(),
+            addr,
             next_header: packet.next_header(),
             hop_limit: packet.hop_limit(),
+
+            payload: T::parse(&[cx, &(generic_addr,)], {
+                let raw = packet.0;
+                let range = HEADER_LEN..total_len;
+                if let Some(&CheckPayloadLen(len)) = request_ref(cx) {
+                    match len.cmp(&range.len()) {
+                        cmp::Ordering::Less => return Err(ParseErrorKind::PacketTooShort.with(raw)),
+                        cmp::Ordering::Greater => {
+                            return Err(ParseErrorKind::PacketTooLong.with(raw))
+                        }
+                        cmp::Ordering::Equal => {}
+                    }
+                }
+                raw.pop(HEADER_LEN..total_len)?
+            })?,
         })
     }
+}
 
-    fn build_packet(
-        self,
-        mut packet: Packet<&mut [u8]>,
-        payload_len: usize,
-    ) -> Result<(), BuildErrorKind> {
-        let payload_len = u16::try_from(payload_len).map_err(|_| BuildErrorKind::PayloadTooLong)?;
-
-        packet.set_version(6);
-        packet.set_traffic_class(0);
-        packet.set_flow_label(0);
-        packet.set_payload_len(payload_len);
-        packet.set_hop_limit(64);
-        packet.set_next_header(Protocol::Unknown(0));
-
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ipv6<T> {
+    fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
         let Ipv6 {
             addr: (Src(src), Dst(dst)),
             next_header,
             hop_limit,
+            payload,
         } = self;
-        packet.set_src_addr(src);
-        packet.set_dst_addr(dst);
-        packet.set_next_header(next_header);
-        packet.set_hop_limit(hop_limit);
 
-        Ok(())
+        let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
+        let payload = payload.build(&[cx, &(generic_addr,)])?;
+
+        payload.push(HEADER_LEN, |buf| {
+            let payload_len = u16::try_from(buf.len() - HEADER_LEN)
+                .map_err(|_| BuildErrorKind::PayloadTooLong)?;
+
+            let mut packet = Packet(buf);
+
+            packet.set_version(6);
+            packet.set_traffic_class(0);
+            packet.set_flow_label(0);
+            packet.set_payload_len(payload_len);
+
+            packet.set_src_addr(src);
+            packet.set_dst_addr(dst);
+            packet.set_next_header(next_header);
+            packet.set_hop_limit(hop_limit);
+
+            Ok(())
+        })
     }
 }
 
@@ -237,7 +262,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::{storage::Buf, wire::WireExt};
+    use crate::storage::Buf;
 
     const REPR_PACKET_BYTES: [u8; 52] = [
         0x60, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x11, 0x40, 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -252,18 +277,18 @@ mod tests {
     #[test]
     fn test_packet_deconstruction() {
         let mut pb = REPR_PACKET_BYTES;
-        let packet = Packet::parse(Buf::full(&mut pb[..]), ()).unwrap();
+        let packet: Ipv6<Buf<_>> = Ipv6::parse(&(), Buf::full(&mut pb[..])).unwrap();
 
-        assert_eq!(packet.version(), 6);
-        assert_eq!(packet.traffic_class(), 0);
-        assert_eq!(packet.flow_label(), 0);
-        assert_eq!(packet.total_len(), 0x34);
-        assert_eq!(usize::from(packet.payload_len()), REPR_PAYLOAD_BYTES.len());
-        assert_eq!(packet.next_header(), Protocol::Udp);
-        assert_eq!(packet.hop_limit(), 0x40);
-        assert_eq!(packet.src_addr(), Ipv6Addr::LINK_LOCAL_ALL_ROUTERS);
-        assert_eq!(packet.dst_addr(), Ipv6Addr::LINK_LOCAL_ALL_NODES);
-        assert_eq!(packet.payload(), &REPR_PAYLOAD_BYTES[..]);
+        assert_eq!(packet.next_header, Protocol::Udp);
+        assert_eq!(packet.hop_limit, 0x40);
+        assert_eq!(
+            packet.addr,
+            (
+                Src(Ipv6Addr::LINK_LOCAL_ALL_ROUTERS),
+                Dst(Ipv6Addr::LINK_LOCAL_ALL_NODES),
+            ),
+        );
+        assert_eq!(packet.payload.data(), &REPR_PAYLOAD_BYTES[..]);
     }
 
     #[test]
@@ -275,15 +300,19 @@ mod tests {
             ),
             next_header: Protocol::Udp,
             hop_limit: 0x40,
+            payload: PayloadHolder(REPR_PACKET_BYTES.len()),
         };
         let tag = ip;
 
         let bytes = vec![0xff; 52];
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
+        let mut payload = Buf::builder(bytes).reserve_for(tag).build();
         payload.append_slice(&REPR_PAYLOAD_BYTES);
 
-        let packet = tag.build(payload).unwrap();
-        assert_eq!(packet.into_raw().data(), &REPR_PACKET_BYTES);
+        let packet = tag
+            .substitute(|_| payload, |_| unreachable!())
+            .build(&())
+            .unwrap();
+        assert_eq!(packet.data(), &REPR_PACKET_BYTES);
     }
 
     #[test]
@@ -291,26 +320,15 @@ mod tests {
         let mut pb = vec![];
         pb.extend(REPR_PACKET_BYTES);
         pb.push(0);
-        let packet = Packet::parse(Buf::full(&mut pb[..]), ()).unwrap();
+        let packet: Ipv6<Buf<_>> = Ipv6::parse(&(), Buf::full(&mut pb[..])).unwrap();
 
-        assert_eq!(packet.payload().len(), REPR_PAYLOAD_BYTES.len());
-    }
-
-    #[test]
-    fn test_repr_parse_valid() {
-        let mut pb = REPR_PACKET_BYTES;
-        let packet = Packet::parse(Buf::full(&mut pb[..]), ()).unwrap();
-        assert_eq!(packet.src_addr(), Ipv6Addr::LINK_LOCAL_ALL_ROUTERS);
-        assert_eq!(packet.dst_addr(), Ipv6Addr::LINK_LOCAL_ALL_NODES);
-        assert_eq!(packet.next_header(), Protocol::Udp);
-        assert_eq!(packet.payload_len(), 12);
-        assert_eq!(packet.hop_limit(), 64);
+        assert_eq!(packet.payload.len(), REPR_PAYLOAD_BYTES.len());
     }
 
     #[test]
     fn test_repr_parse_smaller_than_header() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Packet::parse(Buf::full(&mut bytes[..]), ()).is_err());
+        assert!(Ipv6::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
     }
 }

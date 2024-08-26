@@ -43,7 +43,7 @@ macro_rules! wire {
         $(
             $(#[$attr:meta])*
             $get:ident/$set:ident: $ty:ty =>
-                |$data:ident| $getter:expr;
+                $(@$this:ident)? |$data:ident| $getter:expr;
                 |$data_mut:ident, $arg:ident| $setter:expr;
         )*
     }) => {
@@ -51,8 +51,11 @@ macro_rules! wire {
             $(
                 #[allow(clippy::len_without_is_empty)]
                 $(#[$attr])*
-                pub fn $get(&self) -> $ty {
-                    (|$data: &[u8]| $getter)(self.inner.as_ref())
+                fn $get(&self) -> $ty {
+                    (|$($this: &Self,)? $data: &[u8]| $getter)(
+                        $(self, ${ignore($this)})?
+                        self.0.as_ref()
+                    )
                 }
             )*
         }
@@ -60,7 +63,7 @@ macro_rules! wire {
         impl<T: DataMut + ?Sized> $packet<T> {
             $(
                 fn $set(&mut self, $arg: $ty) {
-                    (|$data_mut: &mut [u8]| $setter)(self.inner.as_mut())
+                    (|$data_mut: &mut [u8]| $setter)(self.0.as_mut())
                 }
             )*
         }

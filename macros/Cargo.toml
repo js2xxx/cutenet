@@ -1,0 +1,11 @@
+[package]
+edition = "2021"
+name = "cutenet-macros"
+version = "0.1.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1.0"
+syn = {version = "2.0", features = ["extra-traits"]}
