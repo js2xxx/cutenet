@@ -22,7 +22,7 @@ pub mod ieee802154;
 pub use self::ieee802154::Ieee802154;
 
 pub mod ip;
-pub use self::ip::{Ip, v4::Ipv4, v6::Ipv6};
+pub use self::ip::{v4::Ipv4, v6::Ipv6, Ip};
 
 pub mod tcp;
 pub use self::tcp::Tcp;
@@ -59,9 +59,6 @@ pub type Ends<T> = (Src<T>, Dst<T>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Checksum;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct CheckPayloadLen(pub usize);
 
 pub const MAX_HWADDR_LEN: usize = 8;
 

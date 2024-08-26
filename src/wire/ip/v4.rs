@@ -1,7 +1,4 @@
-use core::{
-    cmp,
-    net::{IpAddr, Ipv4Addr},
-};
+use core::net::{IpAddr, Ipv4Addr};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
@@ -10,7 +7,7 @@ use super::{checksum, IpAddrExt, Protocol};
 use crate as cutenet;
 use crate::{
     provide_any::{request_ref, Provider},
-    wire::{prelude::*, CheckPayloadLen, Checksum, Data, DataMut, Dst, Ends, Src},
+    wire::{prelude::*, Checksum, Data, DataMut, Dst, Ends, Src},
 };
 
 #[path = "v4_cidr.rs"]
@@ -215,20 +212,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv4<T> {
                 key: packet.key(),
             }),
 
-            payload: T::parse(&[cx, &(generic_addr,)], {
-                let raw = packet.0;
-                let range = HEADER_LEN..usize::from(total_len);
-                if let Some(&CheckPayloadLen(len)) = request_ref(cx) {
-                    match len.cmp(&range.len()) {
-                        cmp::Ordering::Less => return Err(ParseErrorKind::PacketTooShort.with(raw)),
-                        cmp::Ordering::Greater => {
-                            return Err(ParseErrorKind::PacketTooLong.with(raw))
-                        }
-                        cmp::Ordering::Equal => {}
-                    }
-                }
-                raw.pop(range)?
-            })?,
+            payload: T::parse(
+                &[cx, &(generic_addr,)],
+                packet.0.pop(HEADER_LEN..usize::from(total_len))?,
+            )?,
         })
     }
 }

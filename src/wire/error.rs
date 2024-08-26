@@ -13,6 +13,7 @@ pub enum ParseErrorKind {
     FormatInvalid,
     ChecksumInvalid,
     VersionInvalid,
+
     SrcInvalid,
     DstInvalid,
 }
@@ -27,9 +28,7 @@ impl ParseErrorKind {
 #[derive(Debug, PartialEq, Eq)]
 pub enum BuildErrorKind {
     HeadroomTooShort,
-    PayloadTooShort,
     PayloadTooLong,
-    PayloadNotEmpty,
 }
 pub type BuildError<T: ?Sized> = Error<BuildErrorKind, T>;
 

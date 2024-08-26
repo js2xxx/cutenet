@@ -8,7 +8,7 @@ use crate::{
     wire::{
         ip::{checksum, v4::Ipv4},
         prelude::*,
-        CheckPayloadLen, Checksum, Data, DataMut,
+        Checksum, Data, DataMut,
     },
 };
 
@@ -293,18 +293,12 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Icmpv4<T> 
 
             (Message::DstUnreachable, code) => Ok(Icmpv4::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Ipv4::parse(
-                    &(CheckPayloadLen(8),),
-                    packet.0.pop(field::UNUSED.end..len)?,
-                )?,
+                payload: Ipv4::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
 
             (Message::TimeExceeded, code) => Ok(Icmpv4::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Ipv4::parse(
-                    &(CheckPayloadLen(8),),
-                    packet.0.pop(field::UNUSED.end..len)?,
-                )?,
+                payload: Ipv4::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
 
             _ => Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),

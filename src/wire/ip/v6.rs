@@ -1,7 +1,4 @@
-use core::{
-    cmp,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope},
-};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
@@ -9,8 +6,8 @@ pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
 use crate::{
     self as cutenet,
-    provide_any::{request_ref, Provider},
-    wire::{prelude::*, CheckPayloadLen, Data, DataMut, Dst, Ends, Src},
+    provide_any::Provider,
+    wire::{prelude::*, Data, DataMut, Dst, Ends, Src},
 };
 
 #[path = "v6_cidr.rs"]
@@ -206,20 +203,10 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv6<T> {
             next_header: packet.next_header(),
             hop_limit: packet.hop_limit(),
 
-            payload: T::parse(&[cx, &(generic_addr,)], {
-                let raw = packet.0;
-                let range = HEADER_LEN..total_len;
-                if let Some(&CheckPayloadLen(len)) = request_ref(cx) {
-                    match len.cmp(&range.len()) {
-                        cmp::Ordering::Less => return Err(ParseErrorKind::PacketTooShort.with(raw)),
-                        cmp::Ordering::Greater => {
-                            return Err(ParseErrorKind::PacketTooLong.with(raw))
-                        }
-                        cmp::Ordering::Equal => {}
-                    }
-                }
-                raw.pop(HEADER_LEN..total_len)?
-            })?,
+            payload: T::parse(
+                &[cx, &(generic_addr,)],
+                packet.0.pop(HEADER_LEN..total_len)?,
+            )?,
         })
     }
 }
