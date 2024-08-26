@@ -183,9 +183,15 @@ impl IpAddrExt for IpAddr {
     }
 }
 
-#[derive(Debug)]
-pub struct Ip<Addr> {
+#[derive(Debug, PartialEq, Eq)]
+pub struct IpImpl<Addr> {
     pub addr: Ends<Addr>,
     pub next_header: Protocol,
     pub hop_limit: u8,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ip {
+    V4(v4::Ipv4),
+    V6(v6::Ipv6),
 }

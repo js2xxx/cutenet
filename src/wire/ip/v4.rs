@@ -154,7 +154,7 @@ impl<T: DataMut + ?Sized> Packet<T> {
     }
 }
 
-pub type Ipv4 = super::Ip<Ipv4Addr>;
+pub type Ipv4 = super::IpImpl<Ipv4Addr>;
 
 impl Wire for Ipv4 {
     const EMPTY_PAYLOAD: bool = false;

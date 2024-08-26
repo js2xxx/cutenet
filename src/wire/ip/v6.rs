@@ -170,7 +170,7 @@ impl<T: Data + ?Sized> Packet<T> {
     }
 }
 
-pub type Ipv6 = super::Ip<Ipv6Addr>;
+pub type Ipv6 = super::IpImpl<Ipv6Addr>;
 
 impl Wire for Ipv6 {
     const EMPTY_PAYLOAD: bool = false;

@@ -3,12 +3,25 @@ use core::{fmt, marker::PhantomData, ops::Range};
 use crate::storage::{Buf, Storage};
 
 pub mod arpv4;
+pub use self::arpv4::ArpV4;
+
 pub mod ethernet;
+pub use self::ethernet::Ethernet;
+
 pub mod icmp;
+pub use self::icmp::{v4::Icmpv4, v6::Icmpv6};
+
 pub mod ieee802154;
+pub use self::ieee802154::Ieee802154;
+
 pub mod ip;
+pub use self::ip::{v4::Ipv4, v6::Ipv6};
+
 pub mod tcp;
+pub use self::tcp::Tcp;
+
 pub mod udp;
+pub use self::udp::Udp;
 
 mod field {
     use core::ops::{Range, RangeFrom};
