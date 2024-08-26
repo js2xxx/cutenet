@@ -13,6 +13,7 @@ pub enum TcpOption<'a> {
 }
 
 impl<'a> TcpOption<'a> {
+    #[cfg_attr(feature = "log", tracing::instrument)]
     pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], TcpOption<'a>), ParseErrorKind> {
         let (length, option);
         match *buffer.first().ok_or(ParseErrorKind::PacketTooShort)? {
@@ -44,23 +45,17 @@ impl<'a> TcpOption<'a> {
                             return Err(ParseErrorKind::FormatInvalid);
                         }
                         if n > 26 {
-                            // It's possible for a remote to send 4 SACK blocks,
-                            // but extremely rare.
-                            // Better to "lose" that 4th block and save the
-                            // extra RAM and CPU
-                            // cycles in the vastly more common case.
+                            // It's possible for a remote to send 4 SACK blocks, but extremely rare.
+                            // Better to "lose" that 4th block and save the extra RAM and CPU cycles
+                            // in the vastly more common case.
                             //
-                            // RFC 2018: SACK option that specifies n blocks
-                            // will have a length of
-                            // 8*n+2 bytes, so the 40 bytes available for TCP
-                            // options can specify a
-                            // maximum of 4 blocks.  It is expected that SACK
-                            // will often be used in
-                            // conjunction with the Timestamp option used for
-                            // RTTM [...] thus a
-                            // maximum of 3 SACK blocks will be allowed in this
-                            // case. net_debug!("
-                            // sACK with >3 blocks, truncating to 3");
+                            // RFC 2018: SACK option that specifies n blocks will have a length of
+                            // 8*n+2 bytes, so the 40 bytes available for TCP options can specify a
+                            // maximum of 4 blocks.  It is expected that SACK will often be used in
+                            // conjunction with the Timestamp option used for RTTM [...] thus a
+                            // maximum of 3 SACK blocks will be allowed in this case.
+                            #[cfg(feature = "log")]
+                            tracing::debug!("sACK with >3 blocks, truncating to 3");
                         }
                         let mut sack_ranges: [Option<(u32, u32)>; 3] = [None; 3];
 

@@ -1,4 +1,7 @@
-use core::ops::{Bound, DerefMut, RangeBounds};
+use core::{
+    cmp,
+    ops::{Bound, DerefMut, RangeBounds},
+};
 
 use stable_deref_trait::StableDeref;
 
@@ -177,6 +180,40 @@ impl<S: Storage + ?Sized> AsMut<[u8]> for Buf<S> {
 }
 
 impl<S: Storage + ?Sized> Buf<S> {
+    /// - Positive: moving towards the tail;
+    /// - Negative: moving towards the head.
+    pub fn try_move(&mut self, offset: isize) -> bool {
+        match offset.cmp(&0) {
+            cmp::Ordering::Equal => true,
+            cmp::Ordering::Greater => {
+                let offset = offset as usize;
+
+                if offset < self.tail_len() {
+                    let new_head = self.head + offset;
+                    let new_tail = self.tail + offset;
+                    self.storage.copy_within(self.head..self.tail, new_head);
+                    (self.head, self.tail) = (new_head, new_tail);
+                    true
+                } else {
+                    false
+                }
+            }
+            cmp::Ordering::Less => {
+                let offset = -offset as usize;
+
+                if offset < self.head_len() {
+                    let new_head = self.head - offset;
+                    let new_tail = self.tail - offset;
+                    self.storage.copy_within(self.head..self.tail, new_head);
+                    (self.head, self.tail) = (new_head, new_tail);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
     /// # Safety
     ///
     /// `size` must not exceeds `tail_len()`.

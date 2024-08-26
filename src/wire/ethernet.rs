@@ -4,8 +4,9 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
+    context::{Dst, Ends, Src},
     provide_any::Provider,
-    wire::{prelude::*, Data, DataMut, Dst, Ends, Src},
+    wire::{prelude::*, Data, DataMut},
 };
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
@@ -67,7 +68,7 @@ enum_with_unknown! {
     }
 }
 
-struct Frame<T: ?Sized>(T);
+struct RawFrame<T: ?Sized>(T);
 
 pub mod field {
     use crate::wire::field::*;
@@ -79,7 +80,7 @@ pub mod field {
 }
 pub const HEADER_LEN: usize = field::PAYLOAD.start;
 
-wire!(impl Frame {
+wire!(impl RawFrame {
     dst_addr/set_dst_addr: Addr =>
         |data| Addr::from_bytes(&data[field::DESTINATION]);
         |data, value| data[field::DESTINATION].copy_from_slice(value.as_bytes());
@@ -93,30 +94,30 @@ wire!(impl Frame {
         |data, value| NetworkEndian::write_u16(&mut data[field::ETHERTYPE], value.into());
 });
 
-impl<T: Data + ?Sized> Frame<T> {
+impl<T: Data + ?Sized> RawFrame<T> {
     pub fn addr(&self) -> Ends<Addr> {
         (Src(self.src_addr()), Dst(self.dst_addr()))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub struct Ethernet<#[wire] T> {
+pub struct Frame<#[wire] T> {
     pub addr: Ends<Addr>,
     pub protocol: Protocol,
     #[wire]
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ethernet<T> {
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
     fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
         if len < HEADER_LEN {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
-        let frame = Frame(raw);
+        let frame = RawFrame(raw);
 
-        Ok(Ethernet {
+        Ok(Frame {
             addr: frame.addr(),
             protocol: frame.protocol(),
 
@@ -125,16 +126,16 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ethernet<T
     }
 }
 
-impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ethernet<T> {
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
     fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
-        let Ethernet {
+        let Frame {
             addr: (Src(src), Dst(dst)),
             protocol: proto,
             payload,
         } = self;
 
         payload.build(cx)?.push(HEADER_LEN, |buf| {
-            let mut frame = Frame(buf);
+            let mut frame = RawFrame(buf);
             frame.set_src_addr(src);
             frame.set_dst_addr(dst);
             frame.set_protocol(proto);
@@ -184,7 +185,7 @@ mod test_ipv4 {
     #[test]
     fn test_deconstruct() {
         let mut fb = FRAME_BYTES;
-        let frame: Ethernet<Buf<_>> = Ethernet::parse(&(), Buf::full(&mut fb[..])).unwrap();
+        let frame: Frame<Buf<_>> = Frame::parse(&(), Buf::full(&mut fb[..])).unwrap();
         assert_eq!(
             frame.addr,
             (
@@ -198,7 +199,7 @@ mod test_ipv4 {
 
     #[test]
     fn test_construct() {
-        let tag = Ethernet {
+        let tag = Frame {
             addr: (
                 Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
                 Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
@@ -242,7 +243,7 @@ mod test_ipv6 {
     #[test]
     fn test_deconstruct() {
         let mut binding = FRAME_BYTES;
-        let frame: Ethernet<Buf<_>> = Ethernet::parse(&(), Buf::full(&mut binding[..])).unwrap();
+        let frame: Frame<Buf<_>> = Frame::parse(&(), Buf::full(&mut binding[..])).unwrap();
         assert_eq!(
             frame.addr,
             (
@@ -256,7 +257,7 @@ mod test_ipv6 {
 
     #[test]
     fn test_construct() {
-        let tag = Ethernet {
+        let tag = Frame {
             addr: (
                 Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
                 Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),

@@ -4,8 +4,9 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
+    context::{Dst, Ends, Src},
     provide_any::Provider,
-    wire::{ethernet, ip::IpAddrExt, prelude::*, Data, DataMut, Dst, Ends, Src},
+    wire::{ethernet, ip::IpAddrExt, prelude::*, Data, DataMut},
 };
 
 enum_with_unknown! {
@@ -23,7 +24,7 @@ enum_with_unknown! {
     }
 }
 
-struct Packet<T: ?Sized>(T);
+struct RawPacket<T: ?Sized>(T);
 
 mod field {
     #![allow(non_snake_case)]
@@ -65,7 +66,7 @@ pub const HARDWARE_LEN: u8 = 6;
 pub const PROTOCOL_LEN: u8 = 4;
 pub const HEADER_LEN: usize = field::TPA(HARDWARE_LEN, PROTOCOL_LEN).end;
 
-wire!(impl Packet {
+wire!(impl RawPacket {
     /// Return the hardware type field.
     hardware_type/set_hardware_type: Hardware =>
         |data| Hardware::from(NetworkEndian::read_u16(&data[field::HTYPE]));
@@ -122,7 +123,7 @@ wire!(impl Packet {
         };
 });
 
-impl<T: Data + ?Sized> Packet<T> {
+impl<T: Data + ?Sized> RawPacket<T> {
     pub fn addr(&self) -> Ends<(ethernet::Addr, Ipv4Addr)> {
         (
             Src((self.source_hardware_addr(), self.source_protocol_addr())),
@@ -132,20 +133,20 @@ impl<T: Data + ?Sized> Packet<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub struct ArpV4<U> {
+pub struct Packet<#[no_payload] U> {
     pub operation: Operation,
     pub addr: Ends<(ethernet::Addr, Ipv4Addr)>,
     #[no_payload]
     pub payload: U,
 }
 
-impl<P, U> WireParse for ArpV4<U>
+impl<P, U> WireParse for Packet<U>
 where
     P: PayloadParse<NoPayload = U> + Data,
     U: NoPayload<Init = P>,
 {
     fn parse(_: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = Packet(raw);
+        let packet = RawPacket(raw);
         let len = packet.0.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
@@ -170,7 +171,7 @@ where
             return Err(ParseErrorKind::ProtocolUnknown.with(packet.0));
         }
 
-        Ok(ArpV4 {
+        Ok(Packet {
             operation: packet.operation(),
             addr: packet.addr(),
             payload: packet.0.truncate(),
@@ -178,20 +179,20 @@ where
     }
 }
 
-impl<P, U> WireBuild for ArpV4<U>
+impl<P, U> WireBuild for Packet<U>
 where
     P: PayloadBuild<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
     fn build(self, _: &dyn Provider) -> Result<P, BuildError<P>> {
-        let ArpV4 {
+        let Packet {
             operation,
             addr: (Src((src_hw, src_ip)), Dst((dst_hw, dst_ip))),
             payload,
         } = self;
 
         payload.init().push(HEADER_LEN, |buf| {
-            let mut packet = Packet(buf);
+            let mut packet = RawPacket(buf);
 
             packet.set_hardware_type(Hardware::Ethernet);
             packet.set_protocol_type(ethernet::Protocol::Ipv4);
@@ -224,7 +225,7 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut fb = PACKET_BYTES;
-        let packet = ArpV4::parse(&(), Buf::full(&mut fb[..])).unwrap();
+        let packet = Packet::parse(&(), Buf::full(&mut fb[..])).unwrap();
 
         assert_eq!(packet.operation, Operation::Request);
         assert_eq!(
@@ -244,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_construct() {
-        let tag = ArpV4 {
+        let tag = Packet {
             operation: Operation::Request,
             addr: (
                 Src((

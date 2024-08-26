@@ -12,7 +12,6 @@ const MSG_ONCE_STRUCT: &str = "`Wire` requires exactly one field with `#[wire]` 
 const MSG_ONCE_VARIANT: &str =
     "`Wire` requires exactly one field with `#[wire]` or `#[no_payload]` in each variant";
 const MSG_ONCE_TY: &str = "`Wire` requires at most one type param with #[wire]";
-const MSG_SAME_NO_PAYLOAD_TY: &str = "`Wire` requires all #[no_payload]s to have the same type";
 
 #[proc_macro_derive(Wire, attributes(wire, no_payload))]
 pub fn derive_wire(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -38,7 +37,6 @@ impl ToTokens for IdentOrIndex {
 
 struct WirePayload {
     ident: IdentOrIndex,
-    ty: Type,
     is_inner: bool,
 }
 
@@ -52,7 +50,7 @@ struct Branch {
 struct WireTys {
     wire_ty: Option<Ident>,
     payload_ty: Ident,
-    no_payload_ty: Type,
+    no_payload_ty: Ident,
 }
 
 impl WireTys {
@@ -72,6 +70,7 @@ impl WireTys {
                 #wire_ty: cutenet::wire:: #main_ident<#(#addi_list,)* Payload = #payload_ty>,
             }
         });
+
         quote! {
             #wire_bound
             #payload_ty: cutenet::wire::Payload<NoPayload = #no_payload_ty>,
@@ -103,7 +102,6 @@ fn derive_fields(
                     Some(ident) => IdentOrIndex::Ident(ident),
                     None => IdentOrIndex::Index(*ime),
                 },
-                ty: me.ty.clone(),
                 is_inner: {
                     let (wire, no_payload) = me.attrs.iter().fold((false, false), |(payload, no_payload), attr| (
                         payload || matches!(&attr.meta, Meta::Path(p) if p.is_ident("wire")),
@@ -228,59 +226,42 @@ fn derive_enum(ident: &Ident, data: DataEnum) -> Result<Vec<Branch>> {
     data.variants.into_iter().map(to_tokens).collect()
 }
 
-fn derive_generics(branches: &[Branch], generics: &mut Generics) -> Result<(Generics, WireTys)> {
-    let pred_a = |attr: &Attribute| {
-        matches!(
-            &attr.meta,
-            Meta::Path(p)
-                if p.is_ident("wire")
-        )
-    };
-    let mut wire_ty = generics
-        .type_params_mut()
-        .filter(|p| p.attrs.iter().any(pred_a))
-        .collect::<Vec<_>>();
-    let wire_ty = match &mut *wire_ty {
-        [] => None,
-        [param] => {
-            param.attrs.retain(|attr| !pred_a(attr));
-            Some(param.clone())
-        }
-        [_, two, ..] => return Err(Error::new_spanned(two, MSG_ONCE_TY)),
-    };
-
-    let no_payload_ty = {
-        let mut no_payload_tys = branches
-            .iter()
-            .filter_map(|b| (!b.wire.is_inner).then_some(&b.wire.ty))
+fn derive_generics(generics: &mut Generics) -> Result<(Generics, WireTys)> {
+    fn type_param(generics: &mut Generics, ident: &str) -> Result<Option<TypeParam>> {
+        let pred_a = |attr: &Attribute| matches!(&attr.meta, Meta::Path(p) if p.is_ident(ident));
+        let mut wire_ty = generics
+            .type_params_mut()
+            .filter(|p| p.attrs.iter().any(pred_a))
             .collect::<Vec<_>>();
-        no_payload_tys.dedup();
-        match &*no_payload_tys {
+        Ok(match &mut *wire_ty {
             [] => None,
-            [me] => Some(*me),
-            [_, two, ..] => return Err(Error::new_spanned(two, MSG_SAME_NO_PAYLOAD_TY)),
-        }
-    };
+            [param] => {
+                param.attrs.retain(|attr| !pred_a(attr));
+                Some(param.clone())
+            }
+            [_, two, ..] => return Err(Error::new_spanned(two, MSG_ONCE_TY)),
+        })
+    }
+
+    let wire_ty = type_param(generics, "wire")?;
+    let no_payload_ty = type_param(generics, "no_payload")?;
 
     let orig = generics.clone();
     generics.make_where_clause();
 
     Ok((orig, WireTys {
-        wire_ty: match wire_ty {
-            Some(TypeParam { ident, .. }) => parse_quote!(#ident),
-            None => None,
-        },
+        wire_ty: wire_ty.map(|TypeParam { ident, .. }| ident),
         payload_ty: {
             let ident = Ident::new("__PayloadType", Span::call_site());
             generics.params.push(parse_quote!(#ident));
             ident
         },
         no_payload_ty: match no_payload_ty {
-            Some(ty) => ty.clone(),
+            Some(TypeParam { ident, .. }) => ident,
             None => {
                 let ident = Ident::new("__NoPayloadType", Span::call_site());
                 generics.params.push(parse_quote!(#ident));
-                parse_quote!(#ident)
+                ident
             }
         },
     }))
@@ -293,7 +274,7 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
         syn::Data::Union(_) => return Err(Error::new_spanned(input.ident, MSG_UNION)),
     };
 
-    let (gc, wire_tys) = derive_generics(&branches, &mut input.generics)?;
+    let (gc, wire_tys) = derive_generics(&mut input.generics)?;
 
     let ident = &input.ident;
     let (gimpl, _, gwhere) = input.generics.split_for_impl();
@@ -331,11 +312,7 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
             {
                 parse_quote!(<#ident as cutenet::wire::WireSubstitute<#sub_ty>>::Output)
             }
-            GenericParam::Type(TypeParam { ident, .. })
-                if let Type::Path(npty) = &no_payload_ty
-                    && npty.qself.is_none()
-                    && npty.path.is_ident(ident) =>
-            {
+            GenericParam::Type(TypeParam { ident, .. }) if no_payload_ty == ident => {
                 parse_quote!(<#sub_ty as cutenet::wire::Payload>::NoPayload)
             }
             GenericParam::Type(TypeParam { ident, .. }) => parse_quote!(#ident),

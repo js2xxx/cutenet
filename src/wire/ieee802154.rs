@@ -4,8 +4,9 @@ use byteorder::{ByteOrder, LittleEndian};
 
 use crate as cutenet;
 use crate::{
+    context::{Dst, Ends, Src},
     provide_any::Provider,
-    wire::{ip::IpAddrExt, prelude::*, Data, DataMut, Dst, Ends, Src},
+    wire::{ip::IpAddrExt, prelude::*, Data, DataMut},
 };
 
 enum_with_unknown! {
@@ -224,7 +225,7 @@ macro_rules! fc_bit_field {
     };
 }
 
-struct Frame<T: ?Sized>(T);
+struct RawFrame<T: ?Sized>(T);
 
 mod field {
     use crate::wire::field::*;
@@ -234,7 +235,7 @@ mod field {
     pub const ADDRESSING: Rest = 3..;
 }
 
-wire!(impl Frame {
+wire!(impl RawFrame {
     frame_type/set_frame_type: FrameType =>
         |data| {
             let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
@@ -294,7 +295,7 @@ wire!(impl Frame {
         };
 });
 
-impl<T: Data + ?Sized> Frame<T> {
+impl<T: Data + ?Sized> RawFrame<T> {
     fc_bit_field!(security_enabled, set_security_enabled, 3);
     fc_bit_field!(frame_pending, set_frame_pending, 4);
     fc_bit_field!(ack_request, set_ack_request, 5);
@@ -694,7 +695,7 @@ impl<T: Data + ?Sized> Frame<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub struct Ieee802154<#[wire] T> {
+pub struct Frame<#[wire] T> {
     pub frame_type: FrameType,
     pub security_enabled: bool,
     pub frame_pending: bool,
@@ -707,9 +708,9 @@ pub struct Ieee802154<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ieee802154<T> {
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
     fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
-        let frame = Frame(raw);
+        let frame = RawFrame(raw);
 
         let len = frame.0.len();
 
@@ -752,7 +753,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ieee802154
             return Err(ParseErrorKind::PacketTooShort.with(frame.0));
         }
 
-        Ok(Ieee802154 {
+        Ok(Frame {
             frame_type: frame.frame_type(),
             security_enabled: frame.security_enabled(),
             frame_pending: frame.frame_pending(),
@@ -767,11 +768,11 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ieee802154
     }
 }
 
-impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ieee802154<T> {
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
     fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
         let header_len = self.header_len();
 
-        let Ieee802154 {
+        let Frame {
             frame_type,
             security_enabled,
             frame_pending,
@@ -784,7 +785,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ieee802154<T> {
         } = self;
 
         payload.build(cx)?.push(header_len, |buf| {
-            let mut frame = Frame(buf);
+            let mut frame = RawFrame(buf);
 
             frame.set_frame_type(frame_type);
             frame.set_security_enabled(security_enabled);
@@ -817,7 +818,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ieee802154<T> {
     }
 }
 
-impl<T> Ieee802154<T> {
+impl<T> Frame<T> {
     fn header_len(&self) -> usize {
         let (Src((_, src_addr)), Dst((_, dst_addr))) = self.ends;
         3 + 2
@@ -850,7 +851,7 @@ mod tests {
     fn prepare_frame() {
         let mut buffer = [0u8; 128];
 
-        let repr = Ieee802154 {
+        let repr = Frame {
             frame_type: FrameType::Data,
             security_enabled: false,
             frame_pending: false,
@@ -880,7 +881,7 @@ mod tests {
 
         // println!("{frame:2x?}");
 
-        let frame: Ieee802154<Buf<_>> = Ieee802154::parse(&(), buf).unwrap();
+        let frame: Frame<Buf<_>> = Frame::parse(&(), buf).unwrap();
 
         assert_eq!(frame.frame_type, FrameType::Data);
         assert!(!frame.security_enabled);
@@ -909,7 +910,7 @@ mod tests {
             #[allow(clippy::bool_assert_comparison)]
             fn $name() {
                 let frame = &$bytes[..];
-                let frame: Ieee802154<&[u8]> = Ieee802154::parse(&(), frame).unwrap();
+                let frame: Frame<&[u8]> = Frame::parse(&(), frame).unwrap();
 
                 $(
                     assert_eq!(frame.$test_method, $expected, stringify!($test_method));

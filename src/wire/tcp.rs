@@ -4,11 +4,12 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate as cutenet;
 use crate::{
+    context::{Checksum, Dst, Ends, Src},
     provide_any::{request_ref, Provider},
     wire::{
         ip::{self, checksum},
         prelude::*,
-        Checksum, Data, DataMut, Dst, Ends, Src,
+        Data, DataMut,
     },
 };
 
@@ -110,7 +111,7 @@ impl cmp::PartialOrd for SeqNumber {
     }
 }
 
-struct Packet<T: ?Sized>(T);
+struct RawPacket<T: ?Sized>(T);
 
 mod field {
     #![allow(non_snake_case)]
@@ -141,7 +142,7 @@ mod field {
 
 pub const HEADER_LEN: usize = field::URGENT.end;
 
-wire!(impl Packet {
+wire!(impl RawPacket {
     src_port/set_src_port: u16 =>
         |data| NetworkEndian::read_u16(&data[field::SRC_PORT]);
         |data, value| NetworkEndian::write_u16(&mut data[field::SRC_PORT], value);
@@ -191,7 +192,7 @@ wire!(impl Packet {
 
 macro_rules! wire_flags {
     ($($get:ident/$set:ident => $c:ident,)*) => {
-        impl<T: Data + ?Sized> Packet<T> {
+        impl<T: Data + ?Sized> RawPacket<T> {
             $(
                 #[allow(unused)]
                 fn $get(&self) -> bool {
@@ -200,7 +201,7 @@ macro_rules! wire_flags {
             )*
         }
 
-        impl<T: DataMut + ?Sized> Packet<T> {
+        impl<T: DataMut + ?Sized> RawPacket<T> {
             $(
                 #[allow(unused)]
                 fn $set(&mut self, value: bool) {
@@ -221,7 +222,7 @@ wire_flags! {
     ece/set_ece => ECE, cwr/set_cwr => CWR, ns/set_ns => NS,
 }
 
-impl<T: Data + ?Sized> Packet<T> {
+impl<T: Data + ?Sized> RawPacket<T> {
     pub fn port(&self) -> Ends<u16> {
         (Src(self.src_port()), Dst(self.dst_port()))
     }
@@ -279,7 +280,7 @@ impl<T: Data + ?Sized> Packet<T> {
     }
 }
 
-impl<T: DataMut + ?Sized> Packet<T> {
+impl<T: DataMut + ?Sized> RawPacket<T> {
     /// Compute and fill in the header checksum.
     ///
     /// # Panics
@@ -308,7 +309,7 @@ impl<T: DataMut + ?Sized> Packet<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub struct Tcp<#[wire] T> {
+pub struct Packet<#[wire] T> {
     pub port: Ends<u16>,
     pub control: Control,
     pub seq_number: SeqNumber,
@@ -323,9 +324,9 @@ pub struct Tcp<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Tcp<T> {
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = Packet(raw);
+        let packet = RawPacket(raw);
 
         let len = packet.0.len();
         if len < field::URGENT.end {
@@ -392,12 +393,12 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Tcp<T> {
                     // value exceeding 14, the TCP should log the error but use 14 instead of the
                     // specified value.
                     window_scale = if value > 14 {
-                        // net_debug!(
-                        //     "{}:{}:{}:{}: parsed window scaling factor>14, setting to 14",
-                        // //     src_addr,     packet.src_port(),
-                        //     dst_addr,
-                        //     packet.dst_port()
-                        // );
+                        #[cfg(feature = "log")]
+                        tracing::debug!(
+                            "{}:{}: parsed window scaling factor>14, setting to 14",
+                            packet.src_port(),
+                            packet.dst_port(),
+                        );
                         Some(14)
                     } else {
                         Some(value)
@@ -413,7 +414,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Tcp<T> {
             options = next_options;
         }
 
-        Ok(Tcp {
+        Ok(Packet {
             port: packet.port(),
             control,
             seq_number: packet.seq_number(),
@@ -429,11 +430,11 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Tcp<T> {
     }
 }
 
-impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Tcp<T> {
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
         let header_len = self.header_len();
 
-        let Tcp {
+        let Packet {
             port: (Src(src_port), Dst(dst_port)),
             control,
             seq_number,
@@ -448,7 +449,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Tcp<T> {
         } = self;
 
         payload.build(cx)?.push(header_len, |buf| {
-            let mut packet = Packet(buf);
+            let mut packet = RawPacket(buf);
 
             packet.set_src_port(src_port);
             packet.set_dst_port(dst_port);
@@ -509,7 +510,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Tcp<T> {
     }
 }
 
-impl<T> Tcp<T> {
+impl<T> Packet<T> {
     fn header_len(&self) -> usize {
         let mut length = field::URGENT.end;
         if self.max_seg_size.is_some() {
@@ -539,7 +540,7 @@ impl<T> Tcp<T> {
     }
 }
 
-impl<T: Wire> Tcp<T> {
+impl<T: Wire> Packet<T> {
     /// Return the length of the segment, in terms of sequence space.
     pub fn segment_len(&self) -> usize {
         self.payload_len() + self.control.len()
@@ -575,7 +576,7 @@ mod tests {
 
     #[test]
     fn test_deconstruct() {
-        let packet: Tcp<&[u8]> = Tcp::parse(
+        let packet: Packet<&[u8]> = Packet::parse(
             &(Checksum, (Src(SRC_ADDR), Dst(DST_ADDR))),
             &PACKET_BYTES[..],
         )
@@ -591,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_truncated() {
-        let err = Tcp::<&[u8]>::parse(&(), &PACKET_BYTES[..23]).unwrap_err();
+        let err = Packet::<&[u8]>::parse(&(), &PACKET_BYTES[..23]).unwrap_err();
         assert_eq!(err.kind, ParseErrorKind::PacketTooShort);
     }
 
@@ -600,8 +601,8 @@ mod tests {
         0x23, 0x7a, 0x8d, 0x00, 0x00, 0xaa, 0x00, 0x00, 0xff,
     ];
 
-    fn packet_repr<T>(t: T) -> Tcp<T> {
-        Tcp {
+    fn packet_repr<T>(t: T) -> Packet<T> {
+        Packet {
             port: (Src(48896), Dst(80)),
             seq_number: SeqNumber(0x01234567),
             ack_number: None,
@@ -618,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let repr = Tcp::parse(
+        let repr = Packet::parse(
             &(Checksum, (Src(SRC_ADDR), Dst(DST_ADDR))),
             &SYN_PACKET_BYTES[..],
         )

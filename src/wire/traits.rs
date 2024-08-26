@@ -251,9 +251,12 @@ mod buf {
         where
             F: FnOnce(&mut [u8]) -> Result<(), BuildErrorKind>,
         {
-            let Some(_) = self.try_prepend(size) else {
-                return Err(BuildErrorKind::HeadroomTooShort.with(self));
-            };
+            if self.try_prepend(size).is_none() {
+                if !self.try_move((size - self.head_len()) as isize) {
+                    return Err(BuildErrorKind::HeadroomTooShort.with(self));
+                }
+                self.prepend(size);
+            }
 
             match set(self.data_mut()) {
                 Ok(()) => Ok(self),

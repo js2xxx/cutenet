@@ -11,16 +11,93 @@ pub mod v4;
 pub mod v6;
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub enum Cidr {
+    V4(v4::Cidr),
+    V6(v6::Cidr),
+}
+
+impl Cidr {
+    /// Create a CIDR block from the given address and prefix length.
+    ///
+    /// # Panics
+    /// This function panics if the given prefix length is invalid for the given
+    /// address.
+    pub fn new(addr: IpAddr, prefix_len: u8) -> Cidr {
+        match addr {
+            IpAddr::V4(addr) => Cidr::V4(v4::Cidr::new(addr, prefix_len)),
+            IpAddr::V6(addr) => Cidr::V6(v6::Cidr::new(addr, prefix_len)),
+        }
+    }
+
+    /// Return the IP address of this CIDR block.
+    pub const fn addr(&self) -> IpAddr {
+        match *self {
+            Cidr::V4(cidr) => IpAddr::V4(cidr.address()),
+            Cidr::V6(cidr) => IpAddr::V6(cidr.address()),
+        }
+    }
+
+    /// Return the prefix length of this CIDR block.
+    pub const fn prefix_len(&self) -> u8 {
+        match *self {
+            Cidr::V4(cidr) => cidr.prefix_len(),
+            Cidr::V6(cidr) => cidr.prefix_len(),
+        }
+    }
+
+    /// Query whether the subnetwork described by this CIDR block contains
+    /// the given address.
+    pub fn contains_addr(&self, addr: &IpAddr) -> bool {
+        match (self, addr) {
+            (Cidr::V4(cidr), IpAddr::V4(addr)) => cidr.contains_addr(addr),
+            (Cidr::V6(cidr), IpAddr::V6(addr)) => cidr.contains_addr(addr),
+            _ => false,
+        }
+    }
+
+    /// Query whether the subnetwork described by this CIDR block contains
+    /// the subnetwork described by the given CIDR block.
+    pub fn contains_subnet(&self, subnet: &Cidr) -> bool {
+        match (self, subnet) {
+            (Cidr::V4(cidr), Cidr::V4(other)) => cidr.contains_subnet(other),
+            (Cidr::V6(cidr), Cidr::V6(other)) => cidr.contains_subnet(other),
+            _ => false,
+        }
+    }
+}
+
+impl From<v4::Cidr> for Cidr {
+    fn from(addr: v4::Cidr) -> Self {
+        Cidr::V4(addr)
+    }
+}
+
+impl From<v6::Cidr> for Cidr {
+    fn from(addr: v6::Cidr) -> Self {
+        Cidr::V6(addr)
+    }
+}
+
+impl fmt::Display for Cidr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Cidr::V4(cidr) => cidr.fmt(f),
+            Cidr::V6(cidr) => cidr.fmt(f),
+        }
+    }
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum Version {
-    Ipv4,
-    Ipv6,
+    V4,
+    V6,
 }
 
 impl Version {
     pub const fn of_packet(data: &[u8]) -> Option<Version> {
         match data[0] >> 4 {
-            4 => Some(Version::Ipv4),
-            6 => Some(Version::Ipv6),
+            4 => Some(Version::V4),
+            6 => Some(Version::V6),
             _ => None,
         }
     }
@@ -29,8 +106,8 @@ impl Version {
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Version::Ipv4 => write!(f, "IPv4"),
-            Version::Ipv6 => write!(f, "IPv6"),
+            Version::V4 => write!(f, "IPv4"),
+            Version::V6 => write!(f, "IPv6"),
         }
     }
 }
@@ -219,7 +296,8 @@ impl IpAddrExt for IpAddr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub enum Ip<#[wire] T> {
-    V4(#[wire] v4::Ipv4<T>),
-    V6(#[wire] v6::Ipv6<T>),
+pub enum Packet<#[wire] T, #[no_payload] U> {
+    Arp(#[wire] super::Arpv4Packet<U>),
+    V4(#[wire] v4::Packet<T>),
+    V6(#[wire] v6::Packet<T>),
 }

@@ -4,12 +4,9 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate as cutenet;
 use crate::{
+    context::Checksum,
     provide_any::{request_ref, Provider},
-    wire::{
-        ip::{checksum, v4::Ipv4},
-        prelude::*,
-        Checksum, Data, DataMut,
-    },
+    wire::{ip::checksum, prelude::*, Data, DataMut, Ipv4Packet},
 };
 
 enum_with_unknown! {
@@ -166,7 +163,7 @@ enum_with_unknown! {
     }
 }
 
-struct Packet<T: ?Sized>(T);
+struct RawPacket<T: ?Sized>(T);
 
 mod field {
     use crate::wire::field::*;
@@ -183,7 +180,7 @@ mod field {
     pub const HEADER_END: usize = 8;
 }
 
-wire!(impl Packet {
+wire!(impl RawPacket {
     /// Return the message type field.
     msg_type/set_msg_type: Message =>
         |data| Message::from(data[field::TYPE]);
@@ -221,14 +218,14 @@ wire!(impl Packet {
         |data, value| NetworkEndian::write_u16(&mut data[field::ECHO_SEQNO], value);
 });
 
-impl<T: Data + ?Sized> Packet<T> {
+impl<T: Data + ?Sized> RawPacket<T> {
     /// Validate the header checksum.
     pub fn verify_checksum(&self) -> bool {
         checksum::data(self.0.as_ref()) == !0
     }
 }
 
-impl<T: DataMut + ?Sized> Packet<T> {
+impl<T: DataMut + ?Sized> RawPacket<T> {
     pub fn fill_checksum(&mut self) {
         self.set_checksum(0);
         let checksum = !checksum::data(self.0.as_ref());
@@ -238,7 +235,7 @@ impl<T: DataMut + ?Sized> Packet<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
 #[non_exhaustive]
-pub enum Icmpv4<#[wire] T> {
+pub enum Packet<#[wire] T> {
     EchoRequest {
         ident: u16,
         seq_no: u16,
@@ -254,18 +251,18 @@ pub enum Icmpv4<#[wire] T> {
     DstUnreachable {
         reason: DstUnreachable,
         #[wire]
-        payload: Ipv4<T>,
+        payload: Ipv4Packet<T>,
     },
     TimeExceeded {
         reason: TimeExceeded,
         #[wire]
-        payload: Ipv4<T>,
+        payload: Ipv4Packet<T>,
     },
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Icmpv4<T> {
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = Packet(raw);
+        let packet = RawPacket(raw);
 
         let len = packet.0.len();
         if len < field::HEADER_END {
@@ -279,26 +276,26 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Icmpv4<T> 
         }
 
         match (packet.msg_type(), packet.msg_code()) {
-            (Message::EchoRequest, 0) => Ok(Icmpv4::EchoRequest {
+            (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
                 payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
 
-            (Message::EchoReply, 0) => Ok(Icmpv4::EchoReply {
+            (Message::EchoReply, 0) => Ok(Packet::EchoReply {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
                 payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
 
-            (Message::DstUnreachable, code) => Ok(Icmpv4::DstUnreachable {
+            (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Ipv4::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv4Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
 
-            (Message::TimeExceeded, code) => Ok(Icmpv4::TimeExceeded {
+            (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Ipv4::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv4Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
 
             _ => Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
@@ -306,9 +303,9 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Icmpv4<T> 
     }
 }
 
-impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Icmpv4<T> {
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
-        let checksum = |mut packet: Packet<&mut [u8]>| {
+        let checksum = |mut packet: RawPacket<&mut [u8]>| {
             if let Some(Checksum) = request_ref(cx) {
                 packet.fill_checksum();
             } else {
@@ -320,9 +317,9 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Icmpv4<T> {
         };
 
         match self {
-            Icmpv4::EchoRequest { ident, seq_no, payload } => {
+            Packet::EchoRequest { ident, seq_no, payload } => {
                 payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::EchoRequest);
                     packet.set_msg_code(0);
@@ -332,9 +329,9 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Icmpv4<T> {
                     checksum(packet)
                 })
             }
-            Icmpv4::EchoReply { ident, seq_no, payload } => {
+            Packet::EchoReply { ident, seq_no, payload } => {
                 payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::EchoReply);
                     packet.set_msg_code(0);
@@ -344,9 +341,9 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Icmpv4<T> {
                     checksum(packet)
                 })
             }
-            Icmpv4::DstUnreachable { reason, payload } => {
+            Packet::DstUnreachable { reason, payload } => {
                 payload.build(&())?.push(field::UNUSED.end, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::DstUnreachable);
                     packet.set_msg_code(reason.into());
@@ -354,9 +351,9 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Icmpv4<T> {
                     checksum(packet)
                 })
             }
-            Icmpv4::TimeExceeded { reason, payload } => {
+            Packet::TimeExceeded { reason, payload } => {
                 payload.build(&())?.push(field::UNUSED.end, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::TimeExceeded);
                     packet.set_msg_code(reason.into());
@@ -383,8 +380,8 @@ mod tests {
 
     #[test]
     fn test_echo_deconstruct() {
-        let packet: Icmpv4<&[u8]> = Icmpv4::parse(&(Checksum,), &ECHO_PACKET_BYTES[..]).unwrap();
-        assert_eq!(packet, Icmpv4::EchoRequest {
+        let packet: Packet<&[u8]> = Packet::parse(&(Checksum,), &ECHO_PACKET_BYTES[..]).unwrap();
+        assert_eq!(packet, Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
             payload: &ECHO_DATA_BYTES[..]
@@ -393,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_echo_construct() {
-        let tag = Icmpv4::EchoRequest {
+        let tag = Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
             payload: PayloadHolder(ECHO_DATA_BYTES.len()),

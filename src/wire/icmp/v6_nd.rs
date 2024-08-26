@@ -4,11 +4,12 @@ use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 use option::NdOption;
 
-use super::{field, Message, Packet};
+use super::{field, Message, RawPacket};
 use crate::wire::{ip::IpAddrExt, prelude::*, Data, DataMut, RawHwAddr};
 
 #[path = "v6_ndopt.rs"]
 mod option;
+pub use self::option::{PrefixInfo, PrefixInfoFlags};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,7 +28,7 @@ bitflags! {
     }
 }
 
-wire!(impl Packet {
+wire!(impl RawPacket {
     current_hop_limit/set_current_hop_limit: u8 =>
         |data| data[field::CUR_HOP_LIMIT];
         |data, value| data[field::CUR_HOP_LIMIT] = value;
@@ -132,7 +133,7 @@ impl Nd {
         }
     }
 
-    pub(super) fn parse(packet: Packet<&[u8]>) -> Result<Self, ParseErrorKind> {
+    pub(super) fn parse(packet: RawPacket<&[u8]>) -> Result<Self, ParseErrorKind> {
         let (mut src_ll_addr, mut mtu, mut prefix_info, mut target_ll_addr) =
             (None, None, None, None);
 
@@ -182,7 +183,7 @@ impl Nd {
         }
     }
 
-    pub(super) fn build(self, mut packet: Packet<&mut [u8]>) {
+    pub(super) fn build(self, mut packet: RawPacket<&mut [u8]>) {
         match self {
             Nd::RouterSolicit { lladdr } => {
                 packet.set_msg_type(Message::RouterSolicit);
@@ -264,8 +265,9 @@ mod tests {
 
     use super::*;
     use crate::{
+        context::{Checksum, Dst, Ends, Src},
         storage::Buf,
-        wire::{ethernet, icmp::v6::Icmpv6, Checksum, Dst, Ends, Src},
+        wire::{ethernet, icmp::v6::Packet},
     };
 
     const MOCK_IP_ADDR_1: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
@@ -281,8 +283,8 @@ mod tests {
         0x84, 0x01, 0x01, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
     ];
 
-    fn create_repr<U: NoPayload>(payload: U) -> Icmpv6<U::Init, U> {
-        Icmpv6::Nd {
+    fn create_repr<U: NoPayload>(payload: U) -> Packet<U::Init, U> {
+        Packet::Nd {
             nd: Nd::RouterAdvert {
                 hop_limit: 64,
                 flags: RouterFlags::MANAGED,
@@ -299,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_router_advert_deconstruct() {
-        let packet: Icmpv6<&[u8], _> = Icmpv6::parse(&CX, &ROUTER_ADVERT_BYTES[..]).unwrap();
+        let packet: Packet<&[u8], _> = Packet::parse(&CX, &ROUTER_ADVERT_BYTES[..]).unwrap();
         assert_eq!(packet, create_repr((&[][..]).truncate()));
     }
 

@@ -6,8 +6,9 @@ pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
 use crate::{
     self as cutenet,
+    context::{Dst, Ends, Src},
     provide_any::Provider,
-    wire::{prelude::*, Data, DataMut, Dst, Ends, Src},
+    wire::{prelude::*, Data, DataMut},
 };
 
 #[path = "v6_cidr.rs"]
@@ -80,7 +81,7 @@ impl Ipv6AddrExt for Ipv6Addr {
     }
 }
 
-struct Packet<T: ?Sized>(T);
+struct RawPacket<T: ?Sized>(T);
 
 mod field {
     use crate::wire::field::*;
@@ -104,7 +105,7 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
-wire!(impl Packet {
+wire!(impl RawPacket {
     version/set_version: u8 =>
         |data| data[field::VER_TC_FLOW.start] >> 4;
         |data, value| {
@@ -162,7 +163,7 @@ wire!(impl Packet {
         |data, value| data[field::DST_ADDR].copy_from_slice(&value.octets());
 });
 
-impl<T: Data + ?Sized> Packet<T> {
+impl<T: Data + ?Sized> RawPacket<T> {
     /// Return the payload length added to the known header length.
     pub fn total_len(&self) -> usize {
         HEADER_LEN + usize::from(self.payload_len())
@@ -174,7 +175,7 @@ impl<T: Data + ?Sized> Packet<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub struct Ipv6<#[wire] T> {
+pub struct Packet<#[wire] T> {
     pub addr: Ends<Ipv6Addr>,
     pub next_header: Protocol,
     pub hop_limit: u8,
@@ -182,9 +183,9 @@ pub struct Ipv6<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv6<T> {
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = Packet(raw);
+        let packet = RawPacket(raw);
 
         let len = packet.0.len();
         let total_len = packet.total_len();
@@ -198,7 +199,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv6<T> {
         let addr @ (Src(src), Dst(dst)) = packet.addr();
         let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
 
-        Ok(Ipv6 {
+        Ok(Packet {
             addr,
             next_header: packet.next_header(),
             hop_limit: packet.hop_limit(),
@@ -211,9 +212,9 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv6<T> {
     }
 }
 
-impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ipv6<T> {
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
-        let Ipv6 {
+        let Packet {
             addr: (Src(src), Dst(dst)),
             next_header,
             hop_limit,
@@ -227,7 +228,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ipv6<T> {
             let payload_len = u16::try_from(buf.len() - HEADER_LEN)
                 .map_err(|_| BuildErrorKind::PayloadTooLong)?;
 
-            let mut packet = Packet(buf);
+            let mut packet = RawPacket(buf);
 
             packet.set_version(6);
             packet.set_traffic_class(0);
@@ -264,7 +265,7 @@ mod tests {
     #[test]
     fn test_packet_deconstruction() {
         let mut pb = REPR_PACKET_BYTES;
-        let packet: Ipv6<Buf<_>> = Ipv6::parse(&(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.next_header, Protocol::Udp);
         assert_eq!(packet.hop_limit, 0x40);
@@ -280,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_packet_construction() {
-        let ip = Ipv6 {
+        let ip = Packet {
             addr: (
                 Src(Ipv6Addr::LINK_LOCAL_ALL_ROUTERS),
                 Dst(Ipv6Addr::LINK_LOCAL_ALL_NODES),
@@ -304,7 +305,7 @@ mod tests {
         let mut pb = vec![];
         pb.extend(REPR_PACKET_BYTES);
         pb.push(0);
-        let packet: Ipv6<Buf<_>> = Ipv6::parse(&(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.payload.len(), REPR_PAYLOAD_BYTES.len());
     }
@@ -313,6 +314,6 @@ mod tests {
     fn test_repr_parse_smaller_than_header() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Ipv6::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
+        assert!(Packet::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
     }
 }

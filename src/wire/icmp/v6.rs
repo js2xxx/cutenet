@@ -4,16 +4,17 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::{
     self as cutenet,
+    context::{Checksum, Dst, Ends, Src},
     provide_any::{request_ref, Provider},
     wire::{
-        ip::{self, checksum, v6::Ipv6, IpAddrExt},
+        ip::{self, checksum},
         prelude::*,
-        Checksum, Data, DataMut, Dst, Ends, Src,
+        Data, DataMut, IpAddrExt, Ipv6Packet,
     },
 };
 
 #[path = "v6_nd.rs"]
-mod nd;
+pub mod nd;
 
 /// Error packets must not exceed min MTU
 const MAX_ERROR_PACKET_LEN: usize = ip::v6::MIN_MTU - ip::v6::HEADER_LEN;
@@ -23,7 +24,7 @@ enum_with_unknown! {
     pub enum Message(u8) {
         /// Destination Unreachable.
         DstUnreachable  = 0x01,
-        /// Packet Too Big.
+        /// RawPacket Too Big.
         PktTooBig       = 0x02,
         /// Time Exceeded.
         TimeExceeded    = 0x03,
@@ -191,7 +192,7 @@ impl fmt::Display for TimeExceeded {
     }
 }
 
-struct Packet<T: ?Sized>(T);
+struct RawPacket<T: ?Sized>(T);
 
 // Ranges and constants describing key boundaries in the ICMPv6 header.
 #[allow(unused)]
@@ -250,7 +251,7 @@ pub(super) mod field {
     pub const RECORD_MCAST_ADDR: Field = 4..20;
 }
 
-wire!(impl Packet {
+wire!(impl RawPacket {
     msg_type/set_msg_type: Message =>
         |data| Message::from(data[field::TYPE]);
         |data, value| data[field::TYPE] = value.into();
@@ -293,7 +294,7 @@ wire!(impl Packet {
         |data, value| NetworkEndian::write_u32(&mut data[field::POINTER], value);
 });
 
-impl<T: Data + ?Sized> Packet<T> {
+impl<T: Data + ?Sized> RawPacket<T> {
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
             Message::DstUnreachable => field::UNUSED.end,
@@ -335,7 +336,7 @@ impl<T: Data + ?Sized> Packet<T> {
     }
 }
 
-impl<T: DataMut + ?Sized> Packet<T> {
+impl<T: DataMut + ?Sized> RawPacket<T> {
     pub fn data_mut(&mut self) -> &mut [u8] {
         let header_len = self.header_len();
         &mut self.0.as_mut()[header_len..]
@@ -383,27 +384,27 @@ impl<T: DataMut + ?Sized> Packet<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
 #[non_exhaustive]
-pub enum Icmpv6<#[wire] T, U> {
+pub enum Packet<#[wire] T, #[no_payload] U> {
     DstUnreachable {
         reason: DstUnreachable,
         #[wire]
-        header: Ipv6<T>,
+        header: Ipv6Packet<T>,
     },
     PktTooBig {
         mtu: u32,
         #[wire]
-        header: Ipv6<T>,
+        header: Ipv6Packet<T>,
     },
     TimeExceeded {
         reason: TimeExceeded,
         #[wire]
-        header: Ipv6<T>,
+        header: Ipv6Packet<T>,
     },
     ParamProblem {
         reason: ParamProblem,
         pointer: u32,
         #[wire]
-        header: Ipv6<T>,
+        header: Ipv6Packet<T>,
     },
     EchoRequest {
         ident: u16,
@@ -422,11 +423,11 @@ pub enum Icmpv6<#[wire] T, U> {
         #[no_payload]
         payload: U,
     },
-    // Mld(MldRepr),
-    // Rpl(RplRepr),
+    // Mld(MldPacket),
+    // Rpl(RplPacket),
 }
 
-impl<P, T, U> WireParse for Icmpv6<T, U>
+impl<P, T, U> WireParse for Packet<T, U>
 where
     P: PayloadParse<NoPayload = U> + Data,
     T: WireParse<Payload = P>,
@@ -434,7 +435,7 @@ where
 {
     fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
-        let packet = Packet(raw);
+        let packet = RawPacket(raw);
 
         if len < 4 {
             return Err(ParseErrorKind::PacketTooShort.with(packet.0));
@@ -469,35 +470,35 @@ where
         }
 
         match (packet.msg_type(), packet.msg_code()) {
-            (Message::DstUnreachable, code) => Ok(Icmpv6::DstUnreachable {
+            (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                header: Ipv6::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                header: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
-            (Message::PktTooBig, 0) => Ok(Icmpv6::PktTooBig {
+            (Message::PktTooBig, 0) => Ok(Packet::PktTooBig {
                 mtu: packet.pkt_too_big_mtu(),
-                header: Ipv6::parse(&(), packet.0.pop(field::MTU.end..len)?)?,
+                header: Ipv6Packet::parse(&(), packet.0.pop(field::MTU.end..len)?)?,
             }),
-            (Message::TimeExceeded, code) => Ok(Icmpv6::TimeExceeded {
+            (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                header: Ipv6::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                header: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
             }),
-            (Message::ParamProblem, code) => Ok(Icmpv6::ParamProblem {
+            (Message::ParamProblem, code) => Ok(Packet::ParamProblem {
                 reason: ParamProblem::from(code),
                 pointer: packet.param_problem_ptr(),
-                header: Ipv6::parse(&(), packet.0.pop(field::POINTER.end..len)?)?,
+                header: Ipv6Packet::parse(&(), packet.0.pop(field::POINTER.end..len)?)?,
             }),
-            (Message::EchoRequest, 0) => Ok(Icmpv6::EchoRequest {
+            (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
                 payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
-            (Message::EchoReply, 0) => Ok(Icmpv6::EchoReply {
+            (Message::EchoReply, 0) => Ok(Packet::EchoReply {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
                 payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
-            (msg, 0) if msg.is_nd() => Ok(Icmpv6::Nd {
-                nd: match nd::Nd::parse(Packet(packet.0.as_ref())) {
+            (msg, 0) if msg.is_nd() => Ok(Packet::Nd {
+                nd: match nd::Nd::parse(RawPacket(packet.0.as_ref())) {
                     Ok(nd) => nd,
                     Err(kind) => return Err(kind.with(packet.0)),
                 },
@@ -508,14 +509,14 @@ where
     }
 }
 
-impl<P, T, U> WireBuild for Icmpv6<T, U>
+impl<P, T, U> WireBuild for Packet<T, U>
 where
     P: PayloadBuild<NoPayload = U>,
     T: WireBuild<Payload = P>,
     U: NoPayload<Init = P>,
 {
     fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
-        let checksum = |mut packet: Packet<&mut [u8]>| {
+        let checksum = |mut packet: RawPacket<&mut [u8]>| {
             if let Some(Checksum) = request_ref(cx) {
                 packet.fill_checksum(*request_ref(cx).unwrap());
             } else {
@@ -528,44 +529,44 @@ where
 
         let push_opt = PayloadPush::Truncate(MAX_ERROR_PACKET_LEN);
         match self {
-            Icmpv6::DstUnreachable { reason, header } => {
+            Packet::DstUnreachable { reason, header } => {
                 (header.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::DstUnreachable);
                     packet.set_msg_code(reason.into());
                     checksum(packet)
                 })
             }
-            Icmpv6::PktTooBig { mtu, header } => {
+            Packet::PktTooBig { mtu, header } => {
                 (header.build(&())?).push_with(field::MTU.end, push_opt, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::PktTooBig);
                     packet.set_msg_code(0);
                     packet.set_pkt_too_big_mtu(mtu);
                     checksum(packet)
                 })
             }
-            Icmpv6::TimeExceeded { reason, header } => {
+            Packet::TimeExceeded { reason, header } => {
                 (header.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::TimeExceeded);
                     packet.set_msg_code(reason.into());
                     checksum(packet)
                 })
             }
 
-            Icmpv6::ParamProblem { reason, pointer, header } => {
+            Packet::ParamProblem { reason, pointer, header } => {
                 (header.build(&())?).push_with(field::POINTER.end, push_opt, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::ParamProblem);
                     packet.set_msg_code(reason.into());
                     packet.set_param_problem_ptr(pointer);
                     checksum(packet)
                 })
             }
-            Icmpv6::EchoRequest { ident, seq_no, payload } => {
+            Packet::EchoRequest { ident, seq_no, payload } => {
                 payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::EchoRequest);
                     packet.set_msg_code(0);
                     packet.set_echo_ident(ident);
@@ -573,9 +574,9 @@ where
                     checksum(packet)
                 })
             }
-            Icmpv6::EchoReply { ident, seq_no, payload } => {
+            Packet::EchoReply { ident, seq_no, payload } => {
                 payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
-                    let mut packet = Packet(buf);
+                    let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::EchoReply);
                     packet.set_msg_code(0);
                     packet.set_echo_ident(ident);
@@ -583,9 +584,9 @@ where
                     checksum(packet)
                 })
             }
-            Icmpv6::Nd { nd, payload } => payload.init().push(nd.len(), |buf| {
-                nd.build(Packet(buf));
-                checksum(Packet(buf))
+            Packet::Nd { nd, payload } => payload.init().push(nd.len(), |buf| {
+                nd.build(RawPacket(buf));
+                checksum(RawPacket(buf))
             }),
         }
     }
@@ -626,8 +627,8 @@ mod tests {
 
     #[test]
     fn test_echo_deconstruct() {
-        let packet: Icmpv6<&[u8], _> = Icmpv6::parse(&CX, &ECHO_PACKET_BYTES[..]).unwrap();
-        assert_eq!(packet, Icmpv6::EchoRequest {
+        let packet: Packet<&[u8], _> = Packet::parse(&CX, &ECHO_PACKET_BYTES[..]).unwrap();
+        assert_eq!(packet, Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
             payload: &ECHO_PACKET_PAYLOAD[..]
@@ -636,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_echo_construct() {
-        let repr = Icmpv6::EchoRequest {
+        let repr = Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
             payload: PayloadHolder(ECHO_PACKET_PAYLOAD.len()),
@@ -650,10 +651,10 @@ mod tests {
 
     #[test]
     fn test_too_big_deconstruct() {
-        let packet: Icmpv6<&[u8], _> = Icmpv6::parse(&CX, &PKT_TOO_BIG_BYTES[..]).unwrap();
-        assert!(matches!(packet, Icmpv6::PktTooBig {
+        let packet: Packet<&[u8], _> = Packet::parse(&CX, &PKT_TOO_BIG_BYTES[..]).unwrap();
+        assert!(matches!(packet, Packet::PktTooBig {
                 mtu: 1500,
-                header: Ipv6 {
+                header: Ipv6Packet {
                     next_header: ip::Protocol::Udp,
                     hop_limit: 0x40,
                     payload,
@@ -664,9 +665,9 @@ mod tests {
 
     #[test]
     fn test_too_big_construct() {
-        let repr = Icmpv6::PktTooBig {
+        let repr = Packet::PktTooBig {
             mtu: 1500,
-            header: Ipv6 {
+            header: Ipv6Packet {
                 addr: (
                     Src(MOCK_IP_ADDR_1.unwrap_v6()),
                     Dst(MOCK_IP_ADDR_2.unwrap_v6()),
@@ -686,9 +687,9 @@ mod tests {
 
     #[test]
     fn test_buffer_length_is_truncated_to_mtu() {
-        let repr = Icmpv6::PktTooBig {
+        let repr = Packet::PktTooBig {
             mtu: 1280,
-            header: Ipv6 {
+            header: Ipv6Packet {
                 addr: (Src(Ipv6Addr::zeroed()), Dst(Ipv6Addr::zeroed())),
                 next_header: ip::Protocol::Tcp,
                 hop_limit: 64,

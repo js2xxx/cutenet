@@ -9,26 +9,63 @@ pub use self::traits::{
 mod error;
 pub use self::error::{BuildError, BuildErrorKind, ParseError, ParseErrorKind};
 
-pub mod arpv4;
-pub use self::arpv4::ArpV4;
+mod arpv4;
+pub use self::arpv4::{
+    Hardware as ArpHardware, Operation as ArpOperation, Packet as Arpv4Packet,
+    HARDWARE_LEN as ARPV4_HARDWARE_LEN, HEADER_LEN as ARPV4_HEADER_LEN,
+    PROTOCOL_LEN as ARPV4_PROTOCOL_LEN,
+};
 
-pub mod ethernet;
-pub use self::ethernet::Ethernet;
+mod ethernet;
+pub use self::ethernet::{
+    Addr as EthernetAddr, Frame as EthernetFrame, Protocol as EthernetProtocol,
+    HEADER_LEN as ETHERNET_HEADER_LEN,
+};
 
-pub mod icmp;
-pub use self::icmp::{v4::Icmpv4, v6::Icmpv6};
+mod icmp;
+pub use self::icmp::{
+    v4::{
+        DstUnreachable as Icmpv4DstUnreachable, Message as Icmpv4Message, Packet as Icmpv4Packet,
+        ParamProblem as Icmpv4ParamProblem, Redirect as Icmpv4Redirect,
+        TimeExceeded as Icmpv4TimeExceeded,
+    },
+    v6::{
+        nd::{
+            Nd as Icmpv6Nd, NeighborFlags as Icmpv6NeighborFlags, PrefixInfo as Icmpv6PrefixInfo,
+            PrefixInfoFlags as Icmpv6PrefixInfoFlags, RouterFlags as Icmpv6Routerflags,
+        },
+        DstUnreachable as Icmpv6DstUnreachable, Message as Icmpv6Message, Packet as Icmpv6Packet,
+        ParamProblem as Icmpv6ParamProblem, TimeExceeded as Icmpv6TimeExceeded,
+    },
+};
 
-pub mod ieee802154;
-pub use self::ieee802154::Ieee802154;
+mod ieee802154;
+pub use self::ieee802154::{
+    Addr as Ieee802154Addr, AddressingMode as Ieee802154AddressingMode, Frame as Ieee802154Frame,
+    FrameType as Ieee802154FrameType, FrameVersion as Ieee802154FrameVersion, Pan as Ieee802154Pan,
+};
 
-pub mod ip;
-pub use self::ip::{v4::Ipv4, v6::Ipv6, Ip};
+mod ip;
+pub use self::ip::{
+    v4::{
+        Cidr as Ipv4Cidr, FragInfo as Ipv4FragInfo, Key as Ipv4Key, Packet as Ipv4Packet,
+        HEADER_LEN as IPV4_HEADER_LEN,
+    },
+    v6::{
+        Cidr as Ipv6Cidr, Ipv6AddrExt, Packet as Ipv6Packet, HEADER_LEN as IPV6_HEADER_LEN,
+        MIN_MTU as IPV6_MIN_MTU,
+    },
+    Cidr as IpCidr, IpAddrExt, Packet as IpPacket, Protocol as IpProtocol, Version as IpVersion,
+};
 
-pub mod tcp;
-pub use self::tcp::Tcp;
+mod tcp;
+pub use self::tcp::{
+    Control as TcpControl, Packet as TcpPacket, SeqNumber as TcpSeqNumber, TcpFlags, TcpOption,
+    TcpTimestamp, TcpTimestampGenerator, HEADER_LEN as TCP_HEADER_LEN,
+};
 
-pub mod udp;
-pub use self::udp::Udp;
+mod udp;
+pub use self::udp::{Packet as UdpPacket, HEADER_LEN as UDP_HEADER_LEN};
 
 mod field {
     use core::ops::{Range, RangeFrom};
@@ -49,16 +86,39 @@ impl<T: AsRef<[u8]> + ?Sized> Data for T {}
 pub trait DataMut: Data + AsMut<[u8]> {}
 impl<T: Data + AsMut<[u8]> + ?Sized> DataMut for T {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Src<T>(pub T);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HwAddr {
+    Ethernet(EthernetAddr),
+    Ieee802154(Ieee802154Addr),
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Dst<T>(pub T);
+impl From<Ieee802154Addr> for HwAddr {
+    fn from(v: Ieee802154Addr) -> Self {
+        Self::Ieee802154(v)
+    }
+}
 
-pub type Ends<T> = (Src<T>, Dst<T>);
+impl From<EthernetAddr> for HwAddr {
+    fn from(v: EthernetAddr) -> Self {
+        Self::Ethernet(v)
+    }
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Checksum;
+impl HwAddr {
+    pub fn ethernet(self) -> Option<EthernetAddr> {
+        match self {
+            HwAddr::Ethernet(eth) => Some(eth),
+            HwAddr::Ieee802154(_) => None,
+        }
+    }
+
+    pub fn ieee802154(self) -> Option<Ieee802154Addr> {
+        match self {
+            HwAddr::Ethernet(_) => None,
+            HwAddr::Ieee802154(ieee) => Some(ieee),
+        }
+    }
+}
 
 pub const MAX_HWADDR_LEN: usize = 8;
 
@@ -127,6 +187,15 @@ impl fmt::Display for RawHwAddr {
             write!(f, "{b:02x}")?;
         }
         Ok(())
+    }
+}
+
+impl From<HwAddr> for RawHwAddr {
+    fn from(value: HwAddr) -> Self {
+        match value {
+            HwAddr::Ethernet(eth) => eth.into(),
+            HwAddr::Ieee802154(ieee) => ieee.into(),
+        }
     }
 }
 

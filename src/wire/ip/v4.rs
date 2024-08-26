@@ -6,8 +6,9 @@ pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, Protocol};
 use crate as cutenet;
 use crate::{
+    context::{Checksum, Dst, Ends, Src},
     provide_any::{request_ref, Provider},
-    wire::{prelude::*, Checksum, Data, DataMut, Dst, Ends, Src},
+    wire::{prelude::*, Data, DataMut},
 };
 
 #[path = "v4_cidr.rs"]
@@ -27,7 +28,7 @@ pub struct FragInfo {
     pub key: Key,
 }
 
-struct Packet<T: ?Sized>(T);
+struct RawPacket<T: ?Sized>(T);
 
 mod field {
     use crate::wire::field::*;
@@ -45,7 +46,7 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
-wire!(impl Packet {
+wire!(impl RawPacket {
     /// Return the version field.
     version/set_version: u8 =>
         |data| data[field::VER_IHL] >> 4;
@@ -133,7 +134,7 @@ wire!(impl Packet {
         |data, value| data[field::DST_ADDR].copy_from_slice(&value.octets());
 });
 
-impl<T: Data + ?Sized> Packet<T> {
+impl<T: Data + ?Sized> RawPacket<T> {
     pub fn addr(&self) -> Ends<Ipv4Addr> {
         (Src(self.src_addr()), Dst(self.dst_addr()))
     }
@@ -152,7 +153,7 @@ impl<T: Data + ?Sized> Packet<T> {
     }
 }
 
-impl<T: DataMut + ?Sized> Packet<T> {
+impl<T: DataMut + ?Sized> RawPacket<T> {
     fn clear_flags(&mut self) {
         let raw = NetworkEndian::read_u16(&self.0.as_mut()[field::FLG_OFF]);
         let raw = raw & !0xe000;
@@ -167,7 +168,7 @@ impl<T: DataMut + ?Sized> Packet<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
-pub struct Ipv4<#[wire] T> {
+pub struct Packet<#[wire] T> {
     pub addr: Ends<Ipv4Addr>,
     pub next_header: Protocol,
     pub hop_limit: u8,
@@ -176,9 +177,9 @@ pub struct Ipv4<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv4<T> {
+impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn Provider, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = Packet(raw);
+        let packet = RawPacket(raw);
 
         let len = packet.0.len();
         let total_len = packet.total_len();
@@ -203,7 +204,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv4<T> {
         let addr @ (Src(src), Dst(dst)) = packet.addr();
         let generic_addr: Ends<IpAddr> = (Src(src.into()), Dst(dst.into()));
 
-        Ok(Ipv4 {
+        Ok(Packet {
             addr,
             next_header: packet.next_header(),
             hop_limit: packet.hop_limit(),
@@ -220,9 +221,9 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Ipv4<T> {
     }
 }
 
-impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ipv4<T> {
+impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     fn build(self, cx: &dyn Provider) -> Result<P, BuildError<P>> {
-        let Ipv4 {
+        let Packet {
             addr: (Src(src), Dst(dst)),
             next_header,
             hop_limit,
@@ -234,7 +235,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Ipv4<T> {
         let payload = payload.build(&[cx, &(generic_addr,)])?;
 
         payload.push(HEADER_LEN, |buf| {
-            let mut packet = Packet(buf);
+            let mut packet = RawPacket(buf);
 
             let total_len = u16::try_from(packet.0.len());
             packet.set_total_len(total_len.map_err(|_| BuildErrorKind::PayloadTooLong)?);
@@ -295,7 +296,7 @@ mod tests {
     #[test]
     fn test_deconstruct() {
         let mut pb = INGRESS_PACKET_BYTES;
-        let packet: Ipv4<Buf<_>> = Ipv4::parse(&(Checksum,), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> = Packet::parse(&(Checksum,), Buf::full(&mut pb[..])).unwrap();
         assert_eq!(packet.hop_limit, 0x1a);
         assert_eq!(packet.next_header, Protocol::Icmp);
         assert_eq!(
@@ -322,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_construct() {
-        let tag = Ipv4 {
+        let tag = Packet {
             addr: (
                 Src(Ipv4Addr::from([0x11, 0x12, 0x13, 0x14])),
                 Dst(Ipv4Addr::from([0x21, 0x22, 0x23, 0x24])),
@@ -346,7 +347,7 @@ mod tests {
         let mut pb = vec![];
         pb.extend(INGRESS_PACKET_BYTES);
         pb.push(0);
-        let packet: Ipv4<Buf<_>> = Ipv4::parse(&(Checksum,), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<Buf<_>> = Packet::parse(&(Checksum,), Buf::full(&mut pb[..])).unwrap();
 
         assert_eq!(packet.payload.len(), PAYLOAD_BYTES.len());
     }
@@ -355,6 +356,6 @@ mod tests {
     fn test_parse_total_len_less_than_header_len() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Ipv4::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
+        assert!(Packet::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
     }
 }
