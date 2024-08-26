@@ -481,6 +481,16 @@ impl<T> Packet<T> {
             Packet::V6(v6::Packet { next_header, .. }) => next_header,
         }
     }
+
+    pub fn decrease_hop_limit(&mut self) -> bool {
+        let hop_limit = match self {
+            Packet::V4(v4::Packet { hop_limit, .. }) => hop_limit,
+            Packet::V6(v6::Packet { hop_limit, .. }) => hop_limit,
+        };
+        let ret = *hop_limit > 1;
+        *hop_limit = hop_limit.saturating_sub(1);
+        ret
+    }
 }
 
 impl<T, P, U> WireParse for Packet<T>

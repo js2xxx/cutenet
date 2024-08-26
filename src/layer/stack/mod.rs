@@ -44,9 +44,28 @@ where
         next_header: packet.next_header(),
     }) {
         Action::Deliver => Action::Deliver,
-        Action::Forward { next_hop, tx } => {
-            // TODO: decrease TTL and reply an ICMP if error.
-            return transmit(now, next_hop, tx, packet);
+        Action::Forward { next_hop, mut tx } => {
+            let mut packet = packet;
+            return if packet.decrease_hop_limit() {
+                transmit(now, next_hop, tx, packet)
+            } else {
+                tx.transmit(now, src_hw, match packet {
+                    IpPacket::V4(packet) => {
+                        let addr = packet.addr.reverse();
+                        ipv4::icmp_reply(&tx.device_caps(), addr, Icmpv4Packet::TimeExceeded {
+                            reason: Icmpv4TimeExceeded::TtlExpired,
+                            payload: packet,
+                        })
+                    }
+                    IpPacket::V6(packet) => {
+                        let addr = packet.addr.reverse();
+                        ipv6::icmp_reply(&tx.device_caps(), addr, Icmpv6Packet::TimeExceeded {
+                            reason: Icmpv6TimeExceeded::HopLimitExceeded,
+                            payload: packet,
+                        })
+                    }
+                })
+            };
         }
         Action::Discard => Action::Discard,
     };
