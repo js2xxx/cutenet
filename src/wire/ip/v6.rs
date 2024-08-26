@@ -12,7 +12,7 @@ pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
 use crate::{
     storage::Storage,
-    wire::{BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, Wire},
+    wire::{BuildErrorKind, Dst, Ends, ParseErrorKind, Src, Wire},
 };
 
 pub trait Ipv6AddrExt {
@@ -99,7 +99,8 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
-pub enum Ipv6 {}
+pub type Ipv6 = super::Ip<Ipv6Addr>;
+
 pub type Packet<S: Storage + ?Sized> = crate::wire::Packet<Ipv6, S>;
 
 impl<S: Storage + ?Sized> Packet<S> {
@@ -205,15 +206,20 @@ impl<S: Storage + ?Sized> Packet<S> {
 impl Wire for Ipv6 {
     const EMPTY_PAYLOAD: bool = false;
 
-    const HEAD_LEN: usize = HEADER_LEN;
-    const TAIL_LEN: usize = 0;
+    fn header_len(&self) -> usize {
+        HEADER_LEN
+    }
+
+    fn buffer_len(&self, payload_len: usize) -> usize {
+        HEADER_LEN + payload_len
+    }
 
     fn payload_range<S: Storage + ?Sized>(packet: &Packet<S>) -> Range<usize> {
         HEADER_LEN..packet.total_len()
     }
 
     type ParseArg<'a> = ();
-    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
+    fn parse_packet<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
         let len = packet.inner.len();
         if len < field::DST_ADDR.end || len < packet.total_len() {
             return Err(ParseErrorKind::PacketTooShort);
@@ -224,7 +230,8 @@ impl Wire for Ipv6 {
         Ok(())
     }
 
-    fn build_default<S: Storage>(
+    fn build_packet<S: Storage>(
+        self,
         packet: &mut Packet<S>,
         payload_len: usize,
     ) -> Result<(), BuildErrorKind> {
@@ -237,26 +244,17 @@ impl Wire for Ipv6 {
         packet.set_hop_limit(64);
         packet.set_next_header(Protocol::Unknown(0));
 
+        let Ipv6 {
+            addr: (Src(src), Dst(dst)),
+            next_header,
+            hop_limit,
+        } = self;
+        packet.set_src_addr(src);
+        packet.set_dst_addr(dst);
+        packet.set_next_header(next_header);
+        packet.set_hop_limit(hop_limit);
+
         Ok(())
-    }
-}
-
-impl<S: Storage> Builder<Packet<S>> {
-    pub fn addr(mut self, addr: Ends<Ipv6Addr>) -> Self {
-        let (Src(src), Dst(dst)) = addr;
-        self.0.set_src_addr(src);
-        self.0.set_dst_addr(dst);
-        self
-    }
-
-    pub fn hop_limit(mut self, hop_limit: u8) -> Self {
-        self.0.set_hop_limit(hop_limit);
-        self
-    }
-
-    pub fn next_header(mut self, prot: Protocol) -> Self {
-        self.0.set_next_header(prot);
-        self
     }
 }
 
@@ -265,7 +263,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::storage::Buf;
+    use crate::{storage::Buf, wire::WireExt};
 
     const REPR_PACKET_BYTES: [u8; 52] = [
         0x60, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x11, 0x40, 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -296,20 +294,21 @@ mod tests {
 
     #[test]
     fn test_packet_construction() {
-        let bytes = vec![0xff; 52];
-        let mut payload = Buf::builder(bytes).reserve_for::<Ipv6>().build();
-        payload.append_slice(&REPR_PAYLOAD_BYTES);
-
-        let packet = Packet::builder(payload).unwrap();
-        let packet = packet
-            .next_header(Protocol::Udp)
-            .hop_limit(0x40)
-            .addr((
+        let ip = Ipv6 {
+            addr: (
                 Src(Ipv6Addr::LINK_LOCAL_ALL_ROUTERS),
                 Dst(Ipv6Addr::LINK_LOCAL_ALL_NODES),
-            ))
-            .build();
+            ),
+            next_header: Protocol::Udp,
+            hop_limit: 0x40,
+        };
+        let tag = ip;
 
+        let bytes = vec![0xff; 52];
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
+        payload.append_slice(&REPR_PAYLOAD_BYTES);
+
+        let packet = tag.build(payload).unwrap();
         assert_eq!(packet.into_raw().data(), &REPR_PACKET_BYTES);
     }
 

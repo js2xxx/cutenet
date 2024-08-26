@@ -2,7 +2,7 @@ use core::{fmt, marker::PhantomData, ops::Range};
 
 use crate::storage::{Buf, Storage};
 
-pub mod arp;
+pub mod arpv4;
 pub mod ethernet;
 pub mod ip;
 pub mod udp;
@@ -51,19 +51,20 @@ impl<Tag, S: Storage> Packet<Tag, S> {
 pub trait Wire: Sized {
     const EMPTY_PAYLOAD: bool;
 
-    const HEAD_LEN: usize;
-    const TAIL_LEN: usize;
+    fn header_len(&self) -> usize;
 
-    fn payload_range<S: Storage + ?Sized>(packet: &Packet<Self, S>) -> Range<usize> {
-        Self::HEAD_LEN..(packet.inner.len() - Self::TAIL_LEN)
-    }
+    fn buffer_len(&self, payload_len: usize) -> usize;
+
+    fn payload_range<S: Storage + ?Sized>(packet: &Packet<Self, S>) -> Range<usize>;
 
     type ParseArg<'a>;
-    fn parse<S>(packet: &Packet<Self, S>, arg: Self::ParseArg<'_>) -> Result<(), ParseErrorKind>
-    where
-        S: Storage;
+    fn parse_packet<S: Storage>(
+        packet: &Packet<Self, S>,
+        arg: Self::ParseArg<'_>,
+    ) -> Result<(), ParseErrorKind>;
 
-    fn build_default<S: Storage>(
+    fn build_packet<S: Storage>(
+        self,
         packet: &mut Packet<Self, S>,
         payload_len: usize,
     ) -> Result<(), BuildErrorKind>;
@@ -82,15 +83,17 @@ impl<Tag: Wire, S: Storage> Packet<Tag, S> {
 
     pub fn parse(raw: Buf<S>, arg: Tag::ParseArg<'_>) -> Result<Self, ParseError<S>> {
         let packet = Packet { marker: PhantomData, inner: raw };
-        match Tag::parse(&packet, arg) {
+        match Tag::parse_packet(&packet, arg) {
             Ok(()) => Ok(packet),
             Err(kind) => Err(ParseError { buf: packet.inner, kind }),
         }
     }
 
-    pub fn builder(payload: Buf<S>) -> Result<Builder<Self>, BuildError<S>> {
-        let len = payload.len();
-        if Tag::EMPTY_PAYLOAD && len != 0 {
+    pub fn build(payload: Buf<S>, tag: Tag) -> Result<Self, BuildError<S>> {
+        let header_len = tag.header_len();
+        let payload_len = payload.len();
+
+        if Tag::EMPTY_PAYLOAD && payload_len != 0 {
             let error = BuildError {
                 kind: BuildErrorKind::PayloadNotEmpty,
                 buf: payload,
@@ -99,16 +102,30 @@ impl<Tag: Wire, S: Storage> Packet<Tag, S> {
         }
 
         let mut inner = payload;
-        inner.prepend(Tag::HEAD_LEN);
-        inner.append(Tag::TAIL_LEN);
+        inner.prepend(header_len);
 
         let mut packet = Packet { marker: PhantomData, inner };
-        match Tag::build_default(&mut packet, len) {
-            Ok(()) => Ok(Builder(packet)),
-            Err(kind) => Err(BuildError { kind, buf: packet.into_payload() }),
+        match tag.build_packet(&mut packet, payload_len) {
+            Ok(()) => Ok(packet),
+            Err(kind) => Err(BuildError {
+                kind,
+                buf: packet.inner.slice_into(header_len..),
+            }),
         }
     }
+
+    pub fn encap<U: Wire>(self, tag: U) -> Result<Packet<U, S>, BuildError<S>> {
+        self.inner.build(tag)
+    }
 }
+
+pub trait WireExt: Wire {
+    fn build<S: Storage>(self, payload: Buf<S>) -> Result<Packet<Self, S>, BuildError<S>> {
+        Packet::build(payload, self)
+    }
+}
+
+impl<Tag: Wire> WireExt for Tag {}
 
 #[derive(Debug)]
 pub struct Error<K, S: Storage + ?Sized> {
@@ -132,12 +149,3 @@ pub enum BuildErrorKind {
     PayloadNotEmpty,
 }
 pub type BuildError<S: Storage + ?Sized> = Error<BuildErrorKind, S>;
-
-#[derive(Debug)]
-pub struct Builder<W>(W);
-
-impl<W> Builder<W> {
-    pub fn build(self) -> W {
-        self.0
-    }
-}

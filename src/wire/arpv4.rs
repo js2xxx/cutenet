@@ -1,11 +1,11 @@
-use core::net::Ipv4Addr;
+use core::{net::Ipv4Addr, ops::Range};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{
     ethernet::{self, Protocol},
     ip::IpAddrExt,
-    BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, Wire,
+    BuildErrorKind, Dst, Ends, ParseErrorKind, Src, Wire,
 };
 use crate::storage::Storage;
 
@@ -64,7 +64,12 @@ pub const HARDWARE_LEN: u8 = 6;
 pub const PROTOCOL_LEN: u8 = 4;
 pub const HEADER_LEN: usize = field::TPA(HARDWARE_LEN, PROTOCOL_LEN).end;
 
-pub enum ArpV4 {}
+#[derive(Debug)]
+pub struct ArpV4 {
+    pub operation: Operation,
+    pub addr: Ends<(ethernet::Addr, Ipv4Addr)>,
+}
+
 pub type Packet<S: Storage + ?Sized> = super::Packet<ArpV4, S>;
 
 impl<S: Storage + ?Sized> Packet<S> {
@@ -163,11 +168,20 @@ impl<S: Storage + ?Sized> Packet<S> {
 impl Wire for ArpV4 {
     const EMPTY_PAYLOAD: bool = true;
 
-    const HEAD_LEN: usize = HEADER_LEN;
-    const TAIL_LEN: usize = 0;
+    fn header_len(&self) -> usize {
+        HEADER_LEN
+    }
+
+    fn buffer_len(&self, _: usize) -> usize {
+        HEADER_LEN
+    }
+
+    fn payload_range<S: Storage + ?Sized>(packet: &super::Packet<Self, S>) -> Range<usize> {
+        HEADER_LEN..packet.inner.len()
+    }
 
     type ParseArg<'a> = ();
-    fn parse<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
+    fn parse_packet<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
         let len = packet.inner.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
@@ -195,28 +209,27 @@ impl Wire for ArpV4 {
         Ok(())
     }
 
-    fn build_default<S: Storage>(packet: &mut Packet<S>, _: usize) -> Result<(), BuildErrorKind> {
+    fn build_packet<S: Storage>(
+        self,
+        packet: &mut Packet<S>,
+        _: usize,
+    ) -> Result<(), BuildErrorKind> {
         packet.set_hardware_type(Hardware::Ethernet);
         packet.set_protocol_type(Protocol::Ipv4);
         packet.set_hardware_len(HARDWARE_LEN);
         packet.set_protocol_len(PROTOCOL_LEN);
+
+        let ArpV4 {
+            operation,
+            addr: (Src((src_hw, src_ip)), Dst((dst_hw, dst_ip))),
+        } = self;
+
+        packet.set_operation(operation);
+        packet.set_source_hardware_addr(src_hw);
+        packet.set_source_protocol_addr(src_ip);
+        packet.set_target_hardware_addr(dst_hw);
+        packet.set_target_protocol_addr(dst_ip);
         Ok(())
-    }
-}
-
-impl<S: Storage> Builder<Packet<S>> {
-    pub fn operation(mut self, op: Operation) -> Self {
-        self.0.set_operation(op);
-        self
-    }
-
-    pub fn addr(mut self, ends: Ends<(ethernet::Addr, Ipv4Addr)>) -> Self {
-        let (Src((src_hd, src_ip)), Dst((dst_hd, dst_ip))) = ends;
-        self.0.set_source_hardware_addr(src_hd);
-        self.0.set_source_protocol_addr(src_ip);
-        self.0.set_target_hardware_addr(dst_hd);
-        self.0.set_target_protocol_addr(dst_ip);
-        self
     }
 }
 
@@ -225,7 +238,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::storage::Buf;
+    use crate::{storage::Buf, wire::WireExt};
 
     const PACKET_BYTES: [u8; 28] = [
         0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x21,
@@ -262,13 +275,9 @@ mod tests {
 
     #[test]
     fn test_construct() {
-        let bytes = vec![0xa5; 28];
-        let payload = Buf::builder(bytes).reserve_for::<ArpV4>().build();
-
-        let packet = Packet::builder(payload).unwrap();
-        let packet = packet
-            .operation(Operation::Request)
-            .addr((
+        let tag = ArpV4 {
+            operation: Operation::Request,
+            addr: (
                 Src((
                     ethernet::Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
                     Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]),
@@ -277,8 +286,13 @@ mod tests {
                     ethernet::Addr([0x31, 0x32, 0x33, 0x34, 0x35, 0x36]),
                     Ipv4Addr::from([0x41, 0x42, 0x43, 0x44]),
                 )),
-            ))
-            .build();
+            ),
+        };
+
+        let bytes = vec![0xa5; 28];
+        let payload = Buf::builder(bytes).reserve_for(&tag).build();
+
+        let packet = tag.build(payload).unwrap();
         assert_eq!(packet.into_raw().data(), &PACKET_BYTES[..]);
     }
 }

@@ -3,6 +3,8 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
+use super::Ends;
+
 pub(super) mod checksum;
 pub mod v4;
 pub mod v6;
@@ -165,4 +167,11 @@ impl IpAddrExt for IpAddr {
             IpAddr::V6(v6) => v6.prefix_len(),
         }
     }
+}
+
+#[derive(Debug)]
+pub struct Ip<Addr> {
+    pub addr: Ends<Addr>,
+    pub next_header: Protocol,
+    pub hop_limit: u8,
 }

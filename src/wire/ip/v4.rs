@@ -9,7 +9,7 @@ pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, Protocol};
 use crate::{
     storage::Storage,
-    wire::{BuildErrorKind, Builder, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire},
+    wire::{BuildErrorKind, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire},
 };
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -36,7 +36,8 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
-pub enum Ipv4 {}
+pub type Ipv4 = super::Ip<Ipv4Addr>;
+
 pub type Packet<S: Storage + ?Sized> = crate::wire::Packet<Ipv4, S>;
 
 impl<S: Storage + ?Sized> Packet<S> {
@@ -193,6 +194,12 @@ impl<S: Storage + ?Sized> Packet<S> {
         checksum::data(&self.inner.data()[..usize::from(self.header_len())]) == !0
     }
 
+    pub fn fill_checksum(&mut self) {
+        self.set_checksum(0);
+        let checksum = !checksum::data(&self.inner.data()[..usize::from(self.header_len())]);
+        self.set_checksum(checksum);
+    }
+
     pub fn key(&self) -> Key {
         Key {
             id: self.ident(),
@@ -206,15 +213,20 @@ impl<S: Storage + ?Sized> Packet<S> {
 impl Wire for Ipv4 {
     const EMPTY_PAYLOAD: bool = false;
 
-    const HEAD_LEN: usize = HEADER_LEN;
-    const TAIL_LEN: usize = 0;
+    fn header_len(&self) -> usize {
+        HEADER_LEN
+    }
+
+    fn buffer_len(&self, payload_len: usize) -> usize {
+        HEADER_LEN + payload_len
+    }
 
     fn payload_range<S: Storage + ?Sized>(packet: &Packet<S>) -> Range<usize> {
         usize::from(packet.header_len())..usize::from(packet.total_len())
     }
 
     type ParseArg<'a> = VerifyChecksum<bool>;
-    fn parse<S: Storage>(
+    fn parse_packet<S: Storage>(
         packet: &Packet<S>,
         VerifyChecksum(verify_checksum): VerifyChecksum<bool>,
     ) -> Result<(), ParseErrorKind> {
@@ -238,10 +250,11 @@ impl Wire for Ipv4 {
         Ok(())
     }
 
-    fn build_default<S>(packet: &mut Packet<S>, payload_len: usize) -> Result<(), BuildErrorKind>
-    where
-        S: Storage,
-    {
+    fn build_packet<S: Storage>(
+        self,
+        packet: &mut Packet<S>,
+        payload_len: usize,
+    ) -> Result<(), BuildErrorKind> {
         packet.set_version(4);
         packet.set_header_len(u8::try_from(field::DST_ADDR.end).unwrap());
         packet.set_dscp(0);
@@ -259,33 +272,17 @@ impl Wire for Ipv4 {
         packet.set_next_header(Protocol::Unknown(0));
         packet.set_checksum(0);
 
+        let Ipv4 {
+            addr: (Src(src), Dst(dst)),
+            next_header,
+            hop_limit,
+        } = self;
+        packet.set_src_addr(src);
+        packet.set_dst_addr(dst);
+        packet.set_next_header(next_header);
+        packet.set_hop_limit(hop_limit);
+
         Ok(())
-    }
-}
-
-impl<S: Storage> Builder<Packet<S>> {
-    pub fn addr(mut self, addr: Ends<Ipv4Addr>) -> Self {
-        let (Src(src), Dst(dst)) = addr;
-        self.0.set_src_addr(src);
-        self.0.set_dst_addr(dst);
-        self
-    }
-
-    pub fn hop_limit(mut self, hop_limit: u8) -> Self {
-        self.0.set_hop_limit(hop_limit);
-        self
-    }
-
-    pub fn next_header(mut self, prot: Protocol) -> Self {
-        self.0.set_next_header(prot);
-        self
-    }
-
-    pub fn checksum(mut self) -> Self {
-        self.0.set_checksum(0);
-        let checksum = !checksum::data(&self.0.inner.data()[..usize::from(self.0.header_len())]);
-        self.0.set_checksum(checksum);
-        self
     }
 }
 
@@ -295,7 +292,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use crate::storage::Buf;
+    use crate::{storage::Buf, wire::WireExt};
 
     const INGRESS_PACKET_BYTES: [u8; 30] = [
         0x45, 0x00, 0x00, 0x1e, 0x01, 0x02, 0x62, 0x03, 0x1a, 0x01, 0xd5, 0x6e, 0x11, 0x12, 0x13,
@@ -333,20 +330,21 @@ mod tests {
 
     #[test]
     fn test_construct() {
-        let bytes = vec![0xa5; 30];
-        let mut payload = Buf::builder(bytes).reserve_for::<Ipv4>().build();
-        payload.append_slice(&PAYLOAD_BYTES);
-
-        let packet = Packet::builder(payload).unwrap();
-        let packet = packet
-            .hop_limit(0x1a)
-            .next_header(Protocol::Icmp)
-            .addr((
+        let tag = Ipv4 {
+            addr: (
                 Src(Ipv4Addr::from([0x11, 0x12, 0x13, 0x14])),
                 Dst(Ipv4Addr::from([0x21, 0x22, 0x23, 0x24])),
-            ))
-            .checksum()
-            .build();
+            ),
+            next_header: Protocol::Icmp,
+            hop_limit: 0x1a,
+        };
+
+        let bytes = vec![0xa5; 30];
+        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
+        payload.append_slice(&PAYLOAD_BYTES);
+
+        let mut packet = tag.build(payload).unwrap();
+        packet.fill_checksum();
         assert_eq!(packet.into_raw().data(), &EGRESS_PACKET_BYTES[..]);
     }
 
