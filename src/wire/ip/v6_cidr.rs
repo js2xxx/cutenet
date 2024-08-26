@@ -29,7 +29,7 @@ impl Cidr {
     }
 
     /// Return the address of this IPv6 CIDR block.
-    pub const fn address(&self) -> Ipv6Addr {
+    pub const fn addr(&self) -> Ipv6Addr {
         self.address
     }
 

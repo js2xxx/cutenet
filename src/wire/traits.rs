@@ -68,6 +68,19 @@ pub trait WireSubstitute<Q: Payload>: Wire + Sized {
             unreachable!("substituting payload in a wired data with no payload")
         })
     }
+
+    fn sub_payload_ref<F>(self, sub: F) -> (Self::Output, Self::Payload)
+    where
+        F: FnOnce(&Self::Payload) -> Q,
+    {
+        let mut slot = None;
+        let output = self.sub_payload(|payload| {
+            let sub = sub(&payload);
+            slot = Some(payload);
+            sub
+        });
+        (output, slot.unwrap())
+    }
 }
 
 pub trait WireSubNoPayload<N: NoPayload>: WireSubstitute<N::Init> + Sized {

@@ -36,7 +36,7 @@ impl Cidr {
     pub const fn addr(&self) -> IpAddr {
         match *self {
             Cidr::V4(cidr) => IpAddr::V4(cidr.addr()),
-            Cidr::V6(cidr) => IpAddr::V6(cidr.address()),
+            Cidr::V6(cidr) => IpAddr::V6(cidr.addr()),
         }
     }
 
@@ -190,7 +190,7 @@ fn mask_impl<const N: usize>(input: [u8; N], prefix_len: u8) -> [u8; N] {
     bytes
 }
 
-pub trait IpAddrExt: Eq + fmt::Display + Copy {
+pub trait IpAddrExt: Eq + Copy + fmt::Display + fmt::Debug {
     type Cidr: IpCidrExt<Addr = Self>;
 
     const UNSPECIFIED: Self;
@@ -334,12 +334,20 @@ impl IpAddrExt for IpAddr {
     }
 }
 
-pub trait IpCidrExt: Eq + Copy {
+pub trait IpCidrExt: Eq + Copy + fmt::Display + fmt::Debug {
     type Addr: IpAddrExt<Cidr = Self>;
 
     const UNSPECIFIED: Self;
 
+    fn new(addr: Self::Addr, prefix_len: u8) -> Self;
+
+    fn addr(&self) -> Self::Addr;
+
     fn broadcast(&self) -> Option<Self::Addr>;
+
+    fn contains_addr(&self, addr: &Self::Addr) -> bool;
+
+    fn prefix_len(&self) -> u8;
 }
 
 impl IpCidrExt for v4::Cidr {
@@ -347,8 +355,24 @@ impl IpCidrExt for v4::Cidr {
 
     const UNSPECIFIED: Self = v4::Cidr::new(Ipv4Addr::UNSPECIFIED, 32);
 
+    fn new(addr: Self::Addr, prefix_len: u8) -> Self {
+        v4::Cidr::new(addr, prefix_len)
+    }
+
+    fn addr(&self) -> Self::Addr {
+        self.addr()
+    }
+
     fn broadcast(&self) -> Option<Self::Addr> {
         self.broadcast()
+    }
+
+    fn contains_addr(&self, addr: &Self::Addr) -> bool {
+        self.contains_addr(addr)
+    }
+
+    fn prefix_len(&self) -> u8 {
+        self.prefix_len()
     }
 }
 
@@ -357,8 +381,24 @@ impl IpCidrExt for v6::Cidr {
 
     const UNSPECIFIED: Self = v6::Cidr::new(Ipv6Addr::UNSPECIFIED, 128);
 
+    fn new(addr: Self::Addr, prefix_len: u8) -> Self {
+        v6::Cidr::new(addr, prefix_len)
+    }
+
+    fn addr(&self) -> Self::Addr {
+        self.addr()
+    }
+
     fn broadcast(&self) -> Option<Self::Addr> {
         None
+    }
+
+    fn contains_addr(&self, addr: &Self::Addr) -> bool {
+        self.contains_addr(addr)
+    }
+
+    fn prefix_len(&self) -> u8 {
+        self.prefix_len()
     }
 }
 
@@ -367,10 +407,36 @@ impl IpCidrExt for Cidr {
 
     const UNSPECIFIED: Self = Cidr::V4(v4::Cidr::UNSPECIFIED);
 
+    fn new(addr: Self::Addr, prefix_len: u8) -> Self {
+        Cidr::new(addr, prefix_len)
+    }
+
+    fn addr(&self) -> Self::Addr {
+        match self {
+            Cidr::V4(cidr) => IpAddr::V4(cidr.addr()),
+            Cidr::V6(cidr) => IpAddr::V6(cidr.addr()),
+        }
+    }
+
     fn broadcast(&self) -> Option<Self::Addr> {
         match self {
             Cidr::V4(cidr) => cidr.broadcast().map(IpAddr::V4),
             Cidr::V6(cidr) => cidr.broadcast().map(IpAddr::V6),
+        }
+    }
+
+    fn contains_addr(&self, addr: &Self::Addr) -> bool {
+        match (self, addr) {
+            (Cidr::V4(cidr), IpAddr::V4(addr)) => cidr.contains_addr(addr),
+            (Cidr::V6(cidr), IpAddr::V6(addr)) => cidr.contains_addr(addr),
+            _ => false,
+        }
+    }
+
+    fn prefix_len(&self) -> u8 {
+        match self {
+            Cidr::V4(cidr) => cidr.prefix_len(),
+            Cidr::V6(cidr) => cidr.prefix_len(),
         }
     }
 }

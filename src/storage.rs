@@ -43,9 +43,9 @@ impl<S: Storage> ReserveBuf<S> {
         self
     }
 
-    pub fn reserve_for<W: WireBuild<Payload = PayloadHolder>>(self, w: W) -> Self {
+    pub fn reserve_for<W: WireBuild<Payload = PayloadHolder> + Copy>(self, w: W) -> Self {
         let payload_len = w.payload_len();
-        self.add_reservation(w.build(&()).unwrap().0 - payload_len)
+        self.add_reservation(w.buffer_len() - payload_len)
     }
 
     pub fn build(self) -> Buf<S> {

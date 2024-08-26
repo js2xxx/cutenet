@@ -115,7 +115,7 @@ impl From<Ieee802154Addr> for RawHwAddr {
     }
 }
 
-pub trait HwAddrExt: Copy + Eq {
+pub trait HwAddrExt: Copy + Eq + fmt::Display + fmt::Debug {
     fn from_bytes(bytes: &[u8]) -> Self;
 }
 
