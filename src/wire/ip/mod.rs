@@ -297,7 +297,7 @@ impl IpAddrExt for IpAddr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
 pub enum Packet<#[wire] T, #[no_payload] U> {
-    Arp(#[wire] super::Arpv4Packet<U>),
+    Arp(#[wire] super::ArpPacket<U>),
     V4(#[wire] v4::Packet<T>),
     V6(#[wire] v6::Packet<T>),
 }

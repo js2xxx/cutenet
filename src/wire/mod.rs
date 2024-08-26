@@ -9,11 +9,10 @@ pub use self::traits::{
 mod error;
 pub use self::error::{BuildError, BuildErrorKind, ParseError, ParseErrorKind};
 
-mod arpv4;
-pub use self::arpv4::{
-    Hardware as ArpHardware, Operation as ArpOperation, Packet as Arpv4Packet,
-    HARDWARE_LEN as ARPV4_HARDWARE_LEN, HEADER_LEN as ARPV4_HEADER_LEN,
-    PROTOCOL_LEN as ARPV4_PROTOCOL_LEN,
+mod arp;
+pub use self::arp::{
+    Operation as ArpOperation, Packet as ArpPacket, HARDWARE_LEN as ARPV4_HARDWARE_LEN,
+    HEADER_LEN as ARPV4_HEADER_LEN, PROTOCOL_LEN as ARPV4_PROTOCOL_LEN,
 };
 
 mod ethernet;

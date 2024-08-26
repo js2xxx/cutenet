@@ -210,9 +210,7 @@ mod test_ipv4 {
 
         let bytes = vec![0xa5; 64];
         let mut payload = Buf::builder(bytes).reserve_for(tag).build();
-        payload
-            .append(PAYLOAD_BYTES.len())
-            .copy_from_slice(&PAYLOAD_BYTES[..]);
+        payload.append_slice(&PAYLOAD_BYTES[..]);
 
         let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert_eq!(frame.data(), &FRAME_BYTES[..]);
@@ -269,9 +267,7 @@ mod test_ipv6 {
         let bytes = vec![0xa5; 54];
 
         let mut payload = Buf::builder(bytes).reserve_for(tag).build();
-        payload
-            .append(PAYLOAD_BYTES.len())
-            .copy_from_slice(&PAYLOAD_BYTES[..]);
+        payload.append_slice(&PAYLOAD_BYTES[..]);
 
         let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert_eq!(frame.data(), &FRAME_BYTES[..]);

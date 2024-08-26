@@ -20,6 +20,7 @@ log = [
   "dep:tracing",
 ]
 std = [
+  "alloc",
   "stable_deref_trait/std",
 ]
 
