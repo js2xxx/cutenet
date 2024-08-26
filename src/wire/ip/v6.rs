@@ -12,7 +12,7 @@ pub use self::cidr::Cidr;
 use super::{IpAddrExt, ParseError, Protocol};
 use crate::{
     storage::{Buf, Storage},
-    wire::{Dst, Ends, Src, WireBuf},
+    wire::{Builder, Dst, Ends, Src, WireBuf},
 };
 
 pub trait Ipv6AddrExt {
@@ -105,10 +105,6 @@ pub struct Packet<S: Storage + ?Sized> {
 }
 
 impl<S: Storage> Packet<S> {
-    pub fn builder(payload: Buf<S>) -> Result<PacketBuilder<S>, BuildError> {
-        PacketBuilder::new(payload)
-    }
-
     pub fn parse(raw: Buf<S>) -> Result<Packet<S>, ParseError> {
         let packet = Packet { inner: raw };
         let len = packet.inner.len();
@@ -127,7 +123,28 @@ impl<S: Storage + ?Sized> WireBuf for Packet<S> {
 
     const HEADER_LEN: usize = HEADER_LEN;
 
-    fn into_inner(self) -> Buf<S>
+    type BuildError = BuildError;
+    fn build_default(payload: Buf<Self::Storage>) -> Result<Self, Self::BuildError>
+    where
+        Self::Storage: Sized,
+        Self: Sized,
+    {
+        let len = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLong)?;
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        let mut packet = Packet { inner };
+
+        packet.set_version(6);
+        packet.set_traffic_class(0);
+        packet.set_flow_label(0);
+        packet.set_payload_len(len);
+        packet.set_hop_limit(64);
+        packet.set_next_header(Protocol::Unknown(0));
+
+        Ok(packet)
+    }
+
+    fn into_raw(self) -> Buf<S>
     where
         S: Sized,
     {
@@ -169,7 +186,7 @@ impl<S: Storage + ?Sized> Packet<S> {
 
     /// Return the payload length added to the known header length.
     pub fn total_len(&self) -> usize {
-        self.header_len() + self.payload_len() as usize
+        self.header_len() + usize::from(self.payload_len())
     }
 
     /// Return the next header field.
@@ -196,6 +213,10 @@ impl<S: Storage + ?Sized> Packet<S> {
         Ipv6Addr::from_bytes(&data[field::DST_ADDR])
     }
 
+    pub fn addr(&self) -> Ends<Ipv6Addr> {
+        (Src(self.src_addr()), Dst(self.dst_addr()))
+    }
+
     fn payload_range(&self) -> Range<usize> {
         self.header_len()..self.total_len()
     }
@@ -203,11 +224,6 @@ impl<S: Storage + ?Sized> Packet<S> {
     pub fn payload(&self) -> &[u8] {
         &self.inner.data()[self.payload_range()]
     }
-}
-
-#[derive(Debug)]
-pub struct PacketBuilder<S: Storage + ?Sized> {
-    packet: Packet<S>,
 }
 
 impl<S: Storage + ?Sized> Packet<S> {
@@ -233,7 +249,7 @@ impl<S: Storage + ?Sized> Packet<S> {
     fn set_flow_label(&mut self, value: u32) {
         let data = self.inner.data_mut();
         // Retain the lower order 4-bits of the traffic class
-        let raw = (((data[1] & 0xf0) as u32) << 16) | (value & 0x0fffff);
+        let raw = (u32::from(data[1] & 0xf0) << 16) | (value & 0x0fffff);
         NetworkEndian::write_u24(&mut data[1..4], raw);
     }
 
@@ -265,42 +281,22 @@ impl<S: Storage + ?Sized> Packet<S> {
     }
 }
 
-impl<S: Storage> PacketBuilder<S> {
-    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
-        let len = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLong)?;
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = Packet { inner };
-
-        packet.set_version(6);
-        packet.set_traffic_class(0);
-        packet.set_flow_label(0);
-        packet.set_payload_len(len);
-        packet.set_hop_limit(64);
-        packet.set_next_header(Protocol::Unknown(0));
-
-        Ok(PacketBuilder { packet })
-    }
-
+impl<S: Storage> Builder<Packet<S>> {
     pub fn addr(mut self, addr: Ends<Ipv6Addr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.packet.set_src_addr(src);
-        self.packet.set_dst_addr(dst);
+        self.0.set_src_addr(src);
+        self.0.set_dst_addr(dst);
         self
     }
 
     pub fn hop_limit(mut self, hop_limit: u8) -> Self {
-        self.packet.set_hop_limit(hop_limit);
+        self.0.set_hop_limit(hop_limit);
         self
     }
 
     pub fn next_header(mut self, prot: Protocol) -> Self {
-        self.packet.set_next_header(prot);
+        self.0.set_next_header(prot);
         self
-    }
-
-    pub fn build(self) -> Packet<S> {
-        self.packet
     }
 }
 
@@ -334,7 +330,7 @@ mod tests {
         assert_eq!(packet.traffic_class(), 0);
         assert_eq!(packet.flow_label(), 0);
         assert_eq!(packet.total_len(), 0x34);
-        assert_eq!(packet.payload_len() as usize, REPR_PAYLOAD_BYTES.len());
+        assert_eq!(usize::from(packet.payload_len()), REPR_PAYLOAD_BYTES.len());
         assert_eq!(packet.next_header(), Protocol::Udp);
         assert_eq!(packet.hop_limit(), 0x40);
         assert_eq!(packet.src_addr(), Ipv6Addr::LINK_LOCAL_ALL_ROUTERS);
@@ -358,7 +354,7 @@ mod tests {
             ))
             .build();
 
-        assert_eq!(packet.into_inner().data(), &REPR_PACKET_BYTES);
+        assert_eq!(packet.into_raw().data(), &REPR_PACKET_BYTES);
     }
 
     #[test]

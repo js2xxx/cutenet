@@ -24,11 +24,34 @@ pub trait WireBuf {
 
     const HEADER_LEN: usize;
 
-    fn into_inner(self) -> Buf<Self::Storage>
+    type BuildError;
+    fn build_default(payload: Buf<Self::Storage>) -> Result<Self, Self::BuildError>
+    where
+        Self::Storage: Sized,
+        Self: Sized;
+
+    fn builder(payload: Buf<Self::Storage>) -> Result<Builder<Self>, Self::BuildError>
+    where
+        Self::Storage: Sized,
+        Self: Sized,
+    {
+        Self::build_default(payload).map(Builder)
+    }
+
+    fn into_raw(self) -> Buf<Self::Storage>
     where
         Self::Storage: Sized;
 
     fn into_payload(self) -> Buf<Self::Storage>
     where
         Self::Storage: Sized;
+}
+
+#[derive(Debug)]
+pub struct Builder<W>(W);
+
+impl<W> Builder<W> {
+    pub fn build(self) -> W {
+        self.0
+    }
 }

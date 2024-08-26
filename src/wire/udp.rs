@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{
     ip::{self, checksum},
-    Dst, Ends, Src, WireBuf,
+    Builder, Dst, Ends, Src, WireBuf,
 };
 use crate::storage::{Buf, Storage};
 
@@ -29,10 +29,6 @@ pub struct Packet<S: Storage + ?Sized> {
 }
 
 impl<S: Storage> Packet<S> {
-    pub fn builder(payload: Buf<S>) -> Result<PacketBuilder<S>, BuildError> {
-        PacketBuilder::new(payload)
-    }
-
     pub fn parse(
         raw: Buf<S>,
         verify_checksum: Option<Ends<IpAddr>>,
@@ -43,7 +39,7 @@ impl<S: Storage> Packet<S> {
         if buffer_len < HEADER_LEN {
             return Err(ParseError::PacketTooShort);
         } else {
-            let field_len = packet.len() as usize;
+            let field_len = usize::from(packet.len());
             if buffer_len < field_len || field_len < HEADER_LEN {
                 return Err(ParseError::PacketTooShort);
             }
@@ -69,14 +65,29 @@ impl<S: Storage + ?Sized> WireBuf for Packet<S> {
 
     const HEADER_LEN: usize = HEADER_LEN;
 
-    fn into_inner(self) -> Buf<S>
+    type BuildError = BuildError;
+    fn build_default(payload: Buf<S>) -> Result<Self, BuildError>
+    where
+        S: Sized,
+    {
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        let mut packet = Packet { inner };
+
+        let len = u16::try_from(packet.inner.len()).map_err(|_| BuildError(()))?;
+        packet.set_len(len);
+        packet.set_checksum(0);
+        Ok(packet)
+    }
+
+    fn into_raw(self) -> Buf<S>
     where
         S: Sized,
     {
         self.inner
     }
 
-    fn into_payload(self) -> Buf<Self::Storage>
+    fn into_payload(self) -> Buf<S>
     where
         S: Sized,
     {
@@ -121,15 +132,10 @@ impl<S: Storage + ?Sized> Packet<S> {
         }
 
         checksum::combine(&[
-            checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, self.len() as u32),
-            checksum::data(&self.inner.data()[..self.len() as usize]),
+            checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, u32::from(self.len())),
+            checksum::data(&self.inner.data()[..usize::from(self.len())]),
         ]) == !0
     }
-}
-
-#[derive(Debug)]
-pub struct PacketBuilder<S: Storage + ?Sized> {
-    packet: Packet<S>,
 }
 
 impl<S: Storage + ?Sized> Packet<S> {
@@ -150,41 +156,26 @@ impl<S: Storage + ?Sized> Packet<S> {
     }
 }
 
-impl<S: Storage> PacketBuilder<S> {
-    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = Packet { inner };
-
-        let len = u16::try_from(packet.inner.len()).map_err(|_| BuildError(()))?;
-        packet.set_len(len);
-        packet.set_checksum(0);
-        Ok(PacketBuilder { packet })
-    }
-
+impl<S: Storage> Builder<Packet<S>> {
     pub fn port(mut self, port: Ends<u16>) -> Self {
         let (Src(src), Dst(dst)) = port;
-        self.packet.set_src_port(src);
-        self.packet.set_dst_port(dst);
+        self.0.set_src_port(src);
+        self.0.set_dst_port(dst);
         self
     }
 
     pub fn checksum(mut self, addr: Ends<IpAddr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.packet.set_checksum(0);
+        self.0.set_checksum(0);
 
-        let len = self.packet.len();
+        let len = self.0.len();
         let checksum = !checksum::combine(&[
-            checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, len as u32),
-            checksum::data(&self.packet.inner.data()[..self.packet.len() as usize]),
+            checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, u32::from(len)),
+            checksum::data(&self.0.inner.data()[..usize::from(len)]),
         ]);
-        self.packet
+        self.0
             .set_checksum(if checksum == 0 { 0xffff } else { checksum });
         self
-    }
-
-    pub fn build(self) -> Packet<S> {
-        self.packet
     }
 }
 
@@ -235,7 +226,7 @@ mod test {
 
         let packet = Packet::builder(payload).unwrap();
         let packet = packet.port((Src(48896), Dst(53))).checksum(ADDR).build();
-        assert_eq!(packet.into_inner().data(), &PACKET_BYTES[..]);
+        assert_eq!(packet.into_raw().data(), &PACKET_BYTES[..]);
     }
 
     #[test]

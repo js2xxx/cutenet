@@ -1,8 +1,8 @@
-use core::fmt;
+use core::{convert::Infallible, fmt};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Dst, Ends, Src, WireBuf};
+use super::{Builder, Dst, Ends, Src, WireBuf};
 use crate::storage::{Buf, Storage};
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
@@ -80,10 +80,6 @@ pub struct Frame<S: Storage + ?Sized> {
 }
 
 impl<S: Storage> Frame<S> {
-    pub fn builder(payload: Buf<S>) -> FrameBuilder<S> {
-        FrameBuilder::new(payload)
-    }
-
     pub fn parse(buf: Buf<S>) -> Result<Self, ParseError> {
         if buf.len() < HEADER_LEN {
             return Err(ParseError(()));
@@ -97,7 +93,17 @@ impl<S: Storage + ?Sized> WireBuf for Frame<S> {
 
     const HEADER_LEN: usize = HEADER_LEN;
 
-    fn into_inner(self) -> Buf<Self::Storage>
+    type BuildError = Infallible;
+    fn build_default(payload: Buf<S>) -> Result<Self, Infallible>
+    where
+        S: Sized,
+    {
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        Ok(Frame { inner })
+    }
+
+    fn into_raw(self) -> Buf<Self::Storage>
     where
         S: Sized,
     {
@@ -121,6 +127,10 @@ impl<S: Storage + ?Sized> Frame<S> {
         Addr::from_bytes(&self.inner.data()[field::SOURCE])
     }
 
+    pub fn addr(&self) -> Ends<Addr> {
+        (Src(self.src_addr()), Dst(self.dst_addr()))
+    }
+
     pub fn protocol(&self) -> Protocol {
         let raw = NetworkEndian::read_u16(&self.inner.data()[field::ETHERTYPE]);
         Protocol::from(raw)
@@ -129,11 +139,6 @@ impl<S: Storage + ?Sized> Frame<S> {
     pub fn payload(&self) -> &[u8] {
         &self.inner.data()[field::PAYLOAD]
     }
-}
-
-#[derive(Debug)]
-pub struct FrameBuilder<S: Storage + ?Sized> {
-    frame: Frame<S>,
 }
 
 impl<S: Storage + ?Sized> Frame<S> {
@@ -150,26 +155,21 @@ impl<S: Storage + ?Sized> Frame<S> {
     }
 }
 
-impl<S: Storage> FrameBuilder<S> {
-    fn new(payload: Buf<S>) -> Self {
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        FrameBuilder { frame: Frame { inner } }
-    }
-
+impl<S: Storage> Builder<Frame<S>> {
     pub fn addr(mut self, addr: Ends<Addr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.frame.set_src_addr(src);
-        self.frame.set_dst_addr(dst);
+        self.0.set_src_addr(src);
+        self.0.set_dst_addr(dst);
         self
     }
 
-    pub fn build(mut self, ty: Protocol) -> Frame<S> {
-        self.frame.set_protocol(ty);
-        self.frame
+    pub fn protocol(mut self, ty: Protocol) -> Self {
+        self.0.set_protocol(ty);
+        self
     }
 }
 
+#[derive(Debug)]
 pub struct ParseError(());
 
 #[cfg(test)]
@@ -227,12 +227,12 @@ mod test_ipv4 {
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = FrameBuilder::new(payload).addr((
+        let frame = Frame::builder(payload).unwrap().addr((
             Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
             Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
         ));
-        let frame = frame.build(Protocol::Ipv4);
-        assert_eq!(frame.into_inner().data(), &FRAME_BYTES[..]);
+        let frame = frame.protocol(Protocol::Ipv4).build();
+        assert_eq!(frame.into_raw().data(), &FRAME_BYTES[..]);
     }
 }
 
@@ -277,11 +277,11 @@ mod test_ipv6 {
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = FrameBuilder::new(payload).addr((
+        let frame = Frame::builder(payload).unwrap().addr((
             Src(Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])),
             Dst(Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])),
         ));
-        let frame = frame.build(Protocol::Ipv6);
-        assert_eq!(frame.into_inner().data(), &FRAME_BYTES[..]);
+        let frame = frame.protocol(Protocol::Ipv6).build();
+        assert_eq!(frame.into_raw().data(), &FRAME_BYTES[..]);
     }
 }

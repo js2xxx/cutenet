@@ -96,8 +96,8 @@ fn prefix_len_impl(bytes: &[u8]) -> Option<u8> {
 
 fn mask_impl<const N: usize>(input: [u8; N], prefix_len: u8) -> [u8; N] {
     let mut bytes = [0u8; N];
-    let idx = (prefix_len as usize) / 8;
-    let modulus = (prefix_len as usize) % 8;
+    let idx = usize::from(prefix_len) / 8;
+    let modulus = usize::from(prefix_len) % 8;
     let (first, second) = input.split_at(idx);
     bytes[0..idx].copy_from_slice(first);
     if idx < 16 {

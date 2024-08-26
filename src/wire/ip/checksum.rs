@@ -17,7 +17,7 @@ pub fn data(mut data: &[u8]) -> u16 {
         let mut d = &data[..CHUNK_SIZE];
         // ... take by 2 bytes and sum them.
         while d.len() >= 2 {
-            accum += NetworkEndian::read_u16(d) as u32;
+            accum += u32::from(NetworkEndian::read_u16(d));
             d = &d[2..];
         }
 
@@ -27,13 +27,13 @@ pub fn data(mut data: &[u8]) -> u16 {
     // Sum the rest that does not fit the last 32-byte chunk,
     // taking by 2 bytes.
     while data.len() >= 2 {
-        accum += NetworkEndian::read_u16(data) as u32;
+        accum += u32::from(NetworkEndian::read_u16(data));
         data = &data[2..];
     }
 
     // Add the last remaining odd byte, if any.
     if let Some(&value) = data.first() {
-        accum += (value as u32) << 8;
+        accum += u32::from(value) << 8;
     }
 
     propagate_carries(accum)
@@ -41,10 +41,7 @@ pub fn data(mut data: &[u8]) -> u16 {
 
 /// Combine several RFC 1071 compliant checksums.
 pub fn combine(checksums: &[u16]) -> u16 {
-    let mut accum: u32 = 0;
-    for &word in checksums {
-        accum += word as u32;
-    }
+    let accum = checksums.iter().copied().map(u32::from).sum();
     propagate_carries(accum)
 }
 

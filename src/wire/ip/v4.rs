@@ -9,7 +9,7 @@ pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, ParseError, Protocol};
 use crate::{
     storage::{Buf, Storage},
-    wire::{Dst, Ends, Src, WireBuf},
+    wire::{Builder, Dst, Ends, Src, WireBuf},
 };
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -42,18 +42,14 @@ pub struct Packet<S: Storage + ?Sized> {
 }
 
 impl<S: Storage> Packet<S> {
-    pub fn builder(payload: Buf<S>) -> Result<PacketBuilder<S>, BuildError> {
-        PacketBuilder::new(payload)
-    }
-
     pub fn parse(raw: Buf<S>, verify_checksum: bool) -> Result<Packet<S>, ParseError> {
         let packet = Packet { inner: raw };
 
         let len = packet.inner.len();
         if len < field::DST_ADDR.end
-            || len < packet.header_len() as usize
-            || packet.header_len() as u16 > packet.total_len()
-            || len < packet.total_len() as usize
+            || len < usize::from(packet.header_len())
+            || u16::from(packet.header_len()) > packet.total_len()
+            || len < usize::from(packet.total_len())
         {
             return Err(ParseError::PacketTooShort);
         }
@@ -75,7 +71,38 @@ impl<S: Storage + ?Sized> WireBuf for Packet<S> {
 
     const HEADER_LEN: usize = HEADER_LEN;
 
-    fn into_inner(self) -> Buf<S>
+    type BuildError = BuildError;
+    fn build_default(payload: Buf<Self::Storage>) -> Result<Self, BuildError>
+    where
+        S: Sized,
+        Self: Sized,
+    {
+        let len = payload.len();
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        let mut packet = Packet { inner };
+
+        packet.set_version(4);
+        packet.set_header_len(u8::try_from(field::DST_ADDR.end).unwrap());
+        packet.set_dscp(0);
+        packet.set_ecn(0);
+
+        let total_len = usize::from(packet.header_len()) + len;
+        packet.set_total_len(u16::try_from(total_len).map_err(|_| BuildError::PayloadTooLong)?);
+
+        packet.set_ident(0);
+        packet.clear_flags();
+        packet.set_more_frags(false);
+        packet.set_dont_frag(true);
+        packet.set_frag_offset(0);
+        packet.set_hop_limit(64);
+        packet.set_next_header(Protocol::Unknown(0));
+        packet.set_checksum(0);
+
+        Ok(packet)
+    }
+
+    fn into_raw(self) -> Buf<S>
     where
         S: Sized,
     {
@@ -166,7 +193,7 @@ impl<S: Storage + ?Sized> Packet<S> {
     }
 
     pub fn verify_checksum(&self) -> bool {
-        checksum::data(&self.inner.data()[..self.header_len() as usize]) == !0
+        checksum::data(&self.inner.data()[..usize::from(self.header_len())]) == !0
     }
 
     pub fn key(&self) -> Key {
@@ -179,17 +206,12 @@ impl<S: Storage + ?Sized> Packet<S> {
     }
 
     fn payload_range(&self) -> Range<usize> {
-        self.header_len() as usize..self.total_len() as usize
+        usize::from(self.header_len())..usize::from(self.total_len())
     }
 
     pub fn payload(&self) -> &[u8] {
         &self.inner.data()[self.payload_range()]
     }
-}
-
-#[derive(Debug)]
-pub struct PacketBuilder<S: Storage + ?Sized> {
-    packet: Packet<S>,
 }
 
 impl<S: Storage + ?Sized> Packet<S> {
@@ -284,60 +306,29 @@ impl<S: Storage + ?Sized> Packet<S> {
     }
 }
 
-impl<S: Storage> PacketBuilder<S> {
-    fn new(payload: Buf<S>) -> Result<Self, BuildError> {
-        let len = payload.len();
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = Packet { inner };
-
-        packet.set_version(4);
-        packet.set_header_len(u8::try_from(field::DST_ADDR.end).unwrap());
-        packet.set_dscp(0);
-        packet.set_ecn(0);
-
-        let total_len = usize::from(packet.header_len()) + len;
-        packet.set_total_len(u16::try_from(total_len).map_err(|_| BuildError::PayloadTooLong)?);
-
-        packet.set_ident(0);
-        packet.clear_flags();
-        packet.set_more_frags(false);
-        packet.set_dont_frag(true);
-        packet.set_frag_offset(0);
-        packet.set_hop_limit(64);
-        packet.set_next_header(Protocol::Unknown(0));
-        packet.set_checksum(0);
-
-        Ok(PacketBuilder { packet })
-    }
-
+impl<S: Storage> Builder<Packet<S>> {
     pub fn addr(mut self, addr: Ends<Ipv4Addr>) -> Self {
         let (Src(src), Dst(dst)) = addr;
-        self.packet.set_src_addr(src);
-        self.packet.set_dst_addr(dst);
+        self.0.set_src_addr(src);
+        self.0.set_dst_addr(dst);
         self
     }
 
     pub fn hop_limit(mut self, hop_limit: u8) -> Self {
-        self.packet.set_hop_limit(hop_limit);
+        self.0.set_hop_limit(hop_limit);
         self
     }
 
     pub fn next_header(mut self, prot: Protocol) -> Self {
-        self.packet.set_next_header(prot);
+        self.0.set_next_header(prot);
         self
     }
 
     pub fn checksum(mut self) -> Self {
-        self.packet.set_checksum(0);
-        let checksum =
-            !checksum::data(&self.packet.inner.data()[..self.packet.header_len() as usize]);
-        self.packet.set_checksum(checksum);
+        self.0.set_checksum(0);
+        let checksum = !checksum::data(&self.0.inner.data()[..usize::from(self.0.header_len())]);
+        self.0.set_checksum(checksum);
         self
-    }
-
-    pub fn build(self) -> Packet<S> {
-        self.packet
     }
 }
 
@@ -403,7 +394,7 @@ mod tests {
             ))
             .checksum()
             .build();
-        assert_eq!(packet.into_inner().data(), &EGRESS_PACKET_BYTES[..]);
+        assert_eq!(packet.into_raw().data(), &EGRESS_PACKET_BYTES[..]);
     }
 
     #[test]
