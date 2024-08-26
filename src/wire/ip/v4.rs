@@ -9,7 +9,7 @@ pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, ParseError, Protocol};
 use crate::{
     storage::{Buf, Storage},
-    wire::{Builder, Dst, Ends, Src, WireBuf},
+    wire::{Builder, Dst, Ends, Src, VerifyChecksum, WireBuf},
 };
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -41,8 +41,238 @@ pub struct Packet<S: Storage + ?Sized> {
     inner: Buf<S>,
 }
 
-impl<S: Storage> Packet<S> {
-    pub fn parse(raw: Buf<S>, verify_checksum: bool) -> Result<Packet<S>, ParseError> {
+impl<S: Storage> Packet<S> {}
+
+impl<S: Storage + ?Sized> Packet<S> {
+    pub fn version(&self) -> u8 {
+        self.inner.data()[field::VER_IHL] >> 4
+    }
+
+    fn set_version(&mut self, value: u8) {
+        self.inner.data_mut()[field::VER_IHL] =
+            (self.inner.data_mut()[field::VER_IHL] & !0xf0) | (value << 4);
+    }
+
+    /// Return the header length, in octets.
+    pub fn header_len(&self) -> u8 {
+        (self.inner.data()[field::VER_IHL] & 0x0f) * 4
+    }
+
+    fn set_header_len(&mut self, value: u8) {
+        self.inner.data_mut()[field::VER_IHL] =
+            (self.inner.data_mut()[field::VER_IHL] & !0x0f) | ((value / 4) & 0x0f);
+    }
+
+    /// Return the Differential Services Code Point field.
+    pub fn dscp(&self) -> u8 {
+        self.inner.data()[field::DSCP_ECN] >> 2
+    }
+
+    fn set_dscp(&mut self, value: u8) {
+        self.inner.data_mut()[field::DSCP_ECN] =
+            (self.inner.data_mut()[field::DSCP_ECN] & !0xfc) | (value << 2)
+    }
+
+    /// Return the Explicit Congestion Notification field.
+    pub fn ecn(&self) -> u8 {
+        self.inner.data()[field::DSCP_ECN] & 0x03
+    }
+
+    fn set_ecn(&mut self, value: u8) {
+        self.inner.data_mut()[field::DSCP_ECN] =
+            (self.inner.data_mut()[field::DSCP_ECN] & !0x03) | (value & 0x03)
+    }
+
+    /// Return the total length field.
+    pub fn total_len(&self) -> u16 {
+        NetworkEndian::read_u16(&self.inner.data()[field::LENGTH])
+    }
+
+    fn set_total_len(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::LENGTH], value)
+    }
+
+    /// Return the fragment identification field.
+    pub fn ident(&self) -> u16 {
+        NetworkEndian::read_u16(&self.inner.data()[field::IDENT])
+    }
+
+    fn set_ident(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::IDENT], value)
+    }
+
+    /// Return the "don't fragment" flag.
+    pub fn dont_frag(&self) -> bool {
+        NetworkEndian::read_u16(&self.inner.data()[field::FLG_OFF]) & 0x4000 != 0
+    }
+
+    fn set_dont_frag(&mut self, value: bool) {
+        let data = self.inner.data_mut();
+        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = if value { raw | 0x4000 } else { raw & !0x4000 };
+        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+    }
+
+    /// Return the "more fragments" flag.
+    pub fn more_frags(&self) -> bool {
+        NetworkEndian::read_u16(&self.inner.data()[field::FLG_OFF]) & 0x2000 != 0
+    }
+
+    fn set_more_frags(&mut self, value: bool) {
+        let data = self.inner.data_mut();
+        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = if value { raw | 0x2000 } else { raw & !0x2000 };
+        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+    }
+
+    /// Return the fragment offset, in octets.
+    pub fn frag_offset(&self) -> u16 {
+        NetworkEndian::read_u16(&self.inner.data()[field::FLG_OFF]) << 3
+    }
+
+    fn set_frag_offset(&mut self, value: u16) {
+        let data = self.inner.data_mut();
+        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = (raw & 0xe000) | (value >> 3);
+        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+    }
+
+    fn clear_flags(&mut self) {
+        let data = self.inner.data_mut();
+        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = raw & !0xe000;
+        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+    }
+
+    /// Return the time to live field.
+    pub fn hop_limit(&self) -> u8 {
+        self.inner.data()[field::TTL]
+    }
+
+    fn set_hop_limit(&mut self, value: u8) {
+        self.inner.data_mut()[field::TTL] = value
+    }
+
+    /// Return the next_header (protocol) field.
+    pub fn next_header(&self) -> Protocol {
+        Protocol::from(self.inner.data()[field::PROTOCOL])
+    }
+
+    fn set_next_header(&mut self, value: Protocol) {
+        self.inner.data_mut()[field::PROTOCOL] = value.into()
+    }
+
+    /// Return the header checksum field.
+    pub fn checksum(&self) -> u16 {
+        NetworkEndian::read_u16(&self.inner.data()[field::CHECKSUM])
+    }
+
+    fn set_checksum(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::CHECKSUM], value)
+    }
+
+    /// Return the source address field.
+    pub fn src_addr(&self) -> Ipv4Addr {
+        Ipv4Addr::from_bytes(&self.inner.data()[field::SRC_ADDR])
+    }
+
+    fn set_src_addr(&mut self, value: Ipv4Addr) {
+        self.inner.data_mut()[field::SRC_ADDR].copy_from_slice(&value.octets())
+    }
+
+    /// Return the destination address field.
+    pub fn dst_addr(&self) -> Ipv4Addr {
+        Ipv4Addr::from_bytes(&self.inner.data()[field::DST_ADDR])
+    }
+
+    fn set_dst_addr(&mut self, value: Ipv4Addr) {
+        self.inner.data_mut()[field::DST_ADDR].copy_from_slice(&value.octets())
+    }
+
+    pub fn addr(&self) -> Ends<Ipv4Addr> {
+        (Src(self.src_addr()), Dst(self.dst_addr()))
+    }
+
+    pub fn verify_checksum(&self) -> bool {
+        checksum::data(&self.inner.data()[..usize::from(self.header_len())]) == !0
+    }
+
+    pub fn key(&self) -> Key {
+        Key {
+            id: self.ident(),
+            src_addr: self.src_addr(),
+            dst_addr: self.dst_addr(),
+            protocol: self.next_header(),
+        }
+    }
+
+    fn payload_range(&self) -> Range<usize> {
+        usize::from(self.header_len())..usize::from(self.total_len())
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.inner.data()[self.payload_range()]
+    }
+}
+
+impl<S: Storage> Builder<Packet<S>> {
+    pub fn addr(mut self, addr: Ends<Ipv4Addr>) -> Self {
+        let (Src(src), Dst(dst)) = addr;
+        self.0.set_src_addr(src);
+        self.0.set_dst_addr(dst);
+        self
+    }
+
+    pub fn hop_limit(mut self, hop_limit: u8) -> Self {
+        self.0.set_hop_limit(hop_limit);
+        self
+    }
+
+    pub fn next_header(mut self, prot: Protocol) -> Self {
+        self.0.set_next_header(prot);
+        self
+    }
+
+    pub fn checksum(mut self) -> Self {
+        self.0.set_checksum(0);
+        let checksum = !checksum::data(&self.0.inner.data()[..usize::from(self.0.header_len())]);
+        self.0.set_checksum(checksum);
+        self
+    }
+}
+
+impl<S: Storage + ?Sized> WireBuf for Packet<S> {
+    type Storage = S;
+
+    const HEADER_LEN: usize = HEADER_LEN;
+
+    fn into_raw(self) -> Buf<S>
+    where
+        S: Sized,
+    {
+        self.inner
+    }
+
+    fn into_payload(self) -> Buf<S>
+    where
+        S: Sized,
+    {
+        let range = self.payload_range();
+        self.inner.slice_into(range)
+    }
+
+    type ParseError = ParseError;
+
+    type ParseArg<'a> = VerifyChecksum<bool>;
+
+    fn parse(
+        raw: Buf<Self::Storage>,
+        VerifyChecksum(verify_checksum): VerifyChecksum<bool>,
+    ) -> Result<Self, Self::ParseError>
+    where
+        Self::Storage: Sized,
+        Self: Sized,
+    {
         let packet = Packet { inner: raw };
 
         let len = packet.inner.len();
@@ -64,12 +294,6 @@ impl<S: Storage> Packet<S> {
 
         Ok(packet)
     }
-}
-
-impl<S: Storage + ?Sized> WireBuf for Packet<S> {
-    type Storage = S;
-
-    const HEADER_LEN: usize = HEADER_LEN;
 
     type BuildError = BuildError;
     fn build_default(payload: Buf<Self::Storage>) -> Result<Self, BuildError>
@@ -101,235 +325,6 @@ impl<S: Storage + ?Sized> WireBuf for Packet<S> {
 
         Ok(packet)
     }
-
-    fn into_raw(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        self.inner
-    }
-
-    fn into_payload(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        let range = self.payload_range();
-        self.inner.slice_into(range)
-    }
-}
-
-impl<S: Storage + ?Sized> Packet<S> {
-    pub fn version(&self) -> u8 {
-        self.inner.data()[field::VER_IHL] >> 4
-    }
-
-    /// Return the header length, in octets.
-    pub fn header_len(&self) -> u8 {
-        (self.inner.data()[field::VER_IHL] & 0x0f) * 4
-    }
-
-    /// Return the Differential Services Code Point field.
-    pub fn dscp(&self) -> u8 {
-        self.inner.data()[field::DSCP_ECN] >> 2
-    }
-
-    /// Return the Explicit Congestion Notification field.
-    pub fn ecn(&self) -> u8 {
-        self.inner.data()[field::DSCP_ECN] & 0x03
-    }
-
-    /// Return the total length field.
-    pub fn total_len(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::LENGTH])
-    }
-
-    /// Return the fragment identification field.
-    pub fn ident(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::IDENT])
-    }
-
-    /// Return the "don't fragment" flag.
-    pub fn dont_frag(&self) -> bool {
-        NetworkEndian::read_u16(&self.inner.data()[field::FLG_OFF]) & 0x4000 != 0
-    }
-
-    /// Return the "more fragments" flag.
-    pub fn more_frags(&self) -> bool {
-        NetworkEndian::read_u16(&self.inner.data()[field::FLG_OFF]) & 0x2000 != 0
-    }
-
-    /// Return the fragment offset, in octets.
-    pub fn frag_offset(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::FLG_OFF]) << 3
-    }
-
-    /// Return the time to live field.
-    pub fn hop_limit(&self) -> u8 {
-        self.inner.data()[field::TTL]
-    }
-
-    /// Return the next_header (protocol) field.
-    pub fn next_header(&self) -> Protocol {
-        Protocol::from(self.inner.data()[field::PROTOCOL])
-    }
-
-    /// Return the header checksum field.
-    pub fn checksum(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::CHECKSUM])
-    }
-
-    /// Return the source address field.
-    pub fn src_addr(&self) -> Ipv4Addr {
-        Ipv4Addr::from_bytes(&self.inner.data()[field::SRC_ADDR])
-    }
-
-    /// Return the destination address field.
-    pub fn dst_addr(&self) -> Ipv4Addr {
-        Ipv4Addr::from_bytes(&self.inner.data()[field::DST_ADDR])
-    }
-
-    pub fn addr(&self) -> Ends<Ipv4Addr> {
-        (Src(self.src_addr()), Dst(self.dst_addr()))
-    }
-
-    pub fn verify_checksum(&self) -> bool {
-        checksum::data(&self.inner.data()[..usize::from(self.header_len())]) == !0
-    }
-
-    pub fn key(&self) -> Key {
-        Key {
-            id: self.ident(),
-            src_addr: self.src_addr(),
-            dst_addr: self.dst_addr(),
-            protocol: self.next_header(),
-        }
-    }
-
-    fn payload_range(&self) -> Range<usize> {
-        usize::from(self.header_len())..usize::from(self.total_len())
-    }
-
-    pub fn payload(&self) -> &[u8] {
-        &self.inner.data()[self.payload_range()]
-    }
-}
-
-impl<S: Storage + ?Sized> Packet<S> {
-    fn set_version(&mut self, value: u8) {
-        self.inner.data_mut()[field::VER_IHL] =
-            (self.inner.data_mut()[field::VER_IHL] & !0xf0) | (value << 4);
-    }
-
-    /// Set the header length, in octets.
-    fn set_header_len(&mut self, value: u8) {
-        self.inner.data_mut()[field::VER_IHL] =
-            (self.inner.data_mut()[field::VER_IHL] & !0x0f) | ((value / 4) & 0x0f);
-    }
-
-    /// Set the Differential Services Code Point field.
-    fn set_dscp(&mut self, value: u8) {
-        self.inner.data_mut()[field::DSCP_ECN] =
-            (self.inner.data_mut()[field::DSCP_ECN] & !0xfc) | (value << 2)
-    }
-
-    /// Set the Explicit Congestion Notification field.
-    fn set_ecn(&mut self, value: u8) {
-        self.inner.data_mut()[field::DSCP_ECN] =
-            (self.inner.data_mut()[field::DSCP_ECN] & !0x03) | (value & 0x03)
-    }
-
-    /// Set the total length field.
-    fn set_total_len(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::LENGTH], value)
-    }
-
-    /// Set the fragment identification field.
-    fn set_ident(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::IDENT], value)
-    }
-
-    /// Clear the entire flags field.
-    fn clear_flags(&mut self) {
-        let data = self.inner.data_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
-        let raw = raw & !0xe000;
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
-    }
-
-    /// Set the "don't fragment" flag.
-    fn set_dont_frag(&mut self, value: bool) {
-        let data = self.inner.data_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
-        let raw = if value { raw | 0x4000 } else { raw & !0x4000 };
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
-    }
-
-    /// Set the "more fragments" flag.
-    fn set_more_frags(&mut self, value: bool) {
-        let data = self.inner.data_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
-        let raw = if value { raw | 0x2000 } else { raw & !0x2000 };
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
-    }
-
-    /// Set the fragment offset, in octets.
-    fn set_frag_offset(&mut self, value: u16) {
-        let data = self.inner.data_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
-        let raw = (raw & 0xe000) | (value >> 3);
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
-    }
-
-    /// Set the time to live field.
-    fn set_hop_limit(&mut self, value: u8) {
-        self.inner.data_mut()[field::TTL] = value
-    }
-
-    /// Set the next header (protocol) field.
-    fn set_next_header(&mut self, value: Protocol) {
-        self.inner.data_mut()[field::PROTOCOL] = value.into()
-    }
-
-    /// Set the header checksum field.
-    fn set_checksum(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::CHECKSUM], value)
-    }
-
-    /// Set the source address field.
-    fn set_src_addr(&mut self, value: Ipv4Addr) {
-        self.inner.data_mut()[field::SRC_ADDR].copy_from_slice(&value.octets())
-    }
-
-    /// Set the destination address field.
-    fn set_dst_addr(&mut self, value: Ipv4Addr) {
-        self.inner.data_mut()[field::DST_ADDR].copy_from_slice(&value.octets())
-    }
-}
-
-impl<S: Storage> Builder<Packet<S>> {
-    pub fn addr(mut self, addr: Ends<Ipv4Addr>) -> Self {
-        let (Src(src), Dst(dst)) = addr;
-        self.0.set_src_addr(src);
-        self.0.set_dst_addr(dst);
-        self
-    }
-
-    pub fn hop_limit(mut self, hop_limit: u8) -> Self {
-        self.0.set_hop_limit(hop_limit);
-        self
-    }
-
-    pub fn next_header(mut self, prot: Protocol) -> Self {
-        self.0.set_next_header(prot);
-        self
-    }
-
-    pub fn checksum(mut self) -> Self {
-        self.0.set_checksum(0);
-        let checksum = !checksum::data(&self.0.inner.data()[..usize::from(self.0.header_len())]);
-        self.0.set_checksum(checksum);
-        self
-    }
 }
 
 #[derive(Debug)]
@@ -343,6 +338,7 @@ mod tests {
     use std::vec;
 
     use super::*;
+    use crate::wire::WireBufExt;
 
     const INGRESS_PACKET_BYTES: [u8; 30] = [
         0x45, 0x00, 0x00, 0x1e, 0x01, 0x02, 0x62, 0x03, 0x1a, 0x01, 0xd5, 0x6e, 0x11, 0x12, 0x13,
@@ -415,7 +411,7 @@ mod tests {
     #[test]
     fn test_parse() {
         let mut pb = REPR_PACKET_BYTES;
-        let packet = Packet::parse(Buf::full(&mut pb[..]), true).unwrap();
+        let packet = Packet::parse(Buf::full(&mut pb[..]), VerifyChecksum(true)).unwrap();
 
         assert_eq!(packet.src_addr(), Ipv4Addr::from([0x11, 0x12, 0x13, 0x14]));
         assert_eq!(packet.dst_addr(), Ipv4Addr::from([0x21, 0x22, 0x23, 0x24]));
@@ -428,6 +424,6 @@ mod tests {
     fn test_parse_total_len_less_than_header_len() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Packet::parse(Buf::full(&mut bytes[..]), false).is_err());
+        assert!(Packet::parse(Buf::full(&mut bytes[..]), VerifyChecksum(false)).is_err());
     }
 }

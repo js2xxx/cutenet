@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{
     ip::{self, checksum},
-    Builder, Dst, Ends, Src, WireBuf,
+    Builder, Dst, Ends, Src, VerifyChecksum, WireBuf,
 };
 use crate::storage::{Buf, Storage};
 
@@ -28,80 +28,21 @@ pub struct Packet<S: Storage + ?Sized> {
     inner: Buf<S>,
 }
 
-impl<S: Storage> Packet<S> {
-    pub fn parse(
-        raw: Buf<S>,
-        verify_checksum: Option<Ends<IpAddr>>,
-    ) -> Result<Packet<S>, ParseError> {
-        let packet = Packet { inner: raw };
-
-        let buffer_len = packet.inner.len();
-        if buffer_len < HEADER_LEN {
-            return Err(ParseError::PacketTooShort);
-        } else {
-            let field_len = usize::from(packet.len());
-            if buffer_len < field_len || field_len < HEADER_LEN {
-                return Err(ParseError::PacketTooShort);
-            }
-        }
-
-        if packet.dst_port() == 0 {
-            return Err(ParseError::DstInvalid);
-        }
-
-        if let Some(addr) = verify_checksum
-            && !packet.verify_checksum(addr)
-            && !matches!(addr, (Src(IpAddr::V4(_)), Dst(IpAddr::V4(_))) if packet.checksum() == 0)
-        {
-            return Err(ParseError::ChecksumInvalid);
-        }
-
-        Ok(packet)
-    }
-}
-
-impl<S: Storage + ?Sized> WireBuf for Packet<S> {
-    type Storage = S;
-
-    const HEADER_LEN: usize = HEADER_LEN;
-
-    type BuildError = BuildError;
-    fn build_default(payload: Buf<S>) -> Result<Self, BuildError>
-    where
-        S: Sized,
-    {
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        let mut packet = Packet { inner };
-
-        let len = u16::try_from(packet.inner.len()).map_err(|_| BuildError(()))?;
-        packet.set_len(len);
-        packet.set_checksum(0);
-        Ok(packet)
-    }
-
-    fn into_raw(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        self.inner
-    }
-
-    fn into_payload(self) -> Buf<S>
-    where
-        S: Sized,
-    {
-        self.inner.slice_into(HEADER_LEN..)
-    }
-}
-
 impl<S: Storage + ?Sized> Packet<S> {
     pub fn src_port(&self) -> u16 {
         NetworkEndian::read_u16(&self.inner.data()[field::SRC_PORT])
     }
 
+    fn set_src_port(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::SRC_PORT], value)
+    }
+
     pub fn dst_port(&self) -> u16 {
         NetworkEndian::read_u16(&self.inner.data()[field::DST_PORT])
+    }
+
+    fn set_dst_port(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::DST_PORT], value)
     }
 
     pub fn port(&self) -> Ends<u16> {
@@ -113,8 +54,16 @@ impl<S: Storage + ?Sized> Packet<S> {
         NetworkEndian::read_u16(&self.inner.data()[field::LENGTH])
     }
 
+    fn set_len(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::LENGTH], value)
+    }
+
     pub fn checksum(&self) -> u16 {
         NetworkEndian::read_u16(&self.inner.data()[field::CHECKSUM])
+    }
+
+    fn set_checksum(&mut self, value: u16) {
+        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::CHECKSUM], value)
     }
 
     pub fn payload(&self) -> &[u8] {
@@ -135,24 +84,6 @@ impl<S: Storage + ?Sized> Packet<S> {
             checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, u32::from(self.len())),
             checksum::data(&self.inner.data()[..usize::from(self.len())]),
         ]) == !0
-    }
-}
-
-impl<S: Storage + ?Sized> Packet<S> {
-    fn set_src_port(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::SRC_PORT], value)
-    }
-
-    fn set_dst_port(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::DST_PORT], value)
-    }
-
-    fn set_len(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::LENGTH], value)
-    }
-
-    fn set_checksum(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::CHECKSUM], value)
     }
 }
 
@@ -179,6 +110,78 @@ impl<S: Storage> Builder<Packet<S>> {
     }
 }
 
+impl<S: Storage + ?Sized> WireBuf for Packet<S> {
+    type Storage = S;
+
+    const HEADER_LEN: usize = HEADER_LEN;
+
+    fn into_raw(self) -> Buf<S>
+    where
+        S: Sized,
+    {
+        self.inner
+    }
+
+    fn into_payload(self) -> Buf<S>
+    where
+        S: Sized,
+    {
+        self.inner.slice_into(HEADER_LEN..)
+    }
+
+    type ParseError = ParseError;
+
+    type ParseArg<'a> = VerifyChecksum<Option<Ends<IpAddr>>>;
+
+    fn parse(
+        raw: Buf<S>,
+        VerifyChecksum(verify_checksum): VerifyChecksum<Option<Ends<IpAddr>>>,
+    ) -> Result<Self, ParseError>
+    where
+        Self::Storage: Sized,
+    {
+        let packet = Packet { inner: raw };
+
+        let buffer_len = packet.inner.len();
+        if buffer_len < HEADER_LEN {
+            return Err(ParseError::PacketTooShort);
+        } else {
+            let field_len = usize::from(packet.len());
+            if buffer_len < field_len || field_len < HEADER_LEN {
+                return Err(ParseError::PacketTooShort);
+            }
+        }
+
+        if packet.dst_port() == 0 {
+            return Err(ParseError::DstInvalid);
+        }
+
+        if let Some(addr) = verify_checksum
+            && !packet.verify_checksum(addr)
+            && !matches!(addr, (Src(IpAddr::V4(_)), Dst(IpAddr::V4(_))) if packet.checksum() == 0)
+        {
+            return Err(ParseError::ChecksumInvalid);
+        }
+
+        Ok(packet)
+    }
+
+    type BuildError = BuildError;
+    fn build_default(payload: Buf<S>) -> Result<Self, BuildError>
+    where
+        S: Sized,
+    {
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        let mut packet = Packet { inner };
+
+        let len = u16::try_from(packet.inner.len()).map_err(|_| BuildError(()))?;
+        packet.set_len(len);
+        packet.set_checksum(0);
+        Ok(packet)
+    }
+}
+
 #[derive(Debug)]
 pub struct BuildError(());
 
@@ -195,6 +198,7 @@ mod test {
     use std::vec;
 
     use super::*;
+    use crate::wire::WireBufExt;
 
     const SRC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
     const DST_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 2);
@@ -248,7 +252,7 @@ mod test {
     #[test]
     fn test_parse() {
         let mut fb = PACKET_BYTES;
-        let packet = Packet::parse(Buf::full(&mut fb[..]), Some(ADDR)).unwrap();
+        let packet = Packet::parse(Buf::full(&mut fb[..]), VerifyChecksum(Some(ADDR))).unwrap();
         assert_eq!(packet.port(), (Src(48896), Dst(53)));
     }
 }

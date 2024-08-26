@@ -79,52 +79,21 @@ pub struct Frame<S: Storage + ?Sized> {
     inner: Buf<S>,
 }
 
-impl<S: Storage> Frame<S> {
-    pub fn parse(buf: Buf<S>) -> Result<Self, ParseError> {
-        if buf.len() < HEADER_LEN {
-            return Err(ParseError(()));
-        }
-        Ok(Frame { inner: buf })
-    }
-}
-
-impl<S: Storage + ?Sized> WireBuf for Frame<S> {
-    type Storage = S;
-
-    const HEADER_LEN: usize = HEADER_LEN;
-
-    type BuildError = Infallible;
-    fn build_default(payload: Buf<S>) -> Result<Self, Infallible>
-    where
-        S: Sized,
-    {
-        let mut inner = payload;
-        inner.prepend_fixed::<HEADER_LEN>();
-        Ok(Frame { inner })
-    }
-
-    fn into_raw(self) -> Buf<Self::Storage>
-    where
-        S: Sized,
-    {
-        self.inner
-    }
-
-    fn into_payload(self) -> Buf<Self::Storage>
-    where
-        S: Sized,
-    {
-        self.inner.slice_into(HEADER_LEN..)
-    }
-}
-
 impl<S: Storage + ?Sized> Frame<S> {
     pub fn dst_addr(&self) -> Addr {
         Addr::from_bytes(&self.inner.data()[field::DESTINATION])
     }
 
+    fn set_dst_addr(&mut self, value: Addr) {
+        self.inner.data_mut()[field::DESTINATION].copy_from_slice(value.as_bytes())
+    }
+
     pub fn src_addr(&self) -> Addr {
         Addr::from_bytes(&self.inner.data()[field::SOURCE])
+    }
+
+    fn set_src_addr(&mut self, value: Addr) {
+        self.inner.data_mut()[field::SOURCE].copy_from_slice(value.as_bytes())
     }
 
     pub fn addr(&self) -> Ends<Addr> {
@@ -136,22 +105,12 @@ impl<S: Storage + ?Sized> Frame<S> {
         Protocol::from(raw)
     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.inner.data()[field::PAYLOAD]
-    }
-}
-
-impl<S: Storage + ?Sized> Frame<S> {
-    fn set_dst_addr(&mut self, value: Addr) {
-        self.inner.data_mut()[field::DESTINATION].copy_from_slice(value.as_bytes())
-    }
-
-    fn set_src_addr(&mut self, value: Addr) {
-        self.inner.data_mut()[field::SOURCE].copy_from_slice(value.as_bytes())
-    }
-
     fn set_protocol(&mut self, value: Protocol) {
         NetworkEndian::write_u16(&mut self.inner.data_mut()[field::ETHERTYPE], value.into())
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.inner.data()[field::PAYLOAD]
     }
 }
 
@@ -166,6 +125,50 @@ impl<S: Storage> Builder<Frame<S>> {
     pub fn protocol(mut self, ty: Protocol) -> Self {
         self.0.set_protocol(ty);
         self
+    }
+}
+
+impl<S: Storage + ?Sized> WireBuf for Frame<S> {
+    type Storage = S;
+
+    const HEADER_LEN: usize = HEADER_LEN;
+
+    fn into_raw(self) -> Buf<Self::Storage>
+    where
+        S: Sized,
+    {
+        self.inner
+    }
+
+    fn into_payload(self) -> Buf<Self::Storage>
+    where
+        S: Sized,
+    {
+        self.inner.slice_into(HEADER_LEN..)
+    }
+
+    type ParseError = ParseError;
+
+    type ParseArg<'a> = ();
+
+    fn parse(raw: Buf<Self::Storage>, _: ()) -> Result<Self, Self::ParseError>
+    where
+        Self::Storage: Sized,
+    {
+        if raw.len() < HEADER_LEN {
+            return Err(ParseError(()));
+        }
+        Ok(Frame { inner: raw })
+    }
+
+    type BuildError = Infallible;
+    fn build_default(payload: Buf<S>) -> Result<Self, Infallible>
+    where
+        S: Sized,
+    {
+        let mut inner = payload;
+        inner.prepend_fixed::<HEADER_LEN>();
+        Ok(Frame { inner })
     }
 }
 
@@ -193,6 +196,7 @@ mod test_ipv4 {
 
     // Tests that are valid only with "proto-ipv4"
     use super::*;
+    use crate::wire::WireBufExt;
 
     const FRAME_BYTES: [u8; 64] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x08, 0x00, 0xaa,
@@ -242,6 +246,7 @@ mod test_ipv6 {
 
     // Tests that are valid only with "proto-ipv6"
     use super::*;
+    use crate::wire::WireBufExt;
 
     const FRAME_BYTES: [u8; 54] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x86, 0xdd, 0x60,
