@@ -99,6 +99,7 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
+#[derive(Debug)]
 pub struct Packet<S: Storage + ?Sized> {
     inner: Buf<S>,
 }
@@ -204,6 +205,7 @@ impl<S: Storage + ?Sized> Packet<S> {
     }
 }
 
+#[derive(Debug)]
 pub struct PacketBuilder<S: Storage + ?Sized> {
     packet: Packet<S>,
 }

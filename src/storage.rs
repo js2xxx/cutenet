@@ -8,6 +8,7 @@ pub trait Storage: DerefMut<Target = [u8]> + StableDeref {}
 impl<T: DerefMut<Target = [u8]> + StableDeref + ?Sized> Storage for T {}
 
 // INVARIANT: 0 <= reserved <= storage.len()
+#[derive(Debug)]
 pub struct ReserveBuf<S: Storage + ?Sized> {
     reserved: usize,
     storage: S,
@@ -78,6 +79,7 @@ impl<S: Storage + ?Sized> ReserveBuf<S> {
 }
 
 // INVARIANT: 0 <= head <= tail <= storage.len()
+#[derive(Debug)]
 pub struct Buf<S: Storage + ?Sized> {
     head: usize,
     tail: usize,

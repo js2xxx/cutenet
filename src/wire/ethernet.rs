@@ -74,6 +74,7 @@ pub mod field {
 }
 pub const HEADER_LEN: usize = field::PAYLOAD.start;
 
+#[derive(Debug)]
 pub struct Frame<S: Storage + ?Sized> {
     inner: Buf<S>,
 }
@@ -130,6 +131,7 @@ impl<S: Storage + ?Sized> Frame<S> {
     }
 }
 
+#[derive(Debug)]
 pub struct FrameBuilder<S: Storage + ?Sized> {
     frame: Frame<S>,
 }
