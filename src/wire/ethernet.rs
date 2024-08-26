@@ -213,10 +213,7 @@ mod test_ipv4 {
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = tag
-            .substitute(|_| payload, |_| unreachable!())
-            .build(&())
-            .unwrap();
+        let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert_eq!(frame.data(), &FRAME_BYTES[..]);
     }
 }
@@ -275,10 +272,7 @@ mod test_ipv6 {
             .append(PAYLOAD_BYTES.len())
             .copy_from_slice(&PAYLOAD_BYTES[..]);
 
-        let frame = tag
-            .substitute(|_| payload, |_| unreachable!())
-            .build(&())
-            .unwrap();
+        let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert_eq!(frame.data(), &FRAME_BYTES[..]);
     }
 }

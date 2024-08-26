@@ -634,7 +634,7 @@ mod tests {
         payload.append_slice(&PAYLOAD_BYTES);
 
         let packet = repr
-            .substitute(|_| payload, |_| unreachable!())
+            .sub_payload(|_| payload)
             .build(&(Checksum, (Src(SRC_ADDR), Dst(DST_ADDR))))
             .unwrap();
         assert_eq!(packet.data(), &SYN_PACKET_BYTES[..]);

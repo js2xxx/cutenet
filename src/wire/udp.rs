@@ -186,7 +186,7 @@ mod tests {
         payload.append_slice(&PAYLOAD_BYTES[..]);
 
         let packet = tag
-            .substitute(|_| payload, |_| unreachable!())
+            .sub_payload(|_| payload)
             .build(&(Checksum, ADDR))
             .unwrap();
         assert_eq!(packet.data(), &PACKET_BYTES[..]);
@@ -201,7 +201,7 @@ mod tests {
 
         let payload = Buf::builder(vec![0; 8]).reserve_for(tag).build();
         let packet = tag
-            .substitute(|_| payload, |_| unreachable!())
+            .sub_payload(|_| payload)
             .build(&(Checksum, ADDR))
             .unwrap();
         assert_eq!(packet.data(), &[0, 1, 0x7c, 0x89, 0, 8, 0xff, 0xff]);
@@ -215,10 +215,7 @@ mod tests {
         };
 
         let payload = Buf::builder(vec![0; 8]).reserve_for(tag).build();
-        let packet = tag
-            .substitute(|_| payload, |_| unreachable!())
-            .build(&())
-            .unwrap();
+        let packet = tag.sub_payload(|_| payload).build(&()).unwrap();
         assert!(Udp::<Buf<_>>::parse(&(Checksum, ADDR), packet).is_ok());
     }
 }

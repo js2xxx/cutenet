@@ -876,10 +876,7 @@ mod tests {
             .reserve_for(repr)
             .build();
 
-        let buf: Buf<_> = repr
-            .substitute(|_| buf, |_| unreachable!())
-            .build(&())
-            .unwrap();
+        let buf: Buf<_> = repr.sub_payload(|_| buf).build(&()).unwrap();
 
         // println!("{frame:2x?}");
 

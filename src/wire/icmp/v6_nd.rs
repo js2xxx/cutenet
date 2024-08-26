@@ -256,3 +256,61 @@ impl Nd {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use core::net::IpAddr;
+    use std::vec;
+
+    use super::*;
+    use crate::{
+        storage::Buf,
+        wire::{ethernet, icmp::v6::Icmpv6, Checksum, Dst, Ends, Src},
+    };
+
+    const MOCK_IP_ADDR_1: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    const MOCK_IP_ADDR_2: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
+    const MOCK_IP_ADDRS: Ends<IpAddr> = (
+        Src(IpAddr::V6(MOCK_IP_ADDR_1)),
+        Dst(IpAddr::V6(MOCK_IP_ADDR_2)),
+    );
+    const CX: (Checksum, Ends<IpAddr>) = (Checksum, MOCK_IP_ADDRS);
+
+    static ROUTER_ADVERT_BYTES: [u8; 24] = [
+        0x86, 0x00, 0xa9, 0xde, 0x40, 0x80, 0x03, 0x84, 0x00, 0x00, 0x03, 0x84, 0x00, 0x00, 0x03,
+        0x84, 0x01, 0x01, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+    ];
+
+    fn create_repr<U: NoPayload>(payload: U) -> Icmpv6<U::Init, U> {
+        Icmpv6::Nd {
+            nd: Nd::RouterAdvert {
+                hop_limit: 64,
+                flags: RouterFlags::MANAGED,
+                router_lifetime: Duration::from_secs(900),
+                reachable_time: Duration::from_millis(900),
+                retrans_time: Duration::from_millis(900),
+                lladdr: Some(ethernet::Addr([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into()),
+                mtu: None,
+                prefix_info: None,
+            },
+            payload,
+        }
+    }
+
+    #[test]
+    fn test_router_advert_deconstruct() {
+        let packet: Icmpv6<&[u8], _> = Icmpv6::parse(&CX, &ROUTER_ADVERT_BYTES[..]).unwrap();
+        assert_eq!(packet, create_repr((&[][..]).truncate()));
+    }
+
+    #[test]
+    fn test_router_advert_construct() {
+        let repr = create_repr(NoPayloadHolder);
+
+        let bytes = vec![0x0; 24];
+        let buf = Buf::builder(bytes).reserve_for(repr);
+
+        let packet: Buf<_> = repr.sub_no_payload(|_| buf).build(&CX).unwrap();
+        assert_eq!(packet.data(), &ROUTER_ADVERT_BYTES[..]);
+    }
+}

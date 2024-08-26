@@ -644,10 +644,7 @@ mod tests {
         let bytes = vec![0xa5; repr.build(&()).unwrap().0];
         let mut buf = Buf::builder(bytes).reserve_for(repr).build();
         buf.append_slice(&ECHO_PACKET_PAYLOAD);
-        let packet = repr
-            .substitute(|_| buf, |_| unreachable!())
-            .build(&CX)
-            .unwrap();
+        let packet = repr.sub_payload(|_| buf).build(&CX).unwrap();
         assert_eq!(packet.data(), &ECHO_PACKET_BYTES[..]);
     }
 
@@ -683,10 +680,7 @@ mod tests {
         let mut buf = Buf::builder(bytes).reserve_for(repr).build();
         buf.append_slice(&PKT_TOO_BIG_UDP_PAYLOAD);
 
-        let packet = repr
-            .substitute(|_| buf, |_| unreachable!())
-            .build(&CX)
-            .unwrap();
+        let packet = repr.sub_payload(|_| buf).build(&CX).unwrap();
         assert_eq!(packet.data(), &PKT_TOO_BIG_BYTES[..]);
     }
 

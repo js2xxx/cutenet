@@ -3,7 +3,7 @@ use core::fmt;
 mod traits;
 pub use self::traits::{
     NoPayload, NoPayloadHolder, Payload, PayloadBuild, PayloadHolder, PayloadParse, Wire,
-    WireBuild, WireParse, WireSubstitute,
+    WireBuild, WireParse, WireSubNoPayload, WireSubstitute,
 };
 
 mod error;
@@ -16,13 +16,13 @@ pub mod ethernet;
 pub use self::ethernet::Ethernet;
 
 pub mod icmp;
-// pub use self::icmp::{v4::Icmpv4, v6::Icmpv6};
+pub use self::icmp::{v4::Icmpv4, v6::Icmpv6};
 
 pub mod ieee802154;
 pub use self::ieee802154::Ieee802154;
 
 pub mod ip;
-pub use self::ip::{v4::Ipv4, v6::Ipv6};
+pub use self::ip::{Ip, v4::Ipv4, v6::Ipv6};
 
 pub mod tcp;
 pub use self::tcp::Tcp;

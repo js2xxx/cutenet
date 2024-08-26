@@ -262,10 +262,7 @@ mod tests {
         let bytes = vec![0xa5; 28];
         let payload = Buf::builder(bytes).reserve_for(tag);
 
-        let packet: Buf<_> = tag
-            .substitute(|_| -> Buf<_> { unreachable!() }, |_| payload)
-            .build(&())
-            .unwrap();
+        let packet: Buf<_> = tag.sub_no_payload(|_| payload).build(&()).unwrap();
         assert_eq!(packet.data(), &PACKET_BYTES[..]);
     }
 }

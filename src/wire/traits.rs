@@ -56,7 +56,29 @@ pub trait WireSubstitute<Q: Payload>: Wire + Sized {
     where
         F: FnOnce(Self::Payload) -> Q,
         G: FnOnce(<Self::Payload as Payload>::NoPayload) -> Q::NoPayload;
+
+    fn sub_payload<F>(self, sub: F) -> Self::Output
+    where
+        F: FnOnce(Self::Payload) -> Q,
+    {
+        self.substitute(sub, |_| {
+            unreachable!("substituting payload in a wired data with no payload")
+        })
+    }
 }
+
+pub trait WireSubNoPayload<N: NoPayload>: WireSubstitute<N::Init> + Sized {
+    fn sub_no_payload<G>(self, sub: G) -> Self::Output
+    where
+        G: FnOnce(<Self::Payload as Payload>::NoPayload) -> N,
+    {
+        let sub_payload = |_| -> N::Init {
+            unreachable!("substituting no-payload in a wired data with a payload")
+        };
+        self.substitute(sub_payload, sub)
+    }
+}
+impl<N: NoPayload, W: WireSubstitute<N::Init> + Sized> WireSubNoPayload<N> for W {}
 
 pub trait WireBuild: Wire + Sized {
     fn build(self, cx: &dyn Provider) -> Result<Self::Payload, BuildError<Self::Payload>>;

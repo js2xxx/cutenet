@@ -350,10 +350,7 @@ mod tests {
         let mut payload = Buf::builder(bytes).reserve_for(tag).build();
         payload.append_slice(&PAYLOAD_BYTES);
 
-        let packet = tag
-            .substitute(|_| payload, |_| unreachable!())
-            .build(&(Checksum,))
-            .unwrap();
+        let packet = tag.sub_payload(|_| payload).build(&(Checksum,)).unwrap();
         assert_eq!(packet.data(), &EGRESS_PACKET_BYTES[..]);
     }
 
