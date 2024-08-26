@@ -2,7 +2,7 @@ use core::ops::{Bound, DerefMut, RangeBounds};
 
 use stable_deref_trait::StableDeref;
 
-use crate::wire::{BuildError, Packet, ParseError, Wire};
+use crate::wire::{BuildError, Packet, Wire};
 
 pub trait Storage: DerefMut<Target = [u8]> + StableDeref {}
 impl<T: DerefMut<Target = [u8]> + StableDeref + ?Sized> Storage for T {}
@@ -156,6 +156,18 @@ impl<S: Storage + ?Sized> Buf<S> {
     }
 }
 
+impl<S: Storage + ?Sized> AsRef<[u8]> for Buf<S> {
+    fn as_ref(&self) -> &[u8] {
+        self.data()
+    }
+}
+
+impl<S: Storage + ?Sized> AsMut<[u8]> for Buf<S> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.data_mut()
+    }
+}
+
 impl<S: Storage + ?Sized> Buf<S> {
     /// # Safety
     ///
@@ -254,11 +266,7 @@ impl<S: Storage> Buf<S> {
 }
 
 impl<S: Storage> Buf<S> {
-    pub fn parse<Tag: Wire>(self, arg: Tag::ParseArg<'_>) -> Result<Packet<Tag, S>, ParseError<S>> {
-        Packet::parse(self, arg)
-    }
-
-    pub fn build<Tag: Wire>(self, tag: Tag) -> Result<Packet<Tag, S>, BuildError<S>> {
+    pub fn build<Tag: Wire>(self, tag: Tag) -> Result<Packet<Tag, Self>, BuildError<Self>> {
         Packet::build(self, tag)
     }
 }

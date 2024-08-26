@@ -5,9 +5,8 @@ use byteorder::{ByteOrder, NetworkEndian};
 use super::{
     ethernet::{self, Protocol},
     ip::IpAddrExt,
-    BuildErrorKind, Dst, Ends, ParseErrorKind, Src, Wire,
+    BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire,
 };
-use crate::storage::Storage;
 
 enum_with_unknown! {
     /// ARP hardware type.
@@ -23,6 +22,8 @@ enum_with_unknown! {
         Reply = 2,
     }
 }
+
+pub type Packet<T: ?Sized> = super::Packet<ArpV4, T>;
 
 mod field {
     #![allow(non_snake_case)]
@@ -64,105 +65,76 @@ pub const HARDWARE_LEN: u8 = 6;
 pub const PROTOCOL_LEN: u8 = 4;
 pub const HEADER_LEN: usize = field::TPA(HARDWARE_LEN, PROTOCOL_LEN).end;
 
-#[derive(Debug)]
-pub struct ArpV4 {
-    pub operation: Operation,
-    pub addr: Ends<(ethernet::Addr, Ipv4Addr)>,
-}
-
-pub type Packet<S: Storage + ?Sized> = super::Packet<ArpV4, S>;
-
-impl<S: Storage + ?Sized> Packet<S> {
-    pub fn hardware_type(&self) -> Hardware {
-        Hardware::from(NetworkEndian::read_u16(&self.inner.data()[field::HTYPE]))
-    }
-
-    fn set_hardware_type(&mut self, value: Hardware) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::HTYPE], value.into())
-    }
+wire!(impl Packet {
+    /// Return the hardware type field.
+    hardware_type/set_hardware_type: Hardware =>
+        |data| Hardware::from(NetworkEndian::read_u16(&data[field::HTYPE]));
+        |data, value| NetworkEndian::write_u16(&mut data[field::HTYPE], value.into());
 
     /// Return the protocol type field.
-    pub fn protocol_type(&self) -> Protocol {
-        Protocol::from(NetworkEndian::read_u16(&self.inner.data()[field::PTYPE]))
-    }
-
-    fn set_protocol_type(&mut self, value: Protocol) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::PTYPE], value.into())
-    }
+    protocol_type/set_protocol_type: Protocol =>
+        |data| Protocol::from(NetworkEndian::read_u16(&data[field::PTYPE]));
+        |data, value| NetworkEndian::write_u16(&mut data[field::PTYPE], value.into());
 
     /// Return the hardware length field.
-    pub fn hardware_len(&self) -> u8 {
-        self.inner.data()[field::HLEN]
-    }
-
-    fn set_hardware_len(&mut self, value: u8) {
-        self.inner.data_mut()[field::HLEN] = value
-    }
+    hardware_len/set_hardware_len: u8 =>
+        |data| data[field::HLEN];
+        |data, value| data[field::HLEN] = value;
 
     /// Return the protocol length field.
-    pub fn protocol_len(&self) -> u8 {
-        self.inner.data()[field::PLEN]
-    }
-
-    fn set_protocol_len(&mut self, value: u8) {
-        self.inner.data_mut()[field::PLEN] = value
-    }
+    protocol_len/set_protocol_len: u8 =>
+        |data| data[field::PLEN];
+        |data, value| data[field::PLEN] = value;
 
     /// Return the operation field.
-    pub fn operation(&self) -> Operation {
-        Operation::from(NetworkEndian::read_u16(&self.inner.data()[field::OPER]))
-    }
-
-    fn set_operation(&mut self, value: Operation) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::OPER], value.into())
-    }
+    operation/set_operation: Operation =>
+        |data| Operation::from(NetworkEndian::read_u16(&data[field::OPER]));
+        |data, value| NetworkEndian::write_u16(&mut data[field::OPER], value.into());
 
     /// Return the source hardware address field.
-    pub fn source_hardware_addr(&self) -> ethernet::Addr {
-        ethernet::Addr::from_bytes(&self.inner.data()[field::SHA(HARDWARE_LEN, PROTOCOL_LEN)])
-    }
-
-    fn set_source_hardware_addr(&mut self, value: ethernet::Addr) {
-        let index = field::SHA(HARDWARE_LEN, PROTOCOL_LEN);
-        self.inner.data_mut()[index].copy_from_slice(value.as_bytes())
-    }
+    source_hardware_addr/set_source_hardware_addr: ethernet::Addr =>
+        |data| ethernet::Addr::from_bytes(&data[field::SHA(HARDWARE_LEN, PROTOCOL_LEN)]);
+        |data, value| {
+            let index = field::SHA(HARDWARE_LEN, PROTOCOL_LEN);
+            data[index].copy_from_slice(value.as_bytes())
+        };
 
     /// Return the source protocol address field.
-    pub fn source_protocol_addr(&self) -> Ipv4Addr {
-        Ipv4Addr::from_bytes(&self.inner.data()[field::SPA(HARDWARE_LEN, PROTOCOL_LEN)])
-    }
-
-    fn set_source_protocol_addr(&mut self, value: Ipv4Addr) {
-        self.inner.data_mut()[field::SPA(HARDWARE_LEN, PROTOCOL_LEN)]
-            .copy_from_slice(&value.octets())
-    }
+    source_protocol_addr/set_source_protocol_addr: Ipv4Addr =>
+        |data| Ipv4Addr::from_bytes(&data[field::SPA(HARDWARE_LEN, PROTOCOL_LEN)]);
+        |data, value| {
+            data[field::SPA(HARDWARE_LEN, PROTOCOL_LEN)].copy_from_slice(&value.octets())
+        };
 
     /// Return the target hardware address field.
-    pub fn target_hardware_addr(&self) -> ethernet::Addr {
-        ethernet::Addr::from_bytes(&self.inner.data()[field::THA(HARDWARE_LEN, PROTOCOL_LEN)])
-    }
-
-    fn set_target_hardware_addr(&mut self, value: ethernet::Addr) {
-        let index = field::THA(HARDWARE_LEN, PROTOCOL_LEN);
-        self.inner.data_mut()[index].copy_from_slice(value.as_bytes())
-    }
+    target_hardware_addr/set_target_hardware_addr: ethernet::Addr =>
+        |data| ethernet::Addr::from_bytes(&data[field::THA(HARDWARE_LEN, PROTOCOL_LEN)]);
+        |data, value| {
+            let index = field::THA(HARDWARE_LEN, PROTOCOL_LEN);
+            data[index].copy_from_slice(value.as_bytes())
+        };
 
     /// Return the target protocol address field.
-    pub fn target_protocol_addr(&self) -> Ipv4Addr {
-        Ipv4Addr::from_bytes(&self.inner.data()[field::TPA(HARDWARE_LEN, PROTOCOL_LEN)])
-    }
+    target_protocol_addr/set_target_protocol_addr: Ipv4Addr =>
+        |data| Ipv4Addr::from_bytes(&data[field::TPA(HARDWARE_LEN, PROTOCOL_LEN)]);
+        |data, value| {
+            data[field::TPA(HARDWARE_LEN, PROTOCOL_LEN)].copy_from_slice(&value.octets())
+        };
+});
 
-    fn set_target_protocol_addr(&mut self, value: Ipv4Addr) {
-        self.inner.data_mut()[field::TPA(HARDWARE_LEN, PROTOCOL_LEN)]
-            .copy_from_slice(&value.octets())
-    }
-
+impl<T: Data + ?Sized> Packet<T> {
     pub fn addr(&self) -> Ends<(ethernet::Addr, Ipv4Addr)> {
         (
             Src((self.source_hardware_addr(), self.source_protocol_addr())),
             Dst((self.target_hardware_addr(), self.target_protocol_addr())),
         )
     }
+}
+
+#[derive(Debug)]
+pub struct ArpV4 {
+    pub operation: Operation,
+    pub addr: Ends<(ethernet::Addr, Ipv4Addr)>,
 }
 
 impl Wire for ArpV4 {
@@ -176,12 +148,12 @@ impl Wire for ArpV4 {
         HEADER_LEN
     }
 
-    fn payload_range<S: Storage + ?Sized>(packet: &super::Packet<Self, S>) -> Range<usize> {
+    fn payload_range(packet: Packet<&[u8]>) -> Range<usize> {
         HEADER_LEN..packet.inner.len()
     }
 
     type ParseArg<'a> = ();
-    fn parse_packet<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
+    fn parse_packet(packet: Packet<&[u8]>, _: ()) -> Result<ArpV4, ParseErrorKind> {
         let len = packet.inner.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
@@ -206,14 +178,13 @@ impl Wire for ArpV4 {
             return Err(ParseErrorKind::ProtocolUnknown);
         }
 
-        Ok(())
+        Ok(ArpV4 {
+            operation: packet.operation(),
+            addr: packet.addr(),
+        })
     }
 
-    fn build_packet<S: Storage>(
-        self,
-        packet: &mut Packet<S>,
-        _: usize,
-    ) -> Result<(), BuildErrorKind> {
+    fn build_packet(self, mut packet: Packet<&mut [u8]>, _: usize) -> Result<(), BuildErrorKind> {
         packet.set_hardware_type(Hardware::Ethernet);
         packet.set_protocol_type(Protocol::Ipv4);
         packet.set_hardware_len(HARDWARE_LEN);

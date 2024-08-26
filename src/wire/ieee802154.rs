@@ -2,8 +2,7 @@ use core::{fmt, net::Ipv6Addr, ops::Range};
 
 use byteorder::{ByteOrder, LittleEndian};
 
-use super::{ip::IpAddrExt, BuildErrorKind, ParseErrorKind, Wire};
-use crate::storage::Storage;
+use super::{ip::IpAddrExt, BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire};
 
 enum_with_unknown! {
     /// IEEE 802.15.4 frame type.
@@ -194,20 +193,15 @@ enum_with_unknown! {
     }
 }
 
-mod field {
-    use crate::wire::field::*;
-
-    pub const FRAMECONTROL: Field = 0..2;
-    pub const SEQUENCE_NUMBER: usize = 2;
-    pub const ADDRESSING: Rest = 3..;
-}
-
 macro_rules! fc_bit_field {
     ($field:ident, $set_field:ident, $bit:literal) => {
         fc_bit_field!($field, $bit);
 
-        fn $set_field(&mut self, val: bool) {
-            let data = &mut self.inner.data_mut()[field::FRAMECONTROL];
+        fn $set_field(&mut self, val: bool)
+        where
+            T: DataMut,
+        {
+            let data = &mut self.inner.as_mut()[field::FRAMECONTROL];
             let mut raw = LittleEndian::read_u16(data);
             raw |= ((val as u16) << $bit);
 
@@ -217,7 +211,7 @@ macro_rules! fc_bit_field {
     ($field:ident, $bit:literal) => {
         #[inline]
         pub fn $field(&self) -> bool {
-            let data = self.inner.data();
+            let data = self.inner.as_ref();
             let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
 
             ((raw >> $bit) & 0b1) == 0b1
@@ -225,40 +219,77 @@ macro_rules! fc_bit_field {
     };
 }
 
-#[derive(Debug)]
-pub struct Ieee802154 {
-    pub frame_type: FrameType,
-    pub security_enabled: bool,
-    pub frame_pending: bool,
-    pub ack_request: bool,
-    pub sequence_number: Option<u8>,
-    pub pan_id_compression: bool,
-    pub frame_version: FrameVersion,
-    pub dst_pan_id: Option<Pan>,
-    pub dst_addr: Option<Addr>,
-    pub src_pan_id: Option<Pan>,
-    pub src_addr: Option<Addr>,
+pub type Frame<T: ?Sized> = super::Packet<Ieee802154, T>;
+
+mod field {
+    use crate::wire::field::*;
+
+    pub const FRAMECONTROL: Field = 0..2;
+    pub const SEQUENCE_NUMBER: usize = 2;
+    pub const ADDRESSING: Rest = 3..;
 }
 
-pub type Frame<S: Storage + ?Sized> = super::Packet<Ieee802154, S>;
+wire!(impl Frame {
+    frame_type/set_frame_type: FrameType =>
+        |data| {
+            let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+            let ft = (raw & 0b111) as u8;
+            FrameType::from(ft)
+        };
+        |data, frame_type| {
+            let data = &mut data[field::FRAMECONTROL];
+            let mut raw = LittleEndian::read_u16(data);
+            raw = (raw & !(0b111)) | (u8::from(frame_type) as u16 & 0b111);
+            data.copy_from_slice(&raw.to_le_bytes());
+        };
 
-impl<S: Storage + ?Sized> Frame<S> {
-    #[inline]
-    pub fn frame_type(&self) -> FrameType {
-        let data = self.inner.data();
-        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
-        let ft = (raw & 0b111) as u8;
-        FrameType::from(ft)
-    }
+    /// Return the destination addressing mode.
+    dst_addressing_mode/set_dst_addressing_mode: AddressingMode =>
+        |data| {
+            let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+            let am = ((raw >> 10) & 0b11) as u8;
+            AddressingMode::from(am)
+        };
+        |data, value| {
+            let data = &mut data[field::FRAMECONTROL];
+            let mut raw = LittleEndian::read_u16(data);
 
-    fn set_frame_type(&mut self, frame_type: FrameType) {
-        let data = &mut self.inner.data_mut()[field::FRAMECONTROL];
-        let mut raw = LittleEndian::read_u16(data);
+            raw = (raw & !(0b11 << 10)) | ((u8::from(value) as u16 & 0b11) << 10);
+            data.copy_from_slice(&raw.to_le_bytes());
+        };
 
-        raw = (raw & !(0b111)) | (u8::from(frame_type) as u16 & 0b111);
-        data.copy_from_slice(&raw.to_le_bytes());
-    }
+    /// Return the frame version.
+    frame_version/set_frame_version: FrameVersion =>
+        |data| {
+            let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+            let fv = ((raw >> 12) & 0b11) as u8;
+            FrameVersion::from(fv)
+        };
+        |data, version| {
+            let data = &mut data[field::FRAMECONTROL];
+            let mut raw = LittleEndian::read_u16(data);
 
+            raw = (raw & !(0b11 << 12)) | ((u8::from(version) as u16 & 0b11) << 12);
+            data.copy_from_slice(&raw.to_le_bytes());
+        };
+
+    /// Return the source addressing mode.
+    src_addressing_mode/set_src_addressing_mode: AddressingMode =>
+        |data| {
+            let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+            let am = ((raw >> 14) & 0b11) as u8;
+            AddressingMode::from(am)
+        };
+        |data, value| {
+            let data = &mut data[field::FRAMECONTROL];
+            let mut raw = LittleEndian::read_u16(data);
+
+            raw = (raw & !(0b11 << 14)) | ((u8::from(value) as u16 & 0b11) << 14);
+            data.copy_from_slice(&raw.to_le_bytes());
+        };
+});
+
+impl<T: Data + ?Sized> Frame<T> {
     fc_bit_field!(security_enabled, set_security_enabled, 3);
     fc_bit_field!(frame_pending, set_frame_pending, 4);
     fc_bit_field!(ack_request, set_ack_request, 5);
@@ -266,57 +297,6 @@ impl<S: Storage + ?Sized> Frame<S> {
 
     fc_bit_field!(sequence_number_suppression, 8);
     fc_bit_field!(ie_present, 9);
-
-    /// Return the destination addressing mode.
-    #[inline]
-    pub fn dst_addressing_mode(&self) -> AddressingMode {
-        let data = self.inner.data();
-        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
-        let am = ((raw >> 10) & 0b11) as u8;
-        AddressingMode::from(am)
-    }
-
-    fn set_dst_addressing_mode(&mut self, value: AddressingMode) {
-        let data = &mut self.inner.data_mut()[field::FRAMECONTROL];
-        let mut raw = LittleEndian::read_u16(data);
-
-        raw = (raw & !(0b11 << 10)) | ((u8::from(value) as u16 & 0b11) << 10);
-        data.copy_from_slice(&raw.to_le_bytes());
-    }
-
-    /// Return the frame version.
-    #[inline]
-    pub fn frame_version(&self) -> FrameVersion {
-        let data = self.inner.data();
-        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
-        let fv = ((raw >> 12) & 0b11) as u8;
-        FrameVersion::from(fv)
-    }
-
-    fn set_frame_version(&mut self, version: FrameVersion) {
-        let data = &mut self.inner.data_mut()[field::FRAMECONTROL];
-        let mut raw = LittleEndian::read_u16(data);
-
-        raw = (raw & !(0b11 << 12)) | ((u8::from(version) as u16 & 0b11) << 12);
-        data.copy_from_slice(&raw.to_le_bytes());
-    }
-
-    /// Return the source addressing mode.
-    #[inline]
-    pub fn src_addressing_mode(&self) -> AddressingMode {
-        let data = self.inner.data();
-        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
-        let am = ((raw >> 14) & 0b11) as u8;
-        AddressingMode::from(am)
-    }
-
-    fn set_src_addressing_mode(&mut self, value: AddressingMode) {
-        let data = &mut self.inner.data_mut()[field::FRAMECONTROL];
-        let mut raw = LittleEndian::read_u16(data);
-
-        raw = (raw & !(0b11 << 14)) | ((u8::from(value) as u16 & 0b11) << 14);
-        data.copy_from_slice(&raw.to_le_bytes());
-    }
 
     /// Return the sequence number of the frame.
     #[inline]
@@ -326,18 +306,182 @@ impl<S: Storage + ?Sized> Frame<S> {
             | FrameType::Data
             | FrameType::Acknowledgement
             | FrameType::MacCommand
-            | FrameType::Multipurpose => {
-                let data = self.inner.data();
-                let raw = data[field::SEQUENCE_NUMBER];
-                Some(raw)
-            }
+            | FrameType::Multipurpose => Some(self.inner.as_ref()[field::SEQUENCE_NUMBER]),
             FrameType::Extended | FrameType::FragmentOrFrak | FrameType::Unknown(_) => None,
         }
     }
 
-    fn set_sequence_number(&mut self, value: u8) {
-        let data = self.inner.data_mut();
-        data[field::SEQUENCE_NUMBER] = value;
+    fn set_sequence_number(&mut self, value: u8)
+    where
+        T: DataMut,
+    {
+        self.inner.as_mut()[field::SEQUENCE_NUMBER] = value;
+    }
+
+    /// Return the destination PAN field.
+    #[inline]
+    pub fn dst_pan_id(&self) -> Option<Pan> {
+        if let Some((true, ..)) = self.addr_present_flags() {
+            let addressing_fields = self.addressing_fields()?;
+            Some(Pan(LittleEndian::read_u16(&addressing_fields[..2])))
+        } else {
+            None
+        }
+    }
+
+    fn set_dst_pan_id(&mut self, value: Pan)
+    where
+        T: DataMut,
+    {
+        // NOTE the destination addressing mode must be different than Absent.
+        // This is the reason why we set it to Extended.
+        self.set_dst_addressing_mode(AddressingMode::Extended);
+
+        let data = self.inner.as_mut();
+        data[field::ADDRESSING][..2].copy_from_slice(&value.as_bytes());
+    }
+
+    /// Return the destination address field.
+    #[inline]
+    pub fn dst_addr(&self) -> Option<Addr> {
+        if let Some((dst_pan_id, dst_addr, ..)) = self.addr_present_flags() {
+            let addressing_fields = self.addressing_fields()?;
+            let offset = if dst_pan_id { 2 } else { 0 };
+
+            match dst_addr {
+                AddressingMode::Absent => Some(Addr::Absent),
+                AddressingMode::Short => {
+                    let mut raw = [0u8; 2];
+                    raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
+                    raw.reverse();
+                    Some(Addr::short_from_bytes(raw))
+                }
+                AddressingMode::Extended => {
+                    let mut raw = [0u8; 8];
+                    raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
+                    raw.reverse();
+                    Some(Addr::extended_from_bytes(raw))
+                }
+                AddressingMode::Unknown(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    fn set_dst_addr(&mut self, value: Addr)
+    where
+        T: DataMut,
+    {
+        match value {
+            Addr::Absent => self.set_dst_addressing_mode(AddressingMode::Absent),
+            Addr::Short(mut value) => {
+                value.reverse();
+                self.set_dst_addressing_mode(AddressingMode::Short);
+                let data = self.inner.as_mut();
+                data[field::ADDRESSING][2..2 + 2].copy_from_slice(&value);
+                value.reverse();
+            }
+            Addr::Extended(mut value) => {
+                value.reverse();
+                self.set_dst_addressing_mode(AddressingMode::Extended);
+                let data = &mut self.inner.as_mut()[field::ADDRESSING];
+                data[2..2 + 8].copy_from_slice(&value);
+                value.reverse();
+            }
+        }
+    }
+
+    /// Return the destination PAN field.
+    #[inline]
+    pub fn src_pan_id(&self) -> Option<Pan> {
+        if let Some((dst_pan_id, dst_addr, true, _)) = self.addr_present_flags() {
+            let mut offset = if dst_pan_id { 2 } else { 0 };
+            offset += dst_addr.size();
+            let addressing_fields = self.addressing_fields()?;
+            Some(Pan(LittleEndian::read_u16(
+                &addressing_fields[offset..][..2],
+            )))
+        } else {
+            None
+        }
+    }
+
+    fn set_src_pan_id(&mut self, value: Pan)
+    where
+        T: DataMut,
+    {
+        let offset = match self.dst_addressing_mode() {
+            AddressingMode::Absent => 0,
+            AddressingMode::Short => 2,
+            AddressingMode::Extended => 8,
+            _ => unreachable!(),
+        } + 2;
+
+        let data = &mut self.inner.as_mut()[field::ADDRESSING];
+        data[offset..offset + 2].copy_from_slice(&value.as_bytes());
+    }
+
+    /// Return the source address field.
+    #[inline]
+    pub fn src_addr(&self) -> Option<Addr> {
+        if let Some((dst_pan_id, dst_addr, src_pan_id, src_addr)) = self.addr_present_flags() {
+            let addressing_fields = self.addressing_fields()?;
+            let mut offset = if dst_pan_id { 2 } else { 0 };
+            offset += dst_addr.size();
+            offset += if src_pan_id { 2 } else { 0 };
+
+            match src_addr {
+                AddressingMode::Absent => Some(Addr::Absent),
+                AddressingMode::Short => {
+                    let mut raw = [0u8; 2];
+                    raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
+                    raw.reverse();
+                    Some(Addr::short_from_bytes(raw))
+                }
+                AddressingMode::Extended => {
+                    let mut raw = [0u8; 8];
+                    raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
+                    raw.reverse();
+                    Some(Addr::extended_from_bytes(raw))
+                }
+                AddressingMode::Unknown(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    fn set_src_addr(&mut self, value: Addr)
+    where
+        T: DataMut,
+    {
+        let offset = match self.dst_addressing_mode() {
+            AddressingMode::Absent => 0,
+            AddressingMode::Short => 2,
+            AddressingMode::Extended => 8,
+            _ => unreachable!(),
+        } + 2;
+
+        let offset = offset + if self.pan_id_compression() { 0 } else { 2 };
+
+        match value {
+            Addr::Absent => self.set_src_addressing_mode(AddressingMode::Absent),
+            Addr::Short(mut value) => {
+                value.reverse();
+                self.set_src_addressing_mode(AddressingMode::Short);
+                let data = &mut self.inner.as_mut()[field::ADDRESSING];
+                data[offset..offset + 2].copy_from_slice(&value);
+                value.reverse();
+            }
+            Addr::Extended(mut value) => {
+                value.reverse();
+                self.set_src_addressing_mode(AddressingMode::Extended);
+                let data = &mut self.inner.as_mut()[field::ADDRESSING];
+                data[offset..offset + 8].copy_from_slice(&value);
+                value.reverse();
+            }
+        }
     }
 
     /// Return the addressing fields.
@@ -361,7 +505,7 @@ impl<S: Storage + ?Sized> Frame<S> {
             offset += if src_pan_id { 2 } else { 0 };
             offset += src_addr.size();
 
-            let data = self.inner.data();
+            let data = self.inner.as_ref();
             Some(&data[field::ADDRESSING][..offset])
         } else {
             None
@@ -408,158 +552,11 @@ impl<S: Storage + ?Sized> Frame<S> {
         }
     }
 
-    /// Return the destination PAN field.
-    #[inline]
-    pub fn dst_pan_id(&self) -> Option<Pan> {
-        if let Some((true, ..)) = self.addr_present_flags() {
-            let addressing_fields = self.addressing_fields()?;
-            Some(Pan(LittleEndian::read_u16(&addressing_fields[..2])))
-        } else {
-            None
-        }
-    }
-
-    fn set_dst_pan_id(&mut self, value: Pan) {
-        // NOTE the destination addressing mode must be different than Absent.
-        // This is the reason why we set it to Extended.
-        self.set_dst_addressing_mode(AddressingMode::Extended);
-
-        let data = self.inner.data_mut();
-        data[field::ADDRESSING][..2].copy_from_slice(&value.as_bytes());
-    }
-
-    /// Return the destination address field.
-    #[inline]
-    pub fn dst_addr(&self) -> Option<Addr> {
-        if let Some((dst_pan_id, dst_addr, ..)) = self.addr_present_flags() {
-            let addressing_fields = self.addressing_fields()?;
-            let offset = if dst_pan_id { 2 } else { 0 };
-
-            match dst_addr {
-                AddressingMode::Absent => Some(Addr::Absent),
-                AddressingMode::Short => {
-                    let mut raw = [0u8; 2];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
-                    raw.reverse();
-                    Some(Addr::short_from_bytes(raw))
-                }
-                AddressingMode::Extended => {
-                    let mut raw = [0u8; 8];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
-                    raw.reverse();
-                    Some(Addr::extended_from_bytes(raw))
-                }
-                AddressingMode::Unknown(_) => None,
-            }
-        } else {
-            None
-        }
-    }
-
-    fn set_dst_addr(&mut self, value: Addr) {
-        match value {
-            Addr::Absent => self.set_dst_addressing_mode(AddressingMode::Absent),
-            Addr::Short(mut value) => {
-                value.reverse();
-                self.set_dst_addressing_mode(AddressingMode::Short);
-                let data = self.inner.data_mut();
-                data[field::ADDRESSING][2..2 + 2].copy_from_slice(&value);
-                value.reverse();
-            }
-            Addr::Extended(mut value) => {
-                value.reverse();
-                self.set_dst_addressing_mode(AddressingMode::Extended);
-                let data = &mut self.inner.data_mut()[field::ADDRESSING];
-                data[2..2 + 8].copy_from_slice(&value);
-                value.reverse();
-            }
-        }
-    }
-
-    /// Return the destination PAN field.
-    #[inline]
-    pub fn src_pan_id(&self) -> Option<Pan> {
-        if let Some((dst_pan_id, dst_addr, true, _)) = self.addr_present_flags() {
-            let mut offset = if dst_pan_id { 2 } else { 0 };
-            offset += dst_addr.size();
-            let addressing_fields = self.addressing_fields()?;
-            Some(Pan(LittleEndian::read_u16(
-                &addressing_fields[offset..][..2],
-            )))
-        } else {
-            None
-        }
-    }
-
-    fn set_src_pan_id(&mut self, value: Pan) {
-        let offset = match self.dst_addressing_mode() {
-            AddressingMode::Absent => 0,
-            AddressingMode::Short => 2,
-            AddressingMode::Extended => 8,
-            _ => unreachable!(),
-        } + 2;
-
-        let data = &mut self.inner.data_mut()[field::ADDRESSING];
-        data[offset..offset + 2].copy_from_slice(&value.as_bytes());
-    }
-
-    /// Return the source address field.
-    #[inline]
-    pub fn src_addr(&self) -> Option<Addr> {
-        if let Some((dst_pan_id, dst_addr, src_pan_id, src_addr)) = self.addr_present_flags() {
-            let addressing_fields = self.addressing_fields()?;
-            let mut offset = if dst_pan_id { 2 } else { 0 };
-            offset += dst_addr.size();
-            offset += if src_pan_id { 2 } else { 0 };
-
-            match src_addr {
-                AddressingMode::Absent => Some(Addr::Absent),
-                AddressingMode::Short => {
-                    let mut raw = [0u8; 2];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
-                    raw.reverse();
-                    Some(Addr::short_from_bytes(raw))
-                }
-                AddressingMode::Extended => {
-                    let mut raw = [0u8; 8];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
-                    raw.reverse();
-                    Some(Addr::extended_from_bytes(raw))
-                }
-                AddressingMode::Unknown(_) => None,
-            }
-        } else {
-            None
-        }
-    }
-
-    fn set_src_addr(&mut self, value: Addr) {
-        let offset = match self.dst_addressing_mode() {
-            AddressingMode::Absent => 0,
-            AddressingMode::Short => 2,
-            AddressingMode::Extended => 8,
-            _ => unreachable!(),
-        } + 2;
-
-        let offset = offset + if self.pan_id_compression() { 0 } else { 2 };
-
-        match value {
-            Addr::Absent => self.set_src_addressing_mode(AddressingMode::Absent),
-            Addr::Short(mut value) => {
-                value.reverse();
-                self.set_src_addressing_mode(AddressingMode::Short);
-                let data = &mut self.inner.data_mut()[field::ADDRESSING];
-                data[offset..offset + 2].copy_from_slice(&value);
-                value.reverse();
-            }
-            Addr::Extended(mut value) => {
-                value.reverse();
-                self.set_src_addressing_mode(AddressingMode::Extended);
-                let data = &mut self.inner.data_mut()[field::ADDRESSING];
-                data[offset..offset + 8].copy_from_slice(&value);
-                value.reverse();
-            }
-        }
+    pub fn ends(&self) -> Ends<(Option<Pan>, Option<Addr>)> {
+        (
+            Src((self.src_pan_id(), self.src_addr())),
+            Dst((self.dst_pan_id(), self.dst_addr())),
+        )
     }
 
     /// Return the index where the auxiliary security header starts.
@@ -615,14 +612,14 @@ impl<S: Storage + ?Sized> Frame<S> {
     /// Return the security level of the auxiliary security header.
     pub fn security_level(&self) -> u8 {
         let index = self.aux_security_header_start();
-        let b = self.inner.data()[index..][0];
+        let b = self.inner.as_ref()[index..][0];
         b & 0b111
     }
 
     /// Return the key identifier mode used by the auxiliary security header.
     pub fn key_identifier_mode(&self) -> u8 {
         let index = self.aux_security_header_start();
-        let b = self.inner.data()[index..][0];
+        let b = self.inner.as_ref()[index..][0];
         (b >> 3) & 0b11
     }
 
@@ -630,7 +627,7 @@ impl<S: Storage + ?Sized> Frame<S> {
     /// suppressed.
     pub fn frame_counter_suppressed(&self) -> bool {
         let index = self.aux_security_header_start();
-        let b = self.inner.data()[index..][0];
+        let b = self.inner.as_ref()[index..][0];
         ((b >> 5) & 0b1) == 0b1
     }
 
@@ -640,7 +637,7 @@ impl<S: Storage + ?Sized> Frame<S> {
             None
         } else {
             let index = self.aux_security_header_start();
-            let b = &self.inner.data()[index..];
+            let b = &self.inner.as_ref()[index..];
             Some(LittleEndian::read_u32(&b[1..1 + 4]))
         }
     }
@@ -648,7 +645,7 @@ impl<S: Storage + ?Sized> Frame<S> {
     /// Return the Key Identifier field.
     fn key_identifier(&self) -> &[u8] {
         let index = self.aux_security_header_start();
-        let b = &self.inner.data()[index..];
+        let b = &self.inner.as_ref()[index..];
         let length = if let Some(len) = self.key_identifier_length() {
             len as usize
         } else {
@@ -690,7 +687,7 @@ impl<S: Storage + ?Sized> Frame<S> {
             _ => panic!(),
         };
 
-        let data = &self.inner.data();
+        let data = &self.inner.as_ref();
         let len = data.len();
 
         Some(&data[len - mic_len..])
@@ -698,23 +695,36 @@ impl<S: Storage + ?Sized> Frame<S> {
 
     /// Return the MAC header.
     pub fn mac_header(&self) -> &[u8] {
-        let data = &self.inner.data();
+        let data = &self.inner.as_ref();
         &data[..self.payload_start()]
     }
+}
+
+#[derive(Debug)]
+pub struct Ieee802154 {
+    pub frame_type: FrameType,
+    pub security_enabled: bool,
+    pub frame_pending: bool,
+    pub ack_request: bool,
+    pub sequence_number: Option<u8>,
+    pub pan_id_compression: bool,
+    pub frame_version: FrameVersion,
+    pub ends: Ends<(Option<Pan>, Option<Addr>)>,
 }
 
 impl Wire for Ieee802154 {
     const EMPTY_PAYLOAD: bool = false;
 
     fn header_len(&self) -> usize {
+        let (Src((_, src_addr)), Dst((_, dst_addr))) = self.ends;
         3 + 2
-            + match self.dst_addr {
+            + match dst_addr {
                 Some(Addr::Absent) | None => 0,
                 Some(Addr::Short(_)) => 2,
                 Some(Addr::Extended(_)) => 8,
             }
             + if !self.pan_id_compression { 2 } else { 0 }
-            + match self.src_addr {
+            + match src_addr {
                 Some(Addr::Absent) | None => 0,
                 Some(Addr::Short(_)) => 2,
                 Some(Addr::Extended(_)) => 8,
@@ -725,7 +735,7 @@ impl Wire for Ieee802154 {
         unimplemented!("requires compression for the length {payload_len}")
     }
 
-    fn payload_range<S: Storage + ?Sized>(frame: &Frame<S>) -> Range<usize> {
+    fn payload_range(frame: Frame<&[u8]>) -> Range<usize> {
         match frame.frame_type() {
             FrameType::Data => frame.payload_start()..frame.inner.len(),
             _ => 0..0,
@@ -734,7 +744,7 @@ impl Wire for Ieee802154 {
 
     type ParseArg<'a> = ();
 
-    fn parse_packet<S: Storage>(frame: &Frame<S>, _: ()) -> Result<(), ParseErrorKind> {
+    fn parse_packet(frame: Frame<&[u8]>, _: ()) -> Result<Ieee802154, ParseErrorKind> {
         let len = frame.inner.len();
 
         // We need at least 3 bytes
@@ -776,14 +786,19 @@ impl Wire for Ieee802154 {
             return Err(ParseErrorKind::PacketTooShort);
         }
 
-        Ok(())
+        Ok(Ieee802154 {
+            frame_type: frame.frame_type(),
+            security_enabled: frame.security_enabled(),
+            frame_pending: frame.frame_pending(),
+            ack_request: frame.ack_request(),
+            sequence_number: frame.sequence_number(),
+            pan_id_compression: frame.pan_id_compression(),
+            frame_version: frame.frame_version(),
+            ends: frame.ends(),
+        })
     }
 
-    fn build_packet<S: Storage>(
-        self,
-        frame: &mut Frame<S>,
-        _: usize,
-    ) -> Result<(), BuildErrorKind> {
+    fn build_packet(self, mut frame: Frame<&mut [u8]>, _: usize) -> Result<(), BuildErrorKind> {
         let Ieee802154 {
             frame_type,
             security_enabled,
@@ -792,10 +807,7 @@ impl Wire for Ieee802154 {
             sequence_number,
             pan_id_compression,
             frame_version,
-            dst_pan_id,
-            dst_addr,
-            src_pan_id,
-            src_addr,
+            ends: (Src((src_pan_id, src_addr)), Dst((dst_pan_id, dst_addr))),
         } = self;
 
         frame.set_frame_type(frame_type);
@@ -850,12 +862,15 @@ mod tests {
             pan_id_compression: true,
             frame_version: FrameVersion::Ieee802154,
             sequence_number: Some(1),
-            dst_pan_id: Some(Pan(0xabcd)),
-            dst_addr: Some(Addr::BROADCAST),
-            src_pan_id: None,
-            src_addr: Some(Addr::Extended([
-                0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00,
-            ])),
+            ends: (
+                Src((
+                    None,
+                    Some(Addr::Extended([
+                        0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00,
+                    ])),
+                )),
+                Dst((Some(Pan(0xabcd)), Some(Addr::BROADCAST))),
+            ),
         };
 
         let buffer_len = repr.header_len();

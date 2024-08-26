@@ -2,8 +2,7 @@ use core::{fmt, ops::Range};
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{BuildErrorKind, Dst, Ends, ParseErrorKind, Src, Wire};
-use crate::storage::Storage;
+use super::{BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire};
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 pub struct Addr(pub [u8; 6]);
@@ -64,6 +63,8 @@ enum_with_unknown! {
     }
 }
 
+pub type Frame<T: ?Sized> = super::Packet<Ethernet, T>;
+
 pub mod field {
     use crate::wire::field::*;
 
@@ -74,43 +75,30 @@ pub mod field {
 }
 pub const HEADER_LEN: usize = field::PAYLOAD.start;
 
+wire!(impl Frame {
+    dst_addr/set_dst_addr: Addr =>
+        |data| Addr::from_bytes(&data[field::DESTINATION]);
+        |data, value| data[field::DESTINATION].copy_from_slice(value.as_bytes());
+
+    src_addr/set_src_addr: Addr =>
+        |data| Addr::from_bytes(&data[field::SOURCE]);
+        |data, value| data[field::SOURCE].copy_from_slice(value.as_bytes());
+
+    protocol/set_protocol: Protocol =>
+        |data| Protocol::from(NetworkEndian::read_u16(&data[field::ETHERTYPE]));
+        |data, value| NetworkEndian::write_u16(&mut data[field::ETHERTYPE], value.into());
+});
+
+impl<T: Data + ?Sized> Frame<T> {
+    pub fn addr(&self) -> Ends<Addr> {
+        (Src(self.src_addr()), Dst(self.dst_addr()))
+    }
+}
+
 #[derive(Debug)]
 pub struct Ethernet {
     pub addr: Ends<Addr>,
     pub proto: Protocol,
-}
-
-pub type Frame<S: Storage + ?Sized> = super::Packet<Ethernet, S>;
-
-impl<S: Storage + ?Sized> Frame<S> {
-    pub fn dst_addr(&self) -> Addr {
-        Addr::from_bytes(&self.inner.data()[field::DESTINATION])
-    }
-
-    fn set_dst_addr(&mut self, value: Addr) {
-        self.inner.data_mut()[field::DESTINATION].copy_from_slice(value.as_bytes())
-    }
-
-    pub fn src_addr(&self) -> Addr {
-        Addr::from_bytes(&self.inner.data()[field::SOURCE])
-    }
-
-    fn set_src_addr(&mut self, value: Addr) {
-        self.inner.data_mut()[field::SOURCE].copy_from_slice(value.as_bytes())
-    }
-
-    pub fn addr(&self) -> Ends<Addr> {
-        (Src(self.src_addr()), Dst(self.dst_addr()))
-    }
-
-    pub fn protocol(&self) -> Protocol {
-        let raw = NetworkEndian::read_u16(&self.inner.data()[field::ETHERTYPE]);
-        Protocol::from(raw)
-    }
-
-    fn set_protocol(&mut self, value: Protocol) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::ETHERTYPE], value.into())
-    }
 }
 
 impl Wire for Ethernet {
@@ -124,30 +112,29 @@ impl Wire for Ethernet {
         HEADER_LEN + payload_len
     }
 
-    fn payload_range<S: Storage + ?Sized>(packet: &super::Packet<Self, S>) -> Range<usize> {
-        HEADER_LEN..packet.inner.len()
+    fn payload_range(frame: Frame<&[u8]>) -> Range<usize> {
+        HEADER_LEN..frame.inner.len()
     }
 
     type ParseArg<'a> = ();
-    fn parse_packet<S: Storage>(frame: &Frame<S>, _: ()) -> Result<(), ParseErrorKind> {
+    fn parse_packet(frame: Frame<&[u8]>, _: ()) -> Result<Ethernet, ParseErrorKind> {
         if frame.inner.len() < HEADER_LEN {
             return Err(ParseErrorKind::PacketTooShort);
         }
-        Ok(())
+        Ok(Ethernet {
+            addr: frame.addr(),
+            proto: frame.protocol(),
+        })
     }
 
-    fn build_packet<S: Storage>(
-        self,
-        packet: &mut Frame<S>,
-        _: usize,
-    ) -> Result<(), BuildErrorKind> {
+    fn build_packet(self, mut frame: Frame<&mut [u8]>, _: usize) -> Result<(), BuildErrorKind> {
         let Ethernet {
             addr: (Src(src), Dst(dst)),
             proto,
         } = self;
-        packet.set_src_addr(src);
-        packet.set_dst_addr(dst);
-        packet.set_protocol(proto);
+        frame.set_src_addr(src);
+        frame.set_dst_addr(dst);
+        frame.set_protocol(proto);
         Ok(())
     }
 }

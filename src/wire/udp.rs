@@ -4,9 +4,10 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{
     ip::{self, checksum},
-    BuildErrorKind, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire,
+    BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, VerifyChecksum, Wire,
 };
-use crate::storage::Storage;
+
+pub type Packet<T: ?Sized> = super::Packet<Udp, T>;
 
 pub mod field {
     #![allow(non_snake_case)]
@@ -23,49 +24,27 @@ pub mod field {
 
 pub const HEADER_LEN: usize = field::PAYLOAD.start;
 
-#[derive(Debug)]
-pub struct Udp {
-    pub port: Ends<u16>,
-}
+wire!(impl Packet {
+    src_port/set_src_port: u16 =>
+        |data| NetworkEndian::read_u16(&data[field::SRC_PORT]);
+        |data, value| NetworkEndian::write_u16(&mut data[field::SRC_PORT], value);
 
-pub type Packet<S: Storage + ?Sized> = super::Packet<Udp, S>;
+    dst_port/set_dst_port: u16 =>
+        |data| NetworkEndian::read_u16(&data[field::DST_PORT]);
+        |data, value| NetworkEndian::write_u16(&mut data[field::DST_PORT], value);
 
-impl<S: Storage + ?Sized> Packet<S> {
-    pub fn src_port(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::SRC_PORT])
-    }
+    len/set_len: u16 =>
+        |data| NetworkEndian::read_u16(&data[field::LENGTH]);
+        |data, value| NetworkEndian::write_u16(&mut data[field::LENGTH], value);
 
-    fn set_src_port(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::SRC_PORT], value)
-    }
+    checksum/set_checksum: u16 =>
+        |data| NetworkEndian::read_u16(&data[field::CHECKSUM]);
+        |data, value| NetworkEndian::write_u16(&mut data[field::CHECKSUM], value);
+});
 
-    pub fn dst_port(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::DST_PORT])
-    }
-
-    fn set_dst_port(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::DST_PORT], value)
-    }
-
+impl<T: Data + ?Sized> Packet<T> {
     pub fn port(&self) -> Ends<u16> {
         (Src(self.src_port()), Dst(self.dst_port()))
-    }
-
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::LENGTH])
-    }
-
-    fn set_len(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::LENGTH], value)
-    }
-
-    pub fn checksum(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::CHECKSUM])
-    }
-
-    fn set_checksum(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::CHECKSUM], value)
     }
 
     pub fn verify_checksum(&self, addr: Ends<IpAddr>) -> bool {
@@ -80,10 +59,12 @@ impl<S: Storage + ?Sized> Packet<S> {
 
         checksum::combine(&[
             checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, u32::from(self.len())),
-            checksum::data(&self.inner.data()[..usize::from(self.len())]),
+            checksum::data(&self.inner.as_ref()[..usize::from(self.len())]),
         ]) == !0
     }
+}
 
+impl<T: DataMut + ?Sized> Packet<T> {
     pub fn fill_checksum(&mut self, addr: Ends<IpAddr>) {
         let (Src(src), Dst(dst)) = addr;
         self.set_checksum(0);
@@ -91,10 +72,15 @@ impl<S: Storage + ?Sized> Packet<S> {
         let len = self.len();
         let checksum = !checksum::combine(&[
             checksum::pseudo_header(&src, &dst, ip::Protocol::Udp, u32::from(len)),
-            checksum::data(&self.inner.data()[..usize::from(len)]),
+            checksum::data(&self.inner.as_ref()[..usize::from(len)]),
         ]);
         self.set_checksum(if checksum == 0 { 0xffff } else { checksum });
     }
+}
+
+#[derive(Debug)]
+pub struct Udp {
+    pub port: Ends<u16>,
 }
 
 impl Wire for Udp {
@@ -108,18 +94,15 @@ impl Wire for Udp {
         HEADER_LEN + payload_len
     }
 
-    fn payload_range<S: Storage + ?Sized>(packet: &super::Packet<Self, S>) -> Range<usize> {
+    fn payload_range(packet: Packet<&[u8]>) -> Range<usize> {
         HEADER_LEN..packet.inner.len()
     }
 
     type ParseArg<'a> = VerifyChecksum<Option<Ends<IpAddr>>>;
-    fn parse_packet<S>(
-        packet: &Packet<S>,
+    fn parse_packet(
+        packet: Packet<&[u8]>,
         VerifyChecksum(verify_checksum): VerifyChecksum<Option<Ends<IpAddr>>>,
-    ) -> Result<(), ParseErrorKind>
-    where
-        S: Storage,
-    {
+    ) -> Result<Udp, ParseErrorKind> {
         let buffer_len = packet.inner.len();
         if buffer_len < HEADER_LEN {
             return Err(ParseErrorKind::PacketTooShort);
@@ -141,14 +124,10 @@ impl Wire for Udp {
             return Err(ParseErrorKind::ChecksumInvalid);
         }
 
-        Ok(())
+        Ok(Udp { port: packet.port() })
     }
 
-    fn build_packet<S: Storage>(
-        self,
-        packet: &mut Packet<S>,
-        _: usize,
-    ) -> Result<(), BuildErrorKind> {
+    fn build_packet(self, mut packet: Packet<&mut [u8]>, _: usize) -> Result<(), BuildErrorKind> {
         let len = u16::try_from(packet.inner.len()).map_err(|_| BuildErrorKind::PayloadTooLong)?;
         packet.set_len(len);
 

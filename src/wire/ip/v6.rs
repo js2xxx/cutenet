@@ -10,10 +10,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol};
-use crate::{
-    storage::Storage,
-    wire::{BuildErrorKind, Dst, Ends, ParseErrorKind, Src, Wire},
-};
+use crate::wire::{BuildErrorKind, Data, DataMut, Dst, Ends, ParseErrorKind, Src, Wire};
 
 pub trait Ipv6AddrExt {
     const LINK_LOCAL_ALL_NODES: Ipv6Addr;
@@ -77,6 +74,8 @@ impl Ipv6AddrExt for Ipv6Addr {
     }
 }
 
+pub type Packet<T: ?Sized> = crate::wire::Packet<Ipv6, T>;
+
 mod field {
     use crate::wire::field::*;
 
@@ -99,109 +98,74 @@ mod field {
 }
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
-pub type Ipv6 = super::Ip<Ipv6Addr>;
-
-pub type Packet<S: Storage + ?Sized> = crate::wire::Packet<Ipv6, S>;
-
-impl<S: Storage + ?Sized> Packet<S> {
-    pub fn version(&self) -> u8 {
-        self.inner.data()[field::VER_TC_FLOW.start] >> 4
-    }
-
-    fn set_version(&mut self, value: u8) {
-        let data = self.inner.data_mut();
-        // Make sure to retain the lower order bits which contain
-        // the higher order bits of the traffic class
-        data[0] = (data[0] & 0x0f) | ((value & 0x0f) << 4);
-    }
+wire!(impl Packet {
+    version/set_version: u8 =>
+        |data| data[field::VER_TC_FLOW.start] >> 4;
+        |data, value| {
+            // Make sure to retain the lower order bits which contain
+            // the higher order bits of the traffic class
+            data[0] = (data[0] & 0x0f) | ((value & 0x0f) << 4);
+        };
 
     /// Return the traffic class.
-    pub fn traffic_class(&self) -> u8 {
-        ((NetworkEndian::read_u16(&self.inner.data()[0..2]) & 0x0ff0) >> 4) as u8
-    }
-
-    fn set_traffic_class(&mut self, value: u8) {
-        let data = self.inner.data_mut();
-        // Put the higher order 4-bits of value in the lower order
-        // 4-bits of the first byte
-        data[0] = (data[0] & 0xf0) | ((value & 0xf0) >> 4);
-        // Put the lower order 4-bits of value in the higher order
-        // 4-bits of the second byte
-        data[1] = (data[1] & 0x0f) | ((value & 0x0f) << 4);
-    }
+    traffic_class/set_traffic_class: u8 =>
+        |data| ((NetworkEndian::read_u16(&data[0..2]) & 0x0ff0) >> 4) as u8;
+        |data, value| {
+            // Put the higher order 4-bits of value in the lower order
+            // 4-bits of the first byte
+            data[0] = (data[0] & 0xf0) | ((value & 0xf0) >> 4);
+            // Put the lower order 4-bits of value in the higher order
+            // 4-bits of the second byte
+            data[1] = (data[1] & 0x0f) | ((value & 0x0f) << 4);
+        };
 
     /// Return the flow label field.
-    pub fn flow_label(&self) -> u32 {
-        NetworkEndian::read_u24(&self.inner.data()[1..4]) & 0x000fffff
-    }
-
-    fn set_flow_label(&mut self, value: u32) {
-        let data = self.inner.data_mut();
-        // Retain the lower order 4-bits of the traffic class
-        let raw = (u32::from(data[1] & 0xf0) << 16) | (value & 0x0fffff);
-        NetworkEndian::write_u24(&mut data[1..4], raw);
-    }
+    flow_label/set_flow_label: u32 =>
+        |data| NetworkEndian::read_u24(&data[1..4]) & 0x000fffff;
+        |data, value| {
+            // Retain the lower order 4-bits of the traffic class
+            let raw = (u32::from(data[1] & 0xf0) << 16) | (value & 0x0fffff);
+            NetworkEndian::write_u24(&mut data[1..4], raw);
+        };
 
     /// Return the payload length field.
-    pub fn payload_len(&self) -> u16 {
-        NetworkEndian::read_u16(&self.inner.data()[field::LENGTH])
-    }
+    payload_len/set_payload_len: u16 =>
+        |data| NetworkEndian::read_u16(&data[field::LENGTH]);
+        |data, value| NetworkEndian::write_u16(&mut data[field::LENGTH], value);
 
-    fn set_payload_len(&mut self, value: u16) {
-        NetworkEndian::write_u16(&mut self.inner.data_mut()[field::LENGTH], value);
-    }
+    /// Return the next header field.
+    next_header/set_next_header: Protocol =>
+        |data| Protocol::from(data[field::NXT_HDR]);
+        |data, value| data[field::NXT_HDR] = value.into();
 
+    /// Return the hop limit field.
+    hop_limit/set_hop_limit: u8 =>
+        |data| data[field::HOP_LIMIT];
+        |data, value| data[field::HOP_LIMIT] = value;
+
+    /// Return the source address field.
+    src_addr/set_src_addr: Ipv6Addr =>
+        |data| Ipv6Addr::from_bytes(&data[field::SRC_ADDR]);
+        |data, value| data[field::SRC_ADDR].copy_from_slice(&value.octets());
+
+    /// Return the destination address field.
+    dst_addr/set_dst_addr: Ipv6Addr =>
+        |data| Ipv6Addr::from_bytes(&data[field::DST_ADDR]);
+        |data, value| data[field::DST_ADDR].copy_from_slice(&value.octets());
+});
+
+impl<T: Data + ?Sized> Packet<T> {
     /// Return the payload length added to the known header length.
     pub fn total_len(&self) -> usize {
         HEADER_LEN + usize::from(self.payload_len())
-    }
-
-    /// Return the next header field.
-    pub fn next_header(&self) -> Protocol {
-        let data = self.inner.data();
-        Protocol::from(data[field::NXT_HDR])
-    }
-
-    fn set_next_header(&mut self, value: Protocol) {
-        self.inner.data_mut()[field::NXT_HDR] = value.into();
-    }
-
-    /// Return the hop limit field.
-    pub fn hop_limit(&self) -> u8 {
-        let data = self.inner.data();
-        data[field::HOP_LIMIT]
-    }
-
-    fn set_hop_limit(&mut self, value: u8) {
-        self.inner.data_mut()[field::HOP_LIMIT] = value;
-    }
-
-    /// Return the source address field.
-    pub fn src_addr(&self) -> Ipv6Addr {
-        let data = self.inner.data();
-        Ipv6Addr::from_bytes(&data[field::SRC_ADDR])
-    }
-
-    fn set_src_addr(&mut self, value: Ipv6Addr) {
-        let data = self.inner.data_mut();
-        data[field::SRC_ADDR].copy_from_slice(&value.octets());
-    }
-
-    /// Return the destination address field.
-    pub fn dst_addr(&self) -> Ipv6Addr {
-        let data = self.inner.data();
-        Ipv6Addr::from_bytes(&data[field::DST_ADDR])
-    }
-
-    fn set_dst_addr(&mut self, value: Ipv6Addr) {
-        let data = self.inner.data_mut();
-        data[field::DST_ADDR].copy_from_slice(&value.octets());
     }
 
     pub fn addr(&self) -> Ends<Ipv6Addr> {
         (Src(self.src_addr()), Dst(self.dst_addr()))
     }
 }
+
+pub type Ipv6 = super::Ip<Ipv6Addr>;
 
 impl Wire for Ipv6 {
     const EMPTY_PAYLOAD: bool = false;
@@ -214,12 +178,12 @@ impl Wire for Ipv6 {
         HEADER_LEN + payload_len
     }
 
-    fn payload_range<S: Storage + ?Sized>(packet: &Packet<S>) -> Range<usize> {
+    fn payload_range(packet: Packet<&[u8]>) -> Range<usize> {
         HEADER_LEN..packet.total_len()
     }
 
     type ParseArg<'a> = ();
-    fn parse_packet<S: Storage>(packet: &Packet<S>, _: ()) -> Result<(), ParseErrorKind> {
+    fn parse_packet(packet: Packet<&[u8]>, _: ()) -> Result<Ipv6, ParseErrorKind> {
         let len = packet.inner.len();
         if len < field::DST_ADDR.end || len < packet.total_len() {
             return Err(ParseErrorKind::PacketTooShort);
@@ -227,12 +191,17 @@ impl Wire for Ipv6 {
         if packet.version() != 6 {
             return Err(ParseErrorKind::VersionInvalid);
         }
-        Ok(())
+
+        Ok(Ipv6 {
+            addr: packet.addr(),
+            next_header: packet.next_header(),
+            hop_limit: packet.hop_limit(),
+        })
     }
 
-    fn build_packet<S: Storage>(
+    fn build_packet(
         self,
-        packet: &mut Packet<S>,
+        mut packet: Packet<&mut [u8]>,
         payload_len: usize,
     ) -> Result<(), BuildErrorKind> {
         let payload_len = u16::try_from(payload_len).map_err(|_| BuildErrorKind::PayloadTooLong)?;
