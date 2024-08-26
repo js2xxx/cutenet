@@ -1,0 +1,29 @@
+[package]
+edition = "2021"
+name = "cutenet"
+version = "0.1.0"
+
+[features]
+alloc = ["stable_deref_trait/alloc"]
+default = ["std", "alloc"]
+std = ["smoltcp/std", "stable_deref_trait/std"]
+
+[dependencies]
+stable_deref_trait = {version = "1.2", default-features = false}
+byteorder = {version = "1.5", default-features = false}
+
+[dependencies.smoltcp]
+default-features = false
+features = [
+  "log",
+  "proto-ipv4",
+  "proto-ipv4-fragmentation",
+  "proto-ipv6",
+  "proto-dhcpv4",
+  "proto-dns",
+  "proto-igmp",
+  "medium-ethernet",
+  "medium-ieee802154",
+  "socket-raw",
+]
+version = "0.11"
