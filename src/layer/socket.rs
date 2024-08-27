@@ -25,7 +25,7 @@ impl SocketState for () {
 #[derive(Debug)]
 pub enum SocketRecv<Orig, Reply> {
     NotReceived(Orig),
-    Received { reply: Reply },
+    Received(Reply),
 }
 
 pub trait RawSocketSet<S: Storage> {
@@ -51,9 +51,7 @@ pub type TcpSocketRecv<S: Storage, Ss: SocketState> =
     SocketRecv<TcpPacket<Buf<S>>, Option<(TcpPacket<Buf<S>>, Ss)>>;
 
 pub trait TcpSocketSet<S: Storage> {
-    type SocketState<'a>: SocketState
-    where
-        Self: 'a;
+    type SocketState: SocketState;
 
     fn receive(
         self,
@@ -61,7 +59,7 @@ pub trait TcpSocketSet<S: Storage> {
         device_caps: &DeviceCaps,
         addr: Ends<IpAddr>,
         packet: TcpPacket<Buf<S>>,
-    ) -> TcpSocketRecv<S, Self::SocketState<'_>>;
+    ) -> TcpSocketRecv<S, Self::SocketState>;
 }
 
 pub trait AllSocketSet<S: Storage> {

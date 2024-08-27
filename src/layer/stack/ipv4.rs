@@ -27,7 +27,8 @@ where
     R: Router<S>,
     A: AllSocketSet<S>,
 {
-    let addr = packet.addr;
+    let v4_addr = packet.addr;
+    let addr = v4_addr.map(IpAddr::V4);
 
     let payload = match Ipv4Payload::parse(
         &(device_caps.rx_checksums, packet.next_header),
@@ -42,45 +43,37 @@ where
 
     match payload {
         Ipv4Payload::Icmp(packet) => {
-            process_icmp(now, device_caps, router, hw, addr, packet);
-            SocketRecv::Received { reply: () }
+            process_icmp(now, device_caps, router, hw, v4_addr, packet);
+            SocketRecv::Received(())
         }
-        Ipv4Payload::Udp(udp) => {
-            let sockets = sockets.udp();
-            match sockets.receive(now, device_caps, addr.map(Into::into), udp) {
-                SocketRecv::Received { reply: () } => SocketRecv::Received { reply: () },
-                SocketRecv::NotReceived(mut udp) => SocketRecv::NotReceived({
-                    udp.payload.prepend(UDP_HEADER_LEN);
-                    packet.payload = udp.payload;
-                    IpPacket::V4(packet)
-                }),
-            }
-        }
-        Ipv4Payload::Tcp(tcp) => {
-            let sockets = sockets.tcp();
-            match sockets.receive(now, device_caps, addr.map(Into::into), tcp) {
-                SocketRecv::Received { reply: Some((reply, ss)) } => {
-                    let addr = addr.reverse();
-                    let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V4));
-                    let packet = Ipv4Packet {
-                        addr,
-                        next_header: IpProtocol::Tcp,
-                        hop_limit: 64,
-                        frag_info: None,
-                        payload: uncheck_build!(reply.build(cx)),
-                    };
+        Ipv4Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
+            SocketRecv::Received(()) => SocketRecv::Received(()),
+            SocketRecv::NotReceived(mut udp) => SocketRecv::NotReceived({
+                udp.payload.prepend(UDP_HEADER_LEN);
+                packet.payload = udp.payload;
+                IpPacket::V4(packet)
+            }),
+        },
+        Ipv4Payload::Tcp(tcp) => match sockets.tcp().receive(now, device_caps, addr, tcp) {
+            SocketRecv::Received(opt) => SocketRecv::Received(opt.map_or((), |(reply, ss)| {
+                let addr = v4_addr.reverse();
+                let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V4));
+                let packet = Ipv4Packet {
+                    addr,
+                    next_header: IpProtocol::Tcp,
+                    hop_limit: 64,
+                    frag_info: None,
+                    payload: uncheck_build!(reply.build(cx)),
+                };
 
-                    dispatch_impl(now, router, IpPacket::V4(packet), ss);
-                    SocketRecv::Received { reply: () }
-                }
-                SocketRecv::Received { reply: None } => SocketRecv::Received { reply: () },
-                SocketRecv::NotReceived(mut tcp) => SocketRecv::NotReceived({
-                    tcp.payload.prepend(tcp.buffer_len() - tcp.payload_len());
-                    packet.payload = tcp.payload;
-                    IpPacket::V4(packet)
-                }),
-            }
-        }
+                dispatch_impl(now, router, IpPacket::V4(packet), ss);
+            })),
+            SocketRecv::NotReceived(mut tcp) => SocketRecv::NotReceived({
+                tcp.payload.prepend(tcp.buffer_len() - tcp.payload_len());
+                packet.payload = tcp.payload;
+                IpPacket::V4(packet)
+            }),
+        },
     }
 }
 

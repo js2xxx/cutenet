@@ -269,8 +269,9 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Wire)]
+#[derive(Debug, Clone, PartialEq, Eq, Wire)]
 pub enum Ipv6Payload<#[wire] T, #[no_payload] U> {
+    HopByHop(#[wire] crate::wire::Ipv6HopByHopHeader<T>),
     Icmp(#[wire] crate::wire::Icmpv6Packet<T, U>),
     Udp(#[wire] crate::wire::UdpPacket<T>),
     Tcp(#[wire] crate::wire::TcpPacket<T>),
@@ -284,6 +285,9 @@ where
 {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         Ok(match cx.ip_protocol() {
+            Protocol::HopByHop => {
+                Ipv6Payload::HopByHop(crate::wire::Ipv6HopByHopHeader::parse(cx, raw)?)
+            }
             Protocol::Icmpv6 => Ipv6Payload::Icmp(crate::wire::Icmpv6Packet::parse(cx, raw)?),
             Protocol::Tcp => Ipv6Payload::Tcp(crate::wire::TcpPacket::parse(cx, raw)?),
             Protocol::Udp => Ipv6Payload::Udp(crate::wire::UdpPacket::parse(cx, raw)?),
@@ -300,6 +304,7 @@ where
 {
     fn buffer_len(&self) -> usize {
         match self {
+            Ipv6Payload::HopByHop(packet) => packet.buffer_len(),
             Ipv6Payload::Icmp(packet) => packet.buffer_len(),
             Ipv6Payload::Tcp(packet) => packet.buffer_len(),
             Ipv6Payload::Udp(packet) => packet.buffer_len(),
@@ -308,6 +313,7 @@ where
 
     fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         match self {
+            Ipv6Payload::HopByHop(packet) => packet.build(cx),
             Ipv6Payload::Icmp(packet) => packet.build(cx),
             Ipv6Payload::Tcp(packet) => packet.build(cx),
             Ipv6Payload::Udp(packet) => packet.build(cx),

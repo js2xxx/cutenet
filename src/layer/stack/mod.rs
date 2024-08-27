@@ -118,7 +118,7 @@ where
     };
 
     let packet = match res {
-        SocketRecv::Received { reply: () } => return true,
+        SocketRecv::Received(()) => return true,
         SocketRecv::NotReceived(_) if raw_processed => return true,
         SocketRecv::NotReceived(packet) => match packet {
             IpPacket::V4(packet) => {

@@ -29,40 +29,58 @@ where
     R: Router<S>,
     A: AllSocketSet<S>,
 {
-    let addr = packet.addr;
+    let v6_addr = packet.addr;
+    let addr = v6_addr.map(IpAddr::V6);
 
-    let payload: Ipv6Payload<Buf<S>, ReserveBuf<S>> = match Ipv6Payload::parse(
-        &(device_caps.rx_checksums, packet.next_header),
-        packet.payload,
-    ) {
-        Ok(payload) => payload,
-        Err(err) => log_parse!(err => SocketRecv::NotReceived({
-            packet.payload = err.data;
-            IpPacket::V6(packet)
-        })),
-    };
+    macro_rules! parse {
+        ($payload:expr) => {
+            match Ipv6Payload::parse(
+                &(device_caps.rx_checksums, packet.next_header),
+                $payload,
+            ) {
+                Ok(payload) => payload,
+                Err(err) => log_parse!(err => SocketRecv::NotReceived({
+                    packet.payload = err.data;
+                    IpPacket::V6(packet)
+                })),
+            }
+        };
+    }
 
-    match payload {
-        Ipv6Payload::Icmp(packet) => {
-            process_icmp(now, device_caps, router, hw, addr, packet);
-            SocketRecv::Received { reply: () }
-        }
-        Ipv6Payload::Udp(udp) => {
-            let sockets = sockets.udp();
-            match sockets.receive(now, device_caps, addr.map(Into::into), udp) {
-                SocketRecv::Received { reply: () } => SocketRecv::Received { reply: () },
+    let mut payload = parse!(packet.payload);
+    loop {
+        break match payload {
+            Ipv6Payload::HopByHop(hbh) => match process_hbh(v6_addr, hbh) {
+                Ok(p) => {
+                    payload = parse!(p);
+                    continue;
+                }
+                Err(Some(buf)) => {
+                    packet.payload = buf;
+                    icmp_reply(device_caps, v6_addr.reverse(), Icmpv6Packet::ParamProblem {
+                        reason: Icmpv6ParamProblem::UnrecognizedOption,
+                        pointer: packet.buffer_len() as u32,
+                        payload: packet,
+                    });
+                    SocketRecv::Received(())
+                }
+                Err(None) => SocketRecv::Received(()),
+            },
+            Ipv6Payload::Icmp(packet) => {
+                process_icmp(now, device_caps, router, hw, v6_addr, packet);
+                SocketRecv::Received(())
+            }
+            Ipv6Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
+                SocketRecv::Received(()) => SocketRecv::Received(()),
                 SocketRecv::NotReceived(mut udp) => SocketRecv::NotReceived({
                     udp.payload.prepend(UDP_HEADER_LEN);
                     packet.payload = udp.payload;
                     IpPacket::V6(packet)
                 }),
-            }
-        }
-        Ipv6Payload::Tcp(tcp) => {
-            let sockets = sockets.tcp();
-            match sockets.receive(now, device_caps, addr.map(Into::into), tcp) {
-                SocketRecv::Received { reply: Some((reply, ss)) } => {
-                    let addr = addr.reverse();
+            },
+            Ipv6Payload::Tcp(tcp) => match sockets.tcp().receive(now, device_caps, addr, tcp) {
+                SocketRecv::Received(opt) => SocketRecv::Received(opt.map_or((), |(reply, ss)| {
+                    let addr = v6_addr.reverse();
                     let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V6));
                     let packet = Ipv6Packet {
                         addr,
@@ -72,17 +90,44 @@ where
                     };
 
                     dispatch_impl(now, router, IpPacket::V6(packet), ss);
-                    SocketRecv::Received { reply: () }
-                }
-                SocketRecv::Received { reply: None } => SocketRecv::Received { reply: () },
+                })),
                 SocketRecv::NotReceived(mut tcp) => SocketRecv::NotReceived({
-                    tcp.payload.prepend(tcp.buffer_len() - tcp.payload_len());
+                    tcp.payload.prepend(tcp.header_len());
                     packet.payload = tcp.payload;
                     IpPacket::V6(packet)
                 }),
-            }
+            },
+        };
+    }
+}
+
+fn process_hbh<S>(
+    addr: Ends<Ipv6Addr>,
+    mut header: Ipv6HopByHopHeader<Buf<S>>,
+) -> Result<Buf<S>, Option<Buf<S>>>
+where
+    S: Storage,
+{
+    for opt in &header.options {
+        match opt {
+            Ipv6Opt::Pad1 | Ipv6Opt::PadN(_) | Ipv6Opt::RouterAlert(_) => {}
+            &Ipv6Opt::Unknown { option_type, .. } => match Ipv6OptFailureType::from(option_type) {
+                Ipv6OptFailureType::Skip => {}
+                Ipv6OptFailureType::Discard => return Err(None),
+                Ipv6OptFailureType::DiscardSendAll => {
+                    header.payload.prepend(header.header_len());
+                    return Err(Some(header.payload));
+                }
+                Ipv6OptFailureType::DiscardSendUnicast if !addr.dst.is_multicast() => {
+                    header.payload.prepend(header.header_len());
+                    return Err(Some(header.payload));
+                }
+                _ => unreachable!(),
+            },
         }
     }
+
+    Ok(header.payload)
 }
 
 fn process_icmp<S, R>(

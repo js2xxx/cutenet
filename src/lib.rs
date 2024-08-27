@@ -5,6 +5,7 @@
 #![allow(edition_2024_expr_fragment_specifier)]
 #![deny(trivial_casts)]
 #![deny(trivial_numeric_casts)]
+#![allow(clippy::unit_arg)]
 #![allow(incomplete_features)]
 #![feature(allocator_api)]
 #![feature(if_let_guard)]
