@@ -8,7 +8,10 @@ use heapless::mpmc::MpMcQueue;
 use super::{NetRx, NetTx, Payload};
 use crate::{
     config::STATIC_LOOPBACK_CAPACITY,
-    layer::{Checksums, DeviceCaps, NeighborCacheOption, NeighborLookupError},
+    layer::{
+        Checksums, DeviceCaps, NeighborCacheOption, NeighborLookupError, TxDropReason::QueueFull,
+        TxResult,
+    },
     storage::Storage,
     time::Instant,
     wire::*,
@@ -108,14 +111,15 @@ impl<S: Storage> NetTx<S> for &StaticLoopback<S> {
         }
     }
 
-    fn transmit(&mut self, now: Instant, _: HwAddr, packet: Payload<S>) {
+    fn transmit(&mut self, now: Instant, _: HwAddr, packet: Payload<S>) -> TxResult {
         #[cfg(feature = "log")]
         tracing::trace!(target: "net::loopback", "receiving packet at {now}");
         match self.q.enqueue(packet) {
-            Ok(()) => {}
+            Ok(()) => TxResult::Success,
             Err(_) => {
                 #[cfg(feature = "log")]
                 tracing::info!(target: "net::loopback", "queue full at {now}, dropping packet");
+                TxResult::Dropped(QueueFull)
             }
         }
     }
@@ -207,14 +211,16 @@ mod alloc {
             }
         }
 
-        fn transmit(&mut self, now: Instant, _: HwAddr, packet: Payload<S>) {
+        fn transmit(&mut self, now: Instant, _: HwAddr, packet: Payload<S>) -> TxResult {
             #[cfg(feature = "log")]
             tracing::trace!(target: "net::loopback", "receiving packet at {now}");
             match self.0.push(packet) {
-                Ok(()) => {}
+                Ok(()) if self.0.len() * 8 < self.0.capacity() * 7 => TxResult::Success,
+                Ok(()) => TxResult::CongestionAlert,
                 Err(_) => {
                     #[cfg(feature = "log")]
                     tracing::info!(target: "net::loopback", "queue full at {now}, dropping packet");
+                    TxResult::Dropped(QueueFull)
                 }
             }
         }

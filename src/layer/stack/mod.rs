@@ -4,7 +4,7 @@ use super::{
     iface::{NetRx, NetTx},
     route::{Action, Query, Router},
     socket::{AllSocketSet, RawSocketSet, SocketRecv, SocketState},
-    NeighborCacheOption, NeighborLookupError,
+    NeighborCacheOption, NeighborLookupError, TxDropReason, TxResult,
 };
 use crate::{
     context::Ends,
@@ -47,9 +47,9 @@ where
         Action::Deliver => Action::Deliver,
         Action::Forward { next_hop, mut tx } => {
             let mut packet = packet;
-            return if packet.decrease_hop_limit() {
-                transmit(now, next_hop, tx, packet, ());
-                true
+            // TODO: handle forwarding results.
+            let _ = if packet.decrease_hop_limit() {
+                transmit(now, next_hop, tx, packet, ())
             } else {
                 tx.transmit(now, src_hw, match packet {
                     IpPacket::V4(packet) => {
@@ -66,9 +66,9 @@ where
                             payload: packet,
                         })
                     }
-                });
-                true
+                })
             };
+            return true;
         }
         Action::Discard => Action::Discard,
     };
@@ -82,7 +82,7 @@ where
             ),
             Action::Forward { tx: (), .. } => unreachable!(),
             Action::Discard => {
-                tx.transmit(now, src_hw, match packet {
+                let _ = tx.transmit(now, src_hw, match packet {
                     IpPacket::V4(packet) => ipv4::icmp_reply(
                         &device_caps,
                         packet.addr.reverse(),
@@ -141,12 +141,12 @@ where
         },
     };
     if let Some(mut tx) = router.device(now, hw.dst) {
-        tx.transmit(now, src_hw, packet)
+        let _ = tx.transmit(now, src_hw, packet);
     }
     true
 }
 
-pub fn dispatch<S, R, Ss>(now: Instant, mut router: R, packet: IpPacket<Buf<S>>, ss: Ss)
+pub fn dispatch<S, R, Ss>(now: Instant, mut router: R, packet: IpPacket<Buf<S>>, ss: Ss) -> TxResult
 where
     S: Storage,
     R: Router<S>,
@@ -155,7 +155,12 @@ where
     dispatch_impl(now, &mut router, packet, ss)
 }
 
-fn dispatch_impl<S, R, Ss>(now: Instant, router: &mut R, packet: IpPacket<Buf<S>>, ss: Ss)
+fn dispatch_impl<S, R, Ss>(
+    now: Instant,
+    router: &mut R,
+    packet: IpPacket<Buf<S>>,
+    ss: Ss,
+) -> TxResult
 where
     S: Storage,
     R: Router<S>,
@@ -167,14 +172,21 @@ where
     }) {
         Action::Deliver => {}
         Action::Forward { next_hop, tx } => return transmit(now, next_hop, tx, packet, ss),
-        Action::Discard => return,
+        Action::Discard => return TxResult::Dropped(TxDropReason::NoRoute),
     }
-    if let Some(mut loopback) = router.loopback(now) {
-        loopback.transmit(now, HwAddr::Ip, EthernetPayload::Ip(packet))
+    match router.loopback(now) {
+        Some(mut loopback) => loopback.transmit(now, HwAddr::Ip, EthernetPayload::Ip(packet)),
+        None => TxResult::Dropped(TxDropReason::NoRoute),
     }
 }
 
-fn transmit<S, Tx, Ss>(now: Instant, next_hop: IpAddr, mut tx: Tx, packet: IpPacket<Buf<S>>, ss: Ss)
+pub fn transmit<S, Tx, Ss>(
+    now: Instant,
+    next_hop: IpAddr,
+    mut tx: Tx,
+    packet: IpPacket<Buf<S>>,
+    ss: Ss,
+) -> TxResult
 where
     S: Storage,
     Tx: NetTx<S>,
@@ -212,7 +224,7 @@ where
         Err(NeighborLookupError { rate_limited }) => {
             ss.neighbor_missing(now, next_hop);
             if rate_limited {
-                return;
+                return TxResult::Dropped(TxDropReason::NeighborPending);
             }
         }
     }
@@ -234,11 +246,11 @@ where
             let buf = buf.add_reservation(packet.buffer_len() + tx.device_caps().header_len);
             let packet = packet.sub_no_payload(|_| buf);
 
-            tx.transmit(
+            let _ = tx.transmit(
                 now,
                 EthernetAddr::BROADCAST.into(),
                 EthernetPayload::Arp(packet),
-            )
+            );
         }
         (IpAddr::V6(src), IpAddr::V6(dst)) => {
             let dst = dst.solicited_node();
@@ -257,8 +269,9 @@ where
                 HwAddr::Ip => unreachable!(),
             };
 
-            tx.transmit(now, hw_dst, packet)
+            let _ = tx.transmit(now, hw_dst, packet);
         }
         _ => unreachable!(),
     }
+    TxResult::Dropped(TxDropReason::NeighborPending)
 }

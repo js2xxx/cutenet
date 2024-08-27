@@ -61,6 +61,6 @@ pub(super) fn process_arp<S, R>(
             dst: (src_hw, src_ip),
         };
 
-        tx.transmit(now, src_hw.into(), EthernetPayload::Arp(packet))
+        let _ = tx.transmit(now, src_hw.into(), EthernetPayload::Arp(packet));
     }
 }

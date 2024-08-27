@@ -6,7 +6,7 @@ use super::{neighbor::StaticNeighborCache, HwAddr, NetRx, NetTx, Payload};
 use crate::{
     config::*,
     context::Ends,
-    layer::{DeviceCaps, NeighborCacheOption, NeighborLookupError, PhyRx, PhyTx},
+    layer::{DeviceCaps, NeighborCacheOption, NeighborLookupError, PhyRx, PhyTx, TxResult},
     storage::Storage,
     time::Instant,
     wire::*,
@@ -130,7 +130,7 @@ impl<S: Storage, D: PhyTx<S> + ?Sized> NetTx<S> for EthernetTx<D> {
         self.neighbor_cache.lookup(now, ip)
     }
 
-    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) {
+    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult {
         let addr = Ends { src: self.hw_addr(), dst };
 
         let packet = EthernetFrame {

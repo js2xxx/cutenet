@@ -66,7 +66,8 @@ where
                     payload: uncheck_build!(reply.build(cx)),
                 };
 
-                dispatch_impl(now, router, IpPacket::V4(packet), ss);
+                // The result is ignored here because it is already recorded in `ss`.
+                let _ = dispatch_impl(now, router, IpPacket::V4(packet), ss);
             })),
             SocketRecv::NotReceived(mut tcp) => SocketRecv::NotReceived({
                 tcp.payload.prepend(tcp.buffer_len() - tcp.payload_len());
@@ -93,7 +94,8 @@ fn process_icmp<S, R>(
             if let Some(mut tx) = router.device(now, hw.dst) =>
         {
             let icmp = Icmpv4Packet::EchoReply { ident, seq_no, payload };
-            return tx.transmit(now, hw.src, icmp_reply(device_caps, addr.reverse(), icmp));
+            let _ = tx.transmit(now, hw.src, icmp_reply(device_caps, addr.reverse(), icmp));
+            return;
         }
         Icmpv4Packet::EchoRequest { .. } | Icmpv4Packet::EchoReply { .. } => return,
         Icmpv4Packet::DstUnreachable { .. } => {}

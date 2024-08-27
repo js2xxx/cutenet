@@ -59,3 +59,21 @@ impl Checksums {
 
     pub const IGNORE: Self = Checksums::empty();
 }
+
+#[must_use]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
+pub enum TxResult {
+    /// Transmission successful.
+    Success,
+    /// Also success, but with a warning.
+    CongestionAlert,
+    /// Transmission failed & packet dropped.
+    Dropped(TxDropReason),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
+pub enum TxDropReason {
+    QueueFull,
+    NoRoute,
+    NeighborPending,
+}

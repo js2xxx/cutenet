@@ -3,7 +3,7 @@ use core::{
     ptr,
 };
 
-use super::{HwAddr, NetRx, NetTx, Payload};
+use super::{HwAddr, NetRx, NetTx, Payload, TxResult};
 use crate::{
     layer::{DeviceCaps, NeighborCacheOption, NeighborLookupError},
     storage::Storage,
@@ -30,7 +30,7 @@ pub struct DynNetTxVtable<S: Storage> {
     pub lookup_neighbor_cache:
         unsafe fn(*const (), now: Instant, ip: IpAddr) -> Result<HwAddr, NeighborLookupError>,
 
-    pub transmit: unsafe fn(*mut (), now: Instant, dst: HwAddr, packet: Payload<S>),
+    pub transmit: unsafe fn(*mut (), now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult,
 
     pub drop: unsafe fn(*mut ()),
 }
@@ -117,7 +117,7 @@ macro_rules! dyn_net_tx {
                 unsafe { (self.vtable.lookup_neighbor_cache)(self.data, now, ip) }
             }
 
-            fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) {
+            fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult {
                 // SAFETY: `self.data` and `self.vtable` is valid.
                 unsafe { (self.vtable.transmit)(self.data, now, dst, packet) }
             }

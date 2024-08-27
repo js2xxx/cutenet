@@ -1,4 +1,4 @@
-use super::Checksums;
+use super::{Checksums, TxResult};
 use crate::{
     storage::{Buf, Storage},
     time::Instant,
@@ -44,5 +44,5 @@ pub trait PhyTx<S: Storage> {
 
     fn caps(&self) -> DeviceCaps;
 
-    fn transmit(&mut self, now: Instant, buf: Buf<S>);
+    fn transmit(&mut self, now: Instant, buf: Buf<S>) -> TxResult;
 }

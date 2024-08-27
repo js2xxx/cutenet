@@ -1,7 +1,7 @@
 use core::net::{IpAddr, Ipv6Addr};
 
 use self::neighbor::{NeighborCacheOption, NeighborLookupError};
-use super::phy::DeviceCaps;
+use super::{phy::DeviceCaps, TxResult};
 use crate::{
     storage::{Buf, ReserveBuf, Storage},
     time::Instant,
@@ -41,7 +41,7 @@ pub trait NetTx<S: Storage> {
         ip: IpAddr,
     ) -> Result<HwAddr, NeighborLookupError>;
 
-    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>);
+    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult;
 }
 
 pub trait NetRx<S: Storage> {
@@ -94,7 +94,7 @@ impl<S: Storage, N: NetTx<S>> NetTx<S> for &'_ mut N {
         (**self).lookup_neighbor_cache(now, ip)
     }
 
-    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) {
+    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult {
         (**self).transmit(now, dst, packet)
     }
 }
