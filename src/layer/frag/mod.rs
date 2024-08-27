@@ -22,11 +22,13 @@ pub enum FragError {
 pub trait Assembler {
     type Fragment: Fragment;
 
-    fn push(&mut self, now: Instant, fragment: Self::Fragment) -> Result<(), FragError>;
-
     type Assembled<'a>: Iterator<Item = (Range<usize>, Self::Fragment)>
     where
         Self: 'a;
 
-    fn assemble(&mut self) -> Option<Self::Assembled<'_>>;
+    fn assemble(
+        &mut self,
+        now: Instant,
+        fragment: Self::Fragment,
+    ) -> Result<Option<Self::Assembled<'_>>, FragError>;
 }

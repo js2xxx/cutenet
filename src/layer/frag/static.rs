@@ -37,7 +37,7 @@ impl<F: Fragment> Assembler for StaticAssembler<F> {
 
     type Assembled<'a> = StaticAssembled<F> where Self: 'a;
 
-    fn push(&mut self, now: Instant, frag: F) -> Result<(), FragError> {
+    fn assemble(&mut self, now: Instant, frag: F) -> Result<Option<StaticAssembled<F>>, FragError> {
         match &mut self.deadline {
             Some(deadline) if *deadline < now => return Err(FragError::Timeout),
             Some(_) => {}
@@ -65,17 +65,17 @@ impl<F: Fragment> Assembler for StaticAssembler<F> {
 
         self.fragments
             .insert(pos, frag)
-            .map_err(|_| FragError::BufferFull)
-    }
+            .map_err(|_| FragError::BufferFull)?;
 
-    fn assemble(&mut self) -> Option<StaticAssembled<F>> {
-        if self.assembled_len < self.total_len? {
-            return None;
-        }
-        (self.total_len, self.deadline) = (None, None);
-        Some(StaticAssembled {
-            assembler: mem::take(&mut self.fragments).into_iter(),
-            offset: 0,
+        Ok(match self.total_len {
+            Some(total_len) if total_len == self.assembled_len => {
+                (self.total_len, self.deadline) = (None, None);
+                Some(StaticAssembled {
+                    assembler: mem::take(&mut self.fragments).into_iter(),
+                    offset: 0,
+                })
+            }
+            _ => None,
         })
     }
 }
