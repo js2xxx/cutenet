@@ -51,6 +51,11 @@ pub use self::ip::{
         Packet as Ipv4Packet, HEADER_LEN as IPV4_HEADER_LEN,
     },
     v6::{
+        hbh::Header as Ipv6HopByHopHeader,
+        option::{
+            FailureType as Ipv6OptFailureType, Opt as Ipv6Opt, RouterAlert as Ipv6OptRouterAlert,
+            Type as Ipv6OptType,
+        },
         Cidr as Ipv6Cidr, Ipv6AddrExt, Ipv6Payload, Packet as Ipv6Packet,
         HEADER_LEN as IPV6_HEADER_LEN, MIN_MTU as IPV6_MIN_MTU,
     },

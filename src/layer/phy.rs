@@ -29,11 +29,6 @@ impl DeviceCaps {
         self.header_len += len;
         self
     }
-
-    pub fn with_mtu(mut self, mtu: usize) -> Self {
-        self.ip_mtu = mtu;
-        self
-    }
 }
 
 pub trait PhyRx<S: Storage> {

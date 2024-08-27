@@ -9,15 +9,15 @@ enum_with_unknown! {
     /// NDISC Option Type
     pub enum Type(u8) {
         /// Source Link-layer Address
-        SrcLLAddr = 0x1,
+        SrcLLAddr  = 0x1,
         /// Target Link-layer Address
-        DstLLAddr = 0x2,
+        DstLLAddr  = 0x2,
         /// Prefix Information
-        PrefixInfo   = 0x3,
+        PrefixInfo = 0x3,
         // /// Redirected Header
         // RedirectedHeader    = 0x4,
         /// MTU
-        Mtu                 = 0x5
+        Mtu        = 0x5
     }
 }
 
@@ -184,11 +184,8 @@ pub enum NdOption {
     Unknown { id: u8, data_len: u8 },
 }
 
-// impl Wire for NdOption {
-//     const EMPTY_PAYLOAD: bool = false;
-
 impl NdOption {
-    pub fn len(&self) -> usize {
+    pub fn buffer_len(&self) -> usize {
         match self {
             NdOption::SrcLLAddr(addr) | NdOption::DstLLAddr(addr) => {
                 let len = 2 + addr.len(); // Round up to next multiple of 8
@@ -248,7 +245,7 @@ impl NdOption {
     }
 
     pub fn build(self, data: &mut [u8]) -> &mut [u8] {
-        let len = self.len();
+        let len = self.buffer_len();
 
         let mut opt = RawOpt(data);
         opt.set_data_len((len / 8) as u8);

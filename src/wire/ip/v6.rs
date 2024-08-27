@@ -13,6 +13,12 @@ use crate::{
 #[path = "v6_cidr.rs"]
 mod cidr;
 
+#[path = "v6_hbh.rs"]
+pub mod hbh;
+
+#[path = "v6_opt.rs"]
+pub mod option;
+
 /// Minimum MTU required of all links supporting IPv6. See [RFC 8200 § 5].
 ///
 /// [RFC 8200 § 5]: https://tools.ietf.org/html/rfc8200#section-5

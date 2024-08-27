@@ -2,8 +2,8 @@ use core::{net::Ipv6Addr, time::Duration};
 
 use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
-use option::NdOption;
 
+use self::option::NdOption;
 use super::{field, Message, RawPacket};
 use crate::wire::{ip::IpAddrExt, prelude::*, Data, DataMut, RawHwAddr};
 
@@ -100,33 +100,33 @@ impl Nd {
     pub(super) fn len(&self) -> usize {
         match *self {
             Nd::RouterSolicit { lladdr } => match lladdr {
-                Some(addr) => field::UNUSED.end + { NdOption::SrcLLAddr(addr).len() },
+                Some(addr) => field::UNUSED.end + { NdOption::SrcLLAddr(addr).buffer_len() },
                 None => field::UNUSED.end,
             },
             Nd::RouterAdvert { lladdr, mtu, prefix_info, .. } => {
                 let mut offset = 0;
                 if let Some(lladdr) = lladdr {
-                    offset += NdOption::DstLLAddr(lladdr).len();
+                    offset += NdOption::DstLLAddr(lladdr).buffer_len();
                 }
                 if let Some(mtu) = mtu {
-                    offset += NdOption::Mtu(mtu).len();
+                    offset += NdOption::Mtu(mtu).buffer_len();
                 }
                 if let Some(prefix_info) = prefix_info {
-                    offset += NdOption::PrefixInfo(prefix_info).len();
+                    offset += NdOption::PrefixInfo(prefix_info).buffer_len();
                 }
                 field::RETRANS_TM.end + offset
             }
             Nd::NeighborSolicit { lladdr, .. } | Nd::NeighborAdvert { lladdr, .. } => {
                 let mut offset = field::TARGET_ADDR.end;
                 if let Some(lladdr) = lladdr {
-                    offset += NdOption::SrcLLAddr(lladdr).len();
+                    offset += NdOption::SrcLLAddr(lladdr).buffer_len();
                 }
                 offset
             }
             Nd::Redirect { lladdr, .. } => {
                 let mut offset = field::DEST_ADDR.end;
                 if let Some(lladdr) = lladdr {
-                    offset += NdOption::DstLLAddr(lladdr).len();
+                    offset += NdOption::DstLLAddr(lladdr).buffer_len();
                 }
                 offset
             }
