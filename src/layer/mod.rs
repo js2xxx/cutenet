@@ -1,3 +1,9 @@
+mod frag;
+pub use self::frag::{
+    r#static::{StaticAssembled, StaticAssembler},
+    Assembler, FragError, Fragment,
+};
+
 mod iface;
 #[cfg(any(feature = "std", feature = "alloc"))]
 pub use self::iface::loopback::{arc_loopback, ArcLoopbackRx, ArcLoopbackTx};
@@ -8,6 +14,9 @@ pub use self::iface::{
     neighbor::{NeighborCacheOption, NeighborLookupError, StaticNeighborCache},
     NetRx, NetTx,
 };
+
+mod phy;
+pub use self::phy::{DeviceCaps, PhyRx, PhyTx};
 
 mod route;
 pub use self::route::{
@@ -22,9 +31,6 @@ pub use self::socket::{
 
 mod stack;
 pub use self::stack::{dispatch, process};
-
-mod phy;
-pub use self::phy::{DeviceCaps, PhyRx, PhyTx};
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
