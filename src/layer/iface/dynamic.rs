@@ -60,8 +60,8 @@ macro_rules! dyn_net_tx {
                 self.data
             }
 
-            pub fn raw_eq(&self, other: &Self) -> bool {
-                self.data == other.data && self.vtable == other.vtable
+            pub fn vtable(&self) -> &'static DynNetTxVTable<S> {
+                self.vtable
             }
         }
 
@@ -275,8 +275,8 @@ macro_rules! dyn_net_rx {
                 self.data
             }
 
-            pub fn raw_eq(&self, other: &Self) -> bool {
-                self.data == other.data && self.vtable == other.vtable
+            pub fn vtable(&self) -> &'static DynNetRxVTable<S> {
+                self.vtable
             }
         }
 
