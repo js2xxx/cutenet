@@ -8,11 +8,14 @@ mod iface;
 #[cfg(any(feature = "std", feature = "alloc"))]
 pub use self::iface::loopback::{arc_loopback, ArcLoopbackRx, ArcLoopbackTx};
 pub use self::iface::{
-    dynamic::{DynNetRx, DynNetRxVtable, DynNetTx, DynNetTxVtable, LocalDynNetRx, LocalDynNetTx},
+    dynamic::{
+        DynNetRx, DynNetRxLocal, DynNetRxVTable, DynNetTx, DynNetTxLocal, DynNetTxVTable,
+        DynSyncNetTx,
+    },
     ethernet::{EthernetRx, EthernetTx},
     loopback::{StaticLoopback, DEVICE_CAPS as LOOPBACK_DEVICE_CAPS, IP as LOOPBACK_IP},
     neighbor::{NeighborCacheOption, NeighborLookupError, StaticNeighborCache},
-    NetRx, NetTx,
+    NetRx, NetTx, SyncNetTx,
 };
 
 mod phy;

@@ -44,6 +44,26 @@ pub trait NetTx<S: Storage> {
     fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult;
 }
 
+pub trait SyncNetTx<S: Storage>: Sync
+where
+    for<'a> &'a Self: NetTx<S>,
+{
+    fn fill_neighbor_cache(
+        mut self: &Self,
+        now: Instant,
+        entry: (IpAddr, HwAddr),
+        opt: NeighborCacheOption,
+    ) {
+        NetTx::fill_neighbor_cache(&mut self, now, entry, opt)
+    }
+
+    fn transmit(mut self: &Self, now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult {
+        NetTx::transmit(&mut self, now, dst, packet)
+    }
+}
+
+impl<S: Storage, N: Sync> SyncNetTx<S> for N where for<'a> &'a N: NetTx<S> {}
+
 pub trait NetRx<S: Storage> {
     fn hw_addr(&self) -> HwAddr;
 

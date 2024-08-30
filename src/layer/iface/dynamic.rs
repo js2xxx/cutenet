@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy)]
-pub struct DynNetTxVtable<S: Storage> {
+pub struct DynNetTxVTable<S: Storage> {
     pub hw_addr: unsafe fn(*const ()) -> HwAddr,
 
     pub device_caps: unsafe fn(*const ()) -> DeviceCaps,
@@ -35,24 +35,24 @@ pub struct DynNetTxVtable<S: Storage> {
     pub drop: unsafe fn(*mut ()),
 }
 
-impl<S: Storage> PartialEq for DynNetTxVtable<S> {
+impl<S: Storage> PartialEq for DynNetTxVTable<S> {
     fn eq(&self, other: &Self) -> bool {
         ptr::addr_eq(self, other)
     }
 }
 
 macro_rules! dyn_net_tx {
-    ($(#[$r:meta])* $t:ident $(#[$r2:meta])* / $($r3:tt)*) => {
+    ($(#[$r:meta])* $(@ $ref:tt)? $t:ident $(#[$r2:meta])* / [$($r3:tt)*]) => {
         $(#[$r])*
         #[derive(Debug)]
         pub struct $t<S: Storage + 'static> {
             data: *mut (),
-            vtable: &'static DynNetTxVtable<S>,
+            vtable: &'static DynNetTxVTable<S>,
         }
 
         impl<S: Storage> $t<S> {
             $(#[$r2])*
-            pub unsafe fn from_raw(data: *mut (), vtable: &'static DynNetTxVtable<S>) -> Self {
+            pub unsafe fn from_raw(data: *mut (), vtable: &'static DynNetTxVTable<S>) -> Self {
                 $t { data, vtable }
             }
 
@@ -67,7 +67,7 @@ macro_rules! dyn_net_tx {
 
         impl<S: Storage> Unpin for $t<S> {}
 
-        impl<S: Storage> NetTx<S> for $t<S> {
+        impl<S: Storage> NetTx<S> for $($ref)? $t<S> {
             fn hw_addr(&self) -> HwAddr {
                 // SAFETY: `self.data` and `self.vtable` is valid.
                 unsafe { (self.vtable.hw_addr)(self.data) }
@@ -130,27 +130,27 @@ macro_rules! dyn_net_tx {
             }
         }
 
-        impl<S: Storage, T: NetTx<S> + $($r3)*> From<&'static mut T> for $t<S> {
+        impl<S: Storage, T> From<&'static mut T> for $t<S> where $($r3)* {
             fn from(tx: &'static mut T) -> Self {
                 Self {
                     data: ptr::from_mut(tx).cast(),
-                    vtable: &DynNetTxVtable {
-                        hw_addr: |data| unsafe { (*data.cast::<T>()).hw_addr() },
-                        device_caps: |data| unsafe { (*data.cast::<T>()).device_caps() },
-                        has_ip: |data, ip| unsafe { (*data.cast::<T>()).has_ip(ip) },
-                        is_same_net: |data, ip| unsafe { (*data.cast::<T>()).is_same_net(ip) },
-                        is_broadcast: |data, ip| unsafe { (*data.cast::<T>()).is_broadcast(ip) },
+                    vtable: &DynNetTxVTable {
+                        hw_addr: |data| unsafe { ($($ref)? *data.cast::<T>()).hw_addr() },
+                        device_caps: |data| unsafe { ($($ref)? *data.cast::<T>()).device_caps() },
+                        has_ip: |data, ip| unsafe { ($($ref)? *data.cast::<T>()).has_ip(ip) },
+                        is_same_net: |data, ip| unsafe { ($($ref)? *data.cast::<T>()).is_same_net(ip) },
+                        is_broadcast: |data, ip| unsafe { ($($ref)? *data.cast::<T>()).is_broadcast(ip) },
                         has_solicited_node: |data, ip| unsafe {
-                            (*data.cast::<T>()).has_solicited_node(ip)
+                            ($($ref)? *data.cast::<T>()).has_solicited_node(ip)
                         },
                         fill_neighbor_cache: |data, now, entry, opt| unsafe {
-                            (*data.cast::<T>()).fill_neighbor_cache(now, entry, opt)
+                            ($($ref)? *data.cast::<T>()).fill_neighbor_cache(now, entry, opt)
                         },
                         lookup_neighbor_cache: |data, now, ip| unsafe {
-                            (*data.cast::<T>()).lookup_neighbor_cache(now, ip)
+                            ($($ref)? *data.cast::<T>()).lookup_neighbor_cache(now, ip)
                         },
                         transmit: |data, now, dst, packet| unsafe {
-                            (*data.cast::<T>()).transmit(now, dst, packet)
+                            ($($ref)? *data.cast::<T>()).transmit(now, dst, packet)
                         },
                         drop: |_| {},
                     },
@@ -159,27 +159,27 @@ macro_rules! dyn_net_tx {
         }
 
         #[cfg(any(feature = "std", feature = "alloc"))]
-        impl<S: Storage, T: NetTx<S> + $($r3)*> From<alloc::boxed::Box<T>> for $t<S> {
+        impl<S: Storage, T> From<alloc::boxed::Box<T>> for $t<S> where $($r3)* {
             fn from(tx: alloc::boxed::Box<T>) -> Self {
                 Self {
                     data: alloc::boxed::Box::into_raw(tx).cast(),
-                    vtable: &DynNetTxVtable {
-                        hw_addr: |data| unsafe { (*data.cast::<T>()).hw_addr() },
-                        device_caps: |data| unsafe { (*data.cast::<T>()).device_caps() },
-                        has_ip: |data, ip| unsafe { (*data.cast::<T>()).has_ip(ip) },
-                        is_same_net: |data, ip| unsafe { (*data.cast::<T>()).is_same_net(ip) },
-                        is_broadcast: |data, ip| unsafe { (*data.cast::<T>()).is_broadcast(ip) },
+                    vtable: &DynNetTxVTable {
+                        hw_addr: |data| unsafe { ($($ref)? *data.cast::<T>()).hw_addr() },
+                        device_caps: |data| unsafe { ($($ref)? *data.cast::<T>()).device_caps() },
+                        has_ip: |data, ip| unsafe { ($($ref)? *data.cast::<T>()).has_ip(ip) },
+                        is_same_net: |data, ip| unsafe { ($($ref)? *data.cast::<T>()).is_same_net(ip) },
+                        is_broadcast: |data, ip| unsafe { ($($ref)? *data.cast::<T>()).is_broadcast(ip) },
                         has_solicited_node: |data, ip| unsafe {
-                            (*data.cast::<T>()).has_solicited_node(ip)
+                            ($($ref)? *data.cast::<T>()).has_solicited_node(ip)
                         },
                         fill_neighbor_cache: |data, now, entry, opt| unsafe {
-                            (*data.cast::<T>()).fill_neighbor_cache(now, entry, opt)
+                            ($($ref)? *data.cast::<T>()).fill_neighbor_cache(now, entry, opt)
                         },
                         lookup_neighbor_cache: |data, now, ip| unsafe {
-                            (*data.cast::<T>()).lookup_neighbor_cache(now, ip)
+                            ($($ref)? *data.cast::<T>()).lookup_neighbor_cache(now, ip)
                         },
                         transmit: |data, now, dst, packet| unsafe {
-                            (*data.cast::<T>()).transmit(now, dst, packet)
+                            ($($ref)? *data.cast::<T>()).transmit(now, dst, packet)
                         },
                         drop: |t| drop(unsafe { alloc::boxed::Box::from_raw(t.cast::<T>()) }),
                     },
@@ -195,6 +195,23 @@ dyn_net_tx! {
     /// by threads.
     ///
     /// The design of this structure resembles to [`core::task::Waker`].
+    @& DynSyncNetTx
+
+    /// # Safety
+    ///
+    /// `data` must be a valid pointer to a struct that implements `NetTx<S> +
+    /// Send + Sync`, which is dynamically provided by `vtable`.
+
+    / [for<'a> &'a T: NetTx<S>, T: Send + Sync]
+}
+unsafe impl<S: Storage> Send for DynSyncNetTx<S> {}
+unsafe impl<S: Storage> Sync for DynSyncNetTx<S> {}
+
+dyn_net_tx! {
+    /// The trasmission endpoint of a dynamic network interface which can be transferred
+    /// between threads.
+    ///
+    /// The design of this structure resembles to [`core::task::Waker`].
     DynNetTx
 
     /// # Safety
@@ -202,28 +219,27 @@ dyn_net_tx! {
     /// `data` must be a valid pointer to a struct that implements `NetTx<S> +
     /// Send + Sync`, which is dynamically provided by `vtable`.
 
-    / Send + Sync
+    / [T: NetTx<S> + Send]
 }
 unsafe impl<S: Storage> Send for DynNetTx<S> {}
-unsafe impl<S: Storage> Sync for DynNetTx<S> {}
 
 dyn_net_tx! {
     /// The trasmission endpoint of a dynamic network interface which cannot be shared
     /// by threads.
     ///
     /// The design of this structure resembles to [`core::task::LocalWaker`].
-    LocalDynNetTx
+    DynNetTxLocal
 
     /// # Safety
     ///
     /// `data` must be a valid pointer to a struct that implements `NetTx<S>`, which
     /// is dynamically provided by `vtable`.
 
-    /
+    / [T: NetTx<S>]
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct DynNetRxVtable<S: Storage> {
+pub struct DynNetRxVTable<S: Storage> {
     pub hw_addr: unsafe fn(*const ()) -> HwAddr,
 
     pub device_caps: unsafe fn(*const ()) -> DeviceCaps,
@@ -234,7 +250,7 @@ pub struct DynNetRxVtable<S: Storage> {
     pub drop: unsafe fn(*mut ()),
 }
 
-impl<S: Storage> PartialEq for DynNetRxVtable<S> {
+impl<S: Storage> PartialEq for DynNetRxVTable<S> {
     fn eq(&self, other: &Self) -> bool {
         ptr::addr_eq(self, other)
     }
@@ -246,12 +262,12 @@ macro_rules! dyn_net_rx {
         #[derive(Debug)]
         pub struct $t<S: Storage + 'static> {
             pub data: *mut (),
-            pub vtable: &'static DynNetRxVtable<S>,
+            pub vtable: &'static DynNetRxVTable<S>,
         }
 
         impl<S: Storage> $t<S> {
             $(#[$r2])*
-            pub unsafe fn from_raw(data: *mut (), vtable: &'static DynNetRxVtable<S>) -> Self {
+            pub unsafe fn from_raw(data: *mut (), vtable: &'static DynNetRxVTable<S>) -> Self {
                 Self { data, vtable }
             }
 
@@ -284,7 +300,7 @@ macro_rules! dyn_net_rx {
             fn from(rx: &'static mut T) -> Self {
                 Self {
                     data: ptr::from_mut(rx).cast(),
-                    vtable: &DynNetRxVtable {
+                    vtable: &DynNetRxVTable {
                         hw_addr: |data| unsafe { (*data.cast::<T>()).hw_addr() },
                         device_caps: |data| unsafe { (*data.cast::<T>()).device_caps() },
                         receive: |data, now| unsafe { (*data.cast::<T>()).receive(now) },
@@ -299,7 +315,7 @@ macro_rules! dyn_net_rx {
             fn from(rx: alloc::boxed::Box<T>) -> Self {
                 Self {
                     data: alloc::boxed::Box::into_raw(rx).cast(),
-                    vtable: &DynNetRxVtable {
+                    vtable: &DynNetRxVTable {
                         hw_addr: |data| unsafe { (*data.cast::<T>()).hw_addr() },
                         device_caps: |data| unsafe { (*data.cast::<T>()).device_caps() },
                         receive: |data, now| unsafe { (*data.cast::<T>()).receive(now) },
@@ -312,8 +328,8 @@ macro_rules! dyn_net_rx {
 }
 
 dyn_net_rx! {
-    /// The reception endpoint of a dynamic network interface which can be shared
-    /// by threads.
+    /// The reception endpoint of a dynamic network interface which can be transferred
+    /// between threads.
     ///
     /// The design of this structure resembles to [`core::task::Waker`].
     DynNetRx
@@ -323,17 +339,16 @@ dyn_net_rx! {
     /// `data` must be a valid pointer to a struct that implements `NetRx<S> +
     /// Send + Sync`, which is dynamically provided by `vtable`.
 
-    / Send + Sync
+    / Send
 }
 unsafe impl<S: Storage> Send for DynNetRx<S> {}
-unsafe impl<S: Storage> Sync for DynNetRx<S> {}
 
 dyn_net_rx! {
     /// The reception endpoint of a dynamic network interface which cannot be
     /// shared by threads.
     ///
     /// The design of this structure resembles to [`core::task::LocalWaker`].
-    LocalDynNetRx
+    DynNetRxLocal
 
     /// # Safety
     ///
