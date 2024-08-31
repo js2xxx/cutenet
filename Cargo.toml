@@ -7,6 +7,11 @@ members = [
   "wire",
 ]
 
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
 [workspace.dependencies]
 # Local crates
 cutenet-config = {path = "config"}
@@ -28,20 +33,18 @@ features = ["log", "attributes"]
 version = "0.1"
 
 [package]
-edition = "2021"
-license = "MIT OR Apache-2.0"
 name = "cutenet"
-version = "0.1.0"
+
+edition.workspace = true
+license.workspace = true
+version.workspace = true
 
 [features]
+default = ["std", "alloc", "log"]
+
 alloc = [
   "cutenet-storage/alloc",
   "dep:crossbeam-queue",
-]
-default = [
-  "std",
-  "alloc",
-  "log",
 ]
 log = [
   "cutenet-wire/log",
@@ -61,10 +64,7 @@ cutenet-storage.workspace = true
 cutenet-wire.workspace = true
 
 # External crates
-bitflags.workspace = true
-byteorder.workspace = true
 crossbeam-queue = {workspace = true, optional = true}
 either.workspace = true
 heapless.workspace = true
-stable_deref_trait.workspace = true
 tracing = {workspace = true, optional = true}

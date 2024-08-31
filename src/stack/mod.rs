@@ -183,8 +183,7 @@ where
     }
     match router.loopback(now) {
         Some(mut loopback) => {
-            let (packet, ss) = packet(&loopback)?;
-
+            let (packet, _ss) = packet(&loopback)?;
             Ok(loopback.transmit(now, HwAddr::Ip, EthernetPayload::Ip(packet)))
         }
         None => Ok(TxResult::Dropped(TxDropReason::NoRoute)),
