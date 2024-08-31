@@ -36,7 +36,11 @@ dependencies = [
  "bitflags",
  "byteorder",
  "crossbeam-queue",
+ "cutenet-config",
+ "cutenet-error",
  "cutenet-macros",
+ "cutenet-storage",
+ "cutenet-wire",
  "either",
  "heapless",
  "stable_deref_trait",
@@ -44,11 +48,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "cutenet-config"
+version = "0.1.0"
+
+[[package]]
+name = "cutenet-error"
+version = "0.1.0"
+
+[[package]]
 name = "cutenet-macros"
 version = "0.1.0"
 dependencies = [
  "quote",
  "syn",
+]
+
+[[package]]
+name = "cutenet-storage"
+version = "0.1.0"
+dependencies = [
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "cutenet-wire"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "byteorder",
+ "cutenet-config",
+ "cutenet-error",
+ "cutenet-macros",
+ "cutenet-storage",
+ "either",
+ "heapless",
+ "tracing",
 ]
 
 [[package]]

@@ -25,9 +25,34 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 
-pub mod config;
-pub mod context;
-pub mod layer;
-pub mod storage;
 pub mod time;
-pub mod wire;
+
+pub use cutenet_config as config;
+pub use cutenet_error as error;
+pub use cutenet_storage as storage;
+pub use cutenet_wire as wire;
+
+pub mod frag;
+pub mod iface;
+pub mod phy;
+pub mod route;
+pub mod socket;
+pub mod stack;
+
+#[must_use]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
+pub enum TxResult {
+    /// Transmission successful.
+    Success,
+    /// Also success, but with a warning.
+    CongestionAlert,
+    /// Transmission failed & packet dropped.
+    Dropped(TxDropReason),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
+pub enum TxDropReason {
+    QueueFull,
+    NoRoute,
+    NeighborPending,
+}

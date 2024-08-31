@@ -1,0 +1,12 @@
+[package]
+edition = "2021"
+name = "cutenet-storage"
+version = "0.1.0"
+
+[features]
+alloc = ["stable_deref_trait/alloc"]
+default = ["std"]
+std = ["alloc", "stable_deref_trait/std"]
+
+[dependencies]
+stable_deref_trait.workspace = true

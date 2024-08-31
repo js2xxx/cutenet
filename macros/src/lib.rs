@@ -1,6 +1,8 @@
 #![feature(if_let_guard)]
 #![feature(let_chains)]
 
+use std::ops::ControlFlow;
+
 use quote::{
     __private::{Span, TokenStream},
     format_ident, quote, ToTokens,
@@ -13,7 +15,7 @@ const MSG_ONCE_VARIANT: &str =
     "`Wire` requires exactly one field with `#[wire]` or `#[no_payload]` in each variant";
 const MSG_ONCE_TY: &str = "`Wire` requires at most one type param with #[wire]";
 
-#[proc_macro_derive(Wire, attributes(wire, no_payload))]
+#[proc_macro_derive(Wire, attributes(wire, no_payload, prefix))]
 pub fn derive_wire(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     match derive_impl(parse_macro_input!(input as DeriveInput)) {
         Ok(tokens) => tokens.into(),
@@ -56,6 +58,7 @@ struct WireTys {
 impl WireTys {
     fn bounds<'a>(
         &self,
+        prefix: &Path,
         main_ident: &Ident,
         addi_list: impl IntoIterator<Item = &'a Type>,
     ) -> TokenStream {
@@ -67,14 +70,14 @@ impl WireTys {
         } = self;
         let wire_bound = wire_ty.as_ref().map(|wire_ty| {
             quote! {
-                #wire_ty: cutenet::wire:: #main_ident<#(#addi_list,)* Payload = #payload_ty>,
+                #wire_ty: #prefix:: #main_ident<#(#addi_list,)* Payload = #payload_ty>,
             }
         });
 
         quote! {
             #wire_bound
-            #payload_ty: cutenet::wire::Payload<NoPayload = #no_payload_ty>,
-            #no_payload_ty: cutenet::wire::NoPayload<Init = #payload_ty>,
+            #payload_ty: #prefix::Payload<NoPayload = #no_payload_ty>,
+            #no_payload_ty: #prefix::NoPayload<Init = #payload_ty>,
         }
     }
 }
@@ -143,13 +146,13 @@ fn derive_fields(
     Ok((this, before, after))
 }
 
-fn derive_variant(ident: &Ident, fields: Fields, msg: &str) -> Result<Branch> {
+fn derive_variant(prefix: &Path, ident: &Ident, fields: Fields, msg: &str) -> Result<Branch> {
     let (wire, before, after) = derive_fields(ident, fields, msg)?;
     match &wire.ident {
         IdentOrIndex::Ident(field) if wire.is_inner => Ok(Branch {
             payload_len: quote! {
                 #ident { #field, .. } =>
-                cutenet::wire::Wire::payload_len(#field)
+                #prefix::Wire::payload_len(#field)
             },
             substitute_pat: quote!(#ident { #(#before,)* #field, #(#after,)* } =>),
             substitute_expr: quote! {
@@ -176,7 +179,7 @@ fn derive_variant(ident: &Ident, fields: Fields, msg: &str) -> Result<Branch> {
         &IdentOrIndex::Index(_) if wire.is_inner => Ok(Branch {
             payload_len: quote! {
                 #ident (#(#before,)* field, ..) =>
-                cutenet::wire::Wire::payload_len(field)
+                #prefix::Wire::payload_len(field)
             },
             substitute_pat: quote!(#ident ( #(#before,)* field, #(#after,)* ) =>),
             substitute_expr: quote! {
@@ -203,13 +206,13 @@ fn derive_variant(ident: &Ident, fields: Fields, msg: &str) -> Result<Branch> {
     }
 }
 
-fn derive_struct(ident: &Ident, data: DataStruct) -> Result<Vec<Branch>> {
-    derive_variant(ident, data.fields, MSG_ONCE_STRUCT).map(|branch| vec![branch])
+fn derive_struct(prefix: &Path, ident: &Ident, data: DataStruct) -> Result<Vec<Branch>> {
+    derive_variant(prefix, ident, data.fields, MSG_ONCE_STRUCT).map(|branch| vec![branch])
 }
 
-fn derive_enum(ident: &Ident, data: DataEnum) -> Result<Vec<Branch>> {
+fn derive_enum(prefix: &Path, ident: &Ident, data: DataEnum) -> Result<Vec<Branch>> {
     let to_tokens = |variant: Variant| -> Result<Branch> {
-        derive_variant(&variant.ident, variant.fields, MSG_ONCE_VARIANT).map(
+        derive_variant(prefix, &variant.ident, variant.fields, MSG_ONCE_VARIANT).map(
             |Branch {
                  payload_len,
                  substitute_pat,
@@ -268,9 +271,24 @@ fn derive_generics(generics: &mut Generics) -> Result<(Generics, WireTys)> {
 }
 
 fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
+    let prefix = input.attrs.iter().try_for_each(|attr| {
+        if attr.meta.path().is_ident("prefix") {
+            return ControlFlow::Break(attr.meta.require_list().map(|meta| {
+                let value = &meta.tokens;
+                parse_quote!(#value)
+            }));
+        }
+        ControlFlow::Continue(())
+    });
+
+    let prefix: syn::Path = match prefix {
+        ControlFlow::Break(prefix) => prefix?,
+        _ => parse_quote!(cutenet::wire),
+    };
+
     let branches = match input.data {
-        syn::Data::Struct(data) => derive_struct(&input.ident, data)?,
-        syn::Data::Enum(data) => derive_enum(&input.ident, data)?,
+        syn::Data::Struct(data) => derive_struct(&prefix, &input.ident, data)?,
+        syn::Data::Enum(data) => derive_enum(&prefix, &input.ident, data)?,
         syn::Data::Union(_) => return Err(Error::new_spanned(input.ident, MSG_UNION)),
     };
 
@@ -289,9 +307,9 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
         no_payload_ty,
     } = &wire_tys;
 
-    let main_bounds = wire_tys.bounds(&Ident::new("Wire", Span::call_site()), []);
+    let main_bounds = wire_tys.bounds(&prefix, &Ident::new("Wire", Span::call_site()), []);
     let main = quote! {
-        impl #gimpl cutenet::wire::Wire for #ident #gty where #gwhere #main_bounds {
+        impl #gimpl #prefix::Wire for #ident #gty where #gwhere #main_bounds {
             type Payload = #payload_ty;
 
             fn payload_len(&self) -> usize {
@@ -310,10 +328,10 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
                 if let Some(wire_ty) = wire_ty
                     && wire_ty == ident =>
             {
-                parse_quote!(<#ident as cutenet::wire::WireSubstitute<#sub_ty>>::Output)
+                parse_quote!(<#ident as #prefix::WireSubstitute<#sub_ty>>::Output)
             }
             GenericParam::Type(TypeParam { ident, .. }) if no_payload_ty == ident => {
-                parse_quote!(<#sub_ty as cutenet::wire::Payload>::NoPayload)
+                parse_quote!(<#sub_ty as #prefix::Payload>::NoPayload)
             }
             GenericParam::Type(TypeParam { ident, .. }) => parse_quote!(#ident),
             GenericParam::Const(ConstParam { ident, .. }) => parse_quote!(#ident),
@@ -329,15 +347,15 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
     let substitute_pat = branches.iter().map(|b| &b.substitute_pat);
     let substitute_expr = branches.iter().map(|b| &b.substitute_expr);
 
-    let sub_bounds = wire_tys.bounds(&Ident::new("WireSubstitute", Span::call_site()), [
+    let sub_bounds = wire_tys.bounds(&prefix, &Ident::new("WireSubstitute", Span::call_site()), [
         &parse_quote!(#sub_ty),
     ]);
     let substitute = quote! {
-        impl #gimpl cutenet::wire::WireSubstitute<#sub_ty> for #ident #gty
+        impl #gimpl #prefix::WireSubstitute<#sub_ty> for #ident #gty
         where
             #gwhere
             #sub_bounds
-            #sub_ty: cutenet::wire::Payload,
+            #sub_ty: #prefix::Payload,
         {
             type Output = #ident <#(#sub_generics,)*>;
 
@@ -348,8 +366,8 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
             ) -> Self::Output
             where
                 F: FnOnce(#payload_ty) -> #sub_ty,
-                G: FnOnce(<#payload_ty as cutenet::wire::Payload>::NoPayload)
-                    -> <#sub_ty as cutenet::wire::Payload>::NoPayload,
+                G: FnOnce(<#payload_ty as #prefix::Payload>::NoPayload)
+                    -> <#sub_ty as #prefix::Payload>::NoPayload,
             {
                 match self { #(#substitute_pat #substitute_expr,)* }
             }
