@@ -40,7 +40,7 @@ pub const IP: [IpCidr; 2] = [
 
 pub const DEVICE_CAPS: DeviceCaps = DeviceCaps {
     header_len: 0,
-    ip_mtu: 65536,
+    mtu: 65536,
     rx_checksums: Checksums::IGNORE,
     tx_checksums: Checksums::IGNORE,
 };

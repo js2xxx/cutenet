@@ -2,12 +2,12 @@ use core::net::{IpAddr, Ipv6Addr};
 
 use either::Either;
 
-use super::dispatch_impl;
 use crate::{
     iface::{neighbor::CacheOption, NetTx},
     phy::DeviceCaps,
     route::Router,
     socket::{AllSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet},
+    stack::RouterExt,
     storage::{Buf, ReserveBuf, Storage},
     time::Instant,
     wire::*,
@@ -87,10 +87,9 @@ where
                     };
 
                     // The result is ignored here because it is already recorded in `ss`.
-                    let _ =
-                        dispatch_impl(now, router, addr.map(Into::into), IpProtocol::Tcp, |_| {
-                            Ok::<_, ()>((IpPacket::V6(packet), ss))
-                        });
+                    let _ = router.dispatch(now, addr.map(Into::into), IpProtocol::Tcp, |_| {
+                        Ok::<_, ()>((IpPacket::V6(packet), ss))
+                    });
                 })),
                 SocketRecv::NotReceived(mut tcp) => SocketRecv::NotReceived({
                     tcp.payload.prepend(tcp.header_len());

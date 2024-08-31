@@ -50,3 +50,19 @@ pub trait Router<S: Storage> {
 
     fn device(&mut self, now: Instant, hw: HwAddr) -> Option<Self::Tx<'_>>;
 }
+
+impl<S: Storage, R: Router<S>> Router<S> for &mut R {
+    type Tx<'a> = R::Tx<'a> where Self: 'a;
+
+    fn loopback(&mut self, now: Instant) -> Option<Self::Tx<'_>> {
+        R::loopback(self, now)
+    }
+
+    fn route(&mut self, now: Instant, query: Query) -> Action<Self::Tx<'_>> {
+        R::route(self, now, query)
+    }
+
+    fn device(&mut self, now: Instant, hw: HwAddr) -> Option<Self::Tx<'_>> {
+        R::device(self, now, hw)
+    }
+}

@@ -3,7 +3,7 @@ use core::{fmt, net::SocketAddr, num::NonZero};
 use crate::{
     iface::NetTx,
     route::Router,
-    stack::dispatch,
+    stack::RouterExt,
     storage::{Buf, Storage},
     time::Instant,
     wire::*,
@@ -31,7 +31,7 @@ impl core::error::Error for BindError {}
 pub enum SendErrorKind {
     Unaddressable,
     BufferTooSmall,
-    BufferExceedsMtu(usize),
+    PacketExceedsMtu(usize),
     Unbound,
     NotConnected,
 }
@@ -41,7 +41,7 @@ impl fmt::Display for SendErrorKind {
         match self {
             SendErrorKind::Unaddressable => write!(f, "unaddressable"),
             SendErrorKind::BufferTooSmall => write!(f, "buffer too small"),
-            SendErrorKind::BufferExceedsMtu(mtu) => write!(f, "buffer exceeds MTU: {}", mtu),
+            SendErrorKind::PacketExceedsMtu(mtu) => write!(f, "packet exceeds MTU: {}", mtu),
             SendErrorKind::Unbound => write!(f, "unbound"),
             SendErrorKind::NotConnected => write!(f, "not connected"),
         }
@@ -49,7 +49,6 @@ impl fmt::Display for SendErrorKind {
 }
 crate::error::make_error!(SendErrorKind => pub SendError);
 
-/// Error returned by [`Socket::recv`]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RecvError {
     Exhausted,
@@ -166,7 +165,7 @@ impl Socket {
     pub fn send_to_with<S, R>(
         &mut self,
         now: Instant,
-        router: R,
+        mut router: R,
         dst: SocketAddr,
         data: impl FnOnce(&R::Tx<'_>) -> Buf<S>,
     ) -> Result<TxResult, SendError<Option<Buf<S>>>>
@@ -188,7 +187,7 @@ impl Socket {
 
         let ip = Ends { src, dst }.map(|s| s.ip());
 
-        dispatch(now, router, ip, IpProtocol::Udp, |tx| {
+        router.dispatch(now,  ip, IpProtocol::Udp, |tx| {
             let data = data(tx);
 
             let buffer_len = data.len()
@@ -196,15 +195,16 @@ impl Socket {
                 + match dst {
                     SocketAddr::V4(_) => IPV4_HEADER_LEN,
                     SocketAddr::V6(_) => IPV6_HEADER_LEN,
-                };
+                }
+                + tx.device_caps().header_len;
 
             if buffer_len > data.capacity() {
                 return Err(SendErrorKind::BufferTooSmall.with(Some(data)));
             }
 
-            let mtu = tx.device_caps().ip_mtu;
+            let mtu = tx.device_caps().mtu;
             if buffer_len > mtu {
-                return Err(SendErrorKind::BufferExceedsMtu(mtu).with(Some(data)));
+                return Err(SendErrorKind::PacketExceedsMtu(mtu).with(Some(data)));
             }
 
             let payload = |data| {

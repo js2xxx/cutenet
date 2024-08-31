@@ -8,7 +8,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeviceCaps {
     pub header_len: usize,
-    pub ip_mtu: usize,
+    pub mtu: usize,
 
     pub rx_checksums: Checksums,
     pub tx_checksums: Checksums,
@@ -18,7 +18,7 @@ impl DeviceCaps {
     pub const fn new() -> Self {
         DeviceCaps {
             header_len: 0,
-            ip_mtu: 1500,
+            mtu: 1500,
 
             rx_checksums: Checksums::new(),
             tx_checksums: Checksums::new(),
