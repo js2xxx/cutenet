@@ -187,7 +187,7 @@ impl Socket {
 
         let ip = Ends { src, dst }.map(|s| s.ip());
 
-        router.dispatch(now,  ip, IpProtocol::Udp, |tx| {
+        router.dispatch(now, ip, IpProtocol::Udp, |tx| {
             let data = data(tx);
 
             let buffer_len = data.len()
@@ -209,7 +209,7 @@ impl Socket {
 
             let payload = |data| {
                 uncheck_build!(UdpPacket {
-                    port: Ends { src: src.port(), dst: dst.port() },
+                    port: Ends { src, dst }.map(|s| s.port()),
                     payload: data,
                 }
                 .build(&(tx.device_caps().tx_checksums, ip)))
@@ -217,14 +217,14 @@ impl Socket {
 
             let packet = match (src, dst) {
                 (SocketAddr::V4(src), SocketAddr::V4(dst)) => IpPacket::V4(Ipv4Packet {
-                    addr: Ends { src: *src.ip(), dst: *dst.ip() },
+                    addr: Ends { src, dst }.map(|s| *s.ip()),
                     next_header: IpProtocol::Udp,
                     hop_limit: self.hop_limit,
                     frag_info: None,
                     payload: payload(data),
                 }),
                 (SocketAddr::V6(src), SocketAddr::V6(dst)) => IpPacket::V6(Ipv6Packet {
-                    addr: Ends { src: *src.ip(), dst: *dst.ip() },
+                    addr: Ends { src, dst }.map(|s| *s.ip()),
                     next_header: IpProtocol::Udp,
                     hop_limit: self.hop_limit,
                     payload: payload(data),
