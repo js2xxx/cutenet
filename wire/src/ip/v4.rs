@@ -181,11 +181,13 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
         let packet = RawPacket(raw.data());
 
         let len = packet.0.len();
+        let header_len = packet.header_len();
         let total_len = packet.total_len();
+
         if len < field::DST_ADDR.end
-            || len < usize::from(packet.header_len())
-            || u16::from(packet.header_len()) > total_len
-            || len < usize::from(packet.total_len())
+            || len < usize::from(header_len)
+            || u16::from(header_len) > total_len
+            || len < usize::from(total_len)
         {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
@@ -212,7 +214,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
 
             payload: T::parse(
                 &[cx, &(generic_addr, next_header)],
-                raw.pop(HEADER_LEN..usize::from(total_len))?,
+                raw.pop(usize::from(header_len)..usize::from(total_len))?,
             )?,
         })
     }
@@ -271,6 +273,39 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             }
             Ok(())
         })
+    }
+}
+
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Lax<Packet<T>> {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
+        let packet = RawPacket(raw.data());
+
+        let len = packet.0.len();
+        if len < HEADER_LEN {
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
+        }
+
+        if packet.version() != 4 {
+            return Err(ParseErrorKind::VersionInvalid.with(raw));
+        }
+
+        let generic_addr = packet.addr().map(IpAddr::V4);
+        let next_header = packet.next_header();
+
+        Ok(Lax(Packet {
+            addr: packet.addr(),
+            next_header,
+            hop_limit: packet.hop_limit(),
+            frag_info: packet.more_frags().then(|| FragInfo {
+                offset: packet.frag_offset(),
+                key: packet.key(),
+            }),
+
+            payload: T::parse(
+                &[cx, &(generic_addr, next_header)],
+                raw.pop(HEADER_LEN..len)?,
+            )?,
+        }))
     }
 }
 

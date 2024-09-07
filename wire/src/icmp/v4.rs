@@ -247,12 +247,12 @@ pub enum Packet<#[wire] T> {
     DstUnreachable {
         reason: DstUnreachable,
         #[wire]
-        payload: Ipv4Packet<T>,
+        payload: Lax<Ipv4Packet<T>>,
     },
     TimeExceeded {
         reason: TimeExceeded,
         #[wire]
-        payload: Ipv4Packet<T>,
+        payload: Lax<Ipv4Packet<T>>,
     },
 }
 
@@ -284,12 +284,12 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
 
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Ipv4Packet::parse(&(), raw.pop(field::UNUSED.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len)?)?,
             }),
 
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Ipv4Packet::parse(&(), raw.pop(field::UNUSED.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len)?)?,
             }),
 
             _ => Err(ParseErrorKind::ProtocolUnknown.with(raw)),
@@ -321,6 +321,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             Ok(())
         };
 
+        let opt = PayloadPush::Truncate(usize::MAX);
         match self {
             Packet::EchoRequest { ident, seq_no, payload } => {
                 payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
@@ -347,7 +348,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                 })
             }
             Packet::DstUnreachable { reason, payload } => {
-                (payload.build(&())?).push(field::UNUSED.end, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, opt, |buf| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::DstUnreachable);
@@ -357,7 +358,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                 })
             }
             Packet::TimeExceeded { reason, payload } => {
-                (payload.build(&())?).push(field::UNUSED.end, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, opt, |buf| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::TimeExceeded);

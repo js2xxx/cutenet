@@ -266,6 +266,34 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     }
 }
 
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Lax<Packet<T>> {
+    fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
+        let packet = RawPacket(raw.data());
+
+        let len = packet.0.len();
+        if len < field::DST_ADDR.end {
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
+        }
+        if packet.version() != 6 {
+            return Err(ParseErrorKind::VersionInvalid.with(raw));
+        }
+
+        let generic_addr = packet.addr().map(IpAddr::V6);
+        let next_header = packet.next_header();
+
+        Ok(Lax(Packet {
+            addr: packet.addr(),
+            next_header,
+            hop_limit: packet.hop_limit(),
+
+            payload: T::parse(
+                &[cx, &(generic_addr, next_header)],
+                raw.pop(HEADER_LEN..len)?,
+            )?,
+        }))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Wire)]
 #[prefix(crate)]
 pub enum Ipv6Payload<#[wire] T, #[no_payload] U> {

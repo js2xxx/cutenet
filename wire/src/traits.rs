@@ -24,6 +24,8 @@ pub trait Payload {
 pub trait NoPayload {
     type Init: Payload<NoPayload = Self>;
 
+    fn reset(self) -> Self;
+
     fn reserve(self, size: usize) -> Self;
 
     fn init(self) -> Self::Init;
@@ -36,6 +38,8 @@ pub enum PayloadPush {
 }
 
 pub trait PayloadBuild: Payload + Sized {
+    fn capacity(&self) -> usize;
+
     fn push<F>(self, size: usize, set: F) -> Result<Self, BuildError<Self>>
     where
         F: FnOnce(&mut [u8]) -> Result<(), BuildErrorKind>;
@@ -43,6 +47,10 @@ pub trait PayloadBuild: Payload + Sized {
     fn push_with<F>(self, size: usize, opt: PayloadPush, set: F) -> Result<Self, BuildError<Self>>
     where
         F: FnOnce(&mut [u8]) -> Result<(), BuildErrorKind>;
+
+    fn prepend(self, size: usize) -> Result<Self, BuildError<Self>> {
+        self.push(size, |_| Ok(()))
+    }
 }
 
 pub trait PayloadParse: Payload + Sized {
@@ -213,6 +221,10 @@ mod holder {
     impl NoPayload for NoPayloadHolder {
         type Init = PayloadHolder;
 
+        fn reset(self) -> Self {
+            self
+        }
+
         fn reserve(self, _size: usize) -> Self {
             self
         }
@@ -223,6 +235,10 @@ mod holder {
     }
 
     impl PayloadBuild for PayloadHolder {
+        fn capacity(&self) -> usize {
+            usize::MAX
+        }
+
         fn push<F>(self, size: usize, _set: F) -> Result<Self, BuildError<Self>>
         where
             F: FnOnce(&mut [u8]) -> Result<(), BuildErrorKind>,
@@ -277,6 +293,10 @@ mod slice {
     impl<'a> NoPayload for ZeroSlice<'a> {
         type Init = &'a [u8];
 
+        fn reset(self) -> Self {
+            self
+        }
+
         fn reserve(self, _size: usize) -> Self {
             self
         }
@@ -323,6 +343,10 @@ mod buf {
     impl<S: Storage> NoPayload for ReserveBuf<S> {
         type Init = Buf<S>;
 
+        fn reset(self) -> Self {
+            self.reset()
+        }
+
         fn reserve(self, size: usize) -> Self {
             self.add_reservation(size)
         }
@@ -333,24 +357,15 @@ mod buf {
     }
 
     impl<S: Storage> PayloadBuild for Buf<S> {
-        fn push<F>(mut self, size: usize, set: F) -> Result<Self, BuildError<Self>>
+        fn capacity(&self) -> usize {
+            self.capacity()
+        }
+
+        fn push<F>(self, size: usize, set: F) -> Result<Self, BuildError<Self>>
         where
             F: FnOnce(&mut [u8]) -> Result<(), BuildErrorKind>,
         {
-            if self.try_prepend(size).is_none() {
-                if !self.try_move((size - self.head_len()) as isize) {
-                    return Err(BuildErrorKind::HeadroomTooShort.with(self));
-                }
-                self.prepend(size);
-            }
-
-            match set(self.data_mut()) {
-                Ok(()) => Ok(self),
-                Err(e) => {
-                    self.slice_into(size..);
-                    Err(e.with(self))
-                }
-            }
+            self.push_with(size, PayloadPush::Error(usize::MAX), set)
         }
 
         fn push_with<F>(
@@ -371,7 +386,32 @@ mod buf {
             let new_payload_len = new_len - size;
             self.slice_into(..new_payload_len);
 
-            self.push(size, set)
+            if self.try_prepend(size).is_none() {
+                let offset = (size - self.head_len()) as isize;
+                match opt {
+                    PayloadPush::Truncate(_) => self.move_truncate(offset),
+                    PayloadPush::Error(_) if self.try_move(offset) => {}
+                    PayloadPush::Error(_) => {
+                        return Err(BuildErrorKind::HeadroomTooShort.with(self));
+                    }
+                }
+                Buf::prepend(&mut self, size);
+            }
+
+            match set(self.data_mut()) {
+                Ok(()) => Ok(self),
+                Err(e) => {
+                    self.slice_into(size..);
+                    Err(e.with(self))
+                }
+            }
+        }
+
+        fn prepend(mut self, size: usize) -> Result<Self, BuildError<Self>> {
+            match self.try_prepend(size) {
+                Some(_) => Ok(self),
+                None => Err(BuildErrorKind::HeadroomTooShort.with(self)),
+            }
         }
     }
 

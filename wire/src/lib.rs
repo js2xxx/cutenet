@@ -97,7 +97,7 @@ mod field {
 mod prelude {
     pub use cutenet_macros::Wire;
 
-    pub use super::{error::*, traits::*};
+    pub use super::{error::*, traits::*, Lax};
 }
 
 bitflags::bitflags! {
@@ -132,4 +132,18 @@ impl Checksums {
     }
 
     pub const IGNORE: Self = Checksums::empty();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, cutenet_macros::Wire)]
+#[prefix(crate)]
+pub struct Lax<#[wire] T>(#[wire] pub T);
+
+impl<T: WireBuild<Payload = P>, P: PayloadBuild> WireBuild for Lax<T> {
+    fn buffer_len(&self) -> usize {
+        self.0.buffer_len()
+    }
+
+    fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
+        self.0.build(cx)
+    }
 }
