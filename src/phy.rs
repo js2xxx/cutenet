@@ -1,9 +1,5 @@
 use super::TxResult;
-use crate::{
-    storage::{Buf, Storage},
-    time::Instant,
-    wire::{Checksums, HwAddr},
-};
+use crate::{time::Instant, wire::*};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeviceCaps {
@@ -31,18 +27,18 @@ impl DeviceCaps {
     }
 }
 
-pub trait PhyRx<S: Storage> {
+pub trait PhyRx<P: Payload> {
     fn hw_addr(&self) -> HwAddr;
 
     fn caps(&self) -> DeviceCaps;
 
-    fn receive(&mut self, now: Instant) -> Option<Buf<S>>;
+    fn receive(&mut self, now: Instant) -> Option<P>;
 }
 
-pub trait PhyTx<S: Storage> {
+pub trait PhyTx<P: Payload> {
     fn hw_addr(&self) -> HwAddr;
 
     fn caps(&self) -> DeviceCaps;
 
-    fn transmit(&mut self, now: Instant, buf: Buf<S>) -> TxResult;
+    fn transmit(&mut self, now: Instant, payload: P) -> TxResult;
 }

@@ -6,23 +6,22 @@ use crate::{
     route::Router,
     socket::{AllSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet},
     stack::RouterExt,
-    storage::{Buf, ReserveBuf, Storage},
     time::Instant,
     wire::*,
 };
 
-pub(super) fn process<S, R, A>(
+pub(super) fn process<P, R, A>(
     now: Instant,
     device_caps: &DeviceCaps,
     router: &mut R,
     sockets: &mut A,
     hw: Ends<HwAddr>,
-    mut packet: Ipv4Packet<Buf<S>>,
-) -> SocketRecv<IpPacket<Buf<S>>, ()>
+    mut packet: Ipv4Packet<P>,
+) -> SocketRecv<IpPacket<P>, ()>
 where
-    S: Storage,
-    R: Router<S>,
-    A: AllSocketSet<S>,
+    P: PayloadParse + PayloadBuild,
+    R: Router<P>,
+    A: AllSocketSet<P>,
 {
     let v4_addr = packet.addr;
     let addr = v4_addr.map(IpAddr::V4);
@@ -45,9 +44,8 @@ where
         }
         Ipv4Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
             SocketRecv::Received(()) => SocketRecv::Received(()),
-            SocketRecv::NotReceived(mut udp) => SocketRecv::NotReceived({
-                udp.payload.prepend(UDP_HEADER_LEN);
-                packet.payload = udp.payload;
+            SocketRecv::NotReceived(udp) => SocketRecv::NotReceived({
+                packet.payload = uncheck_build!(udp.payload.prepend(UDP_HEADER_LEN));
                 IpPacket::V4(packet)
             }),
         },
@@ -68,25 +66,25 @@ where
                     Ok::<_, ()>((IpPacket::V4(packet), ss))
                 });
             })),
-            SocketRecv::NotReceived(mut tcp) => SocketRecv::NotReceived({
-                tcp.payload.prepend(tcp.buffer_len() - tcp.payload_len());
-                packet.payload = tcp.payload;
+            SocketRecv::NotReceived(tcp) => SocketRecv::NotReceived({
+                let header_len = tcp.header_len();
+                packet.payload = uncheck_build!(tcp.payload.prepend(header_len));
                 IpPacket::V4(packet)
             }),
         },
     }
 }
 
-fn process_icmp<S, R>(
+fn process_icmp<P, R>(
     now: Instant,
     device_caps: &DeviceCaps,
     router: &mut R,
     hw: Ends<HwAddr>,
     addr: Ends<Ipv4Addr>,
-    packet: Icmpv4Packet<Buf<S>>,
+    packet: Icmpv4Packet<P>,
 ) where
-    S: Storage,
-    R: Router<S>,
+    P: PayloadBuild,
+    R: Router<P>,
 {
     match packet {
         Icmpv4Packet::EchoRequest { ident, seq_no, payload }
@@ -108,18 +106,15 @@ fn process_icmp<S, R>(
     );
 }
 
-pub(super) fn icmp_reply<S: Storage>(
+pub(super) fn icmp_reply<P>(
     device_caps: &DeviceCaps,
     addr: Ends<Ipv4Addr>,
-    icmp: Icmpv4Packet<Buf<S>>,
-) -> EthernetPayload<Buf<S>, ReserveBuf<S>> {
-    let (icmp, mut buf) = icmp.sub_payload_ref(|b| PayloadHolder(b.len()));
-    let packet_len = icmp.buffer_len();
-    let header_len = packet_len - buf.len();
-
-    if let Some(delta) = (IPV4_HEADER_LEN + header_len).checked_sub(buf.head_len()) {
-        buf.move_truncate(delta as isize);
-    }
+    icmp: Icmpv4Packet<P>,
+) -> EthernetPayload<P, P::NoPayload>
+where
+    P: PayloadBuild,
+{
+    let (icmp, buf) = icmp.sub_payload_ref(|b| PayloadHolder(b.len()));
 
     EthernetPayload::Ip(IpPacket::V4(Ipv4Packet {
         addr,

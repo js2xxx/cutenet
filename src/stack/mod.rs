@@ -9,21 +9,18 @@ use super::{
     socket::{AllSocketSet, RawSocketSet, SocketRecv, SocketState},
     TxDropReason, TxResult,
 };
-use crate::{
-    storage::{Buf, Storage},
-    time::Instant,
-    wire::*,
-};
+use crate::{time::Instant, wire::*};
 
 mod arp;
 mod ipv4;
 mod ipv6;
 
-pub trait RouterExt<S: Storage>: Router<S> + Sized {
+pub trait RouterExt<P: Payload>: Router<P> + Sized {
     fn process<Rx, A>(&mut self, now: Instant, mut rx: Rx, mut sockets: A) -> bool
     where
-        Rx: NetRx<S>,
-        A: AllSocketSet<S>,
+        P: PayloadParse + PayloadBuild,
+        Rx: NetRx<P>,
+        A: AllSocketSet<P>,
     {
         let Some((src_hw, payload)) = rx.receive(now) else {
             return false;
@@ -57,14 +54,14 @@ pub trait RouterExt<S: Storage>: Router<S> + Sized {
                             let addr = packet.addr.reverse();
                             ipv4::icmp_reply(&tx.device_caps(), addr, Icmpv4Packet::TimeExceeded {
                                 reason: Icmpv4TimeExceeded::TtlExpired,
-                                payload: packet,
+                                payload: Lax(packet),
                             })
                         }
                         IpPacket::V6(packet) => {
                             let addr = packet.addr.reverse();
                             ipv6::icmp_reply(&tx.device_caps(), addr, Icmpv6Packet::TimeExceeded {
                                 reason: Icmpv6TimeExceeded::HopLimitExceeded,
-                                payload: packet,
+                                payload: Lax(packet),
                             })
                         }
                     })
@@ -87,7 +84,7 @@ pub trait RouterExt<S: Storage>: Router<S> + Sized {
                             packet.addr.reverse(),
                             Icmpv4Packet::DstUnreachable {
                                 reason: Icmpv4DstUnreachable::HostUnreachable,
-                                payload: packet,
+                                payload: Lax(packet),
                             },
                         ),
                         IpPacket::V6(packet) => ipv6::icmp_reply(
@@ -95,7 +92,7 @@ pub trait RouterExt<S: Storage>: Router<S> + Sized {
                             packet.addr.reverse(),
                             Icmpv6Packet::DstUnreachable {
                                 reason: Icmpv6DstUnreachable::NoRoute,
-                                payload: packet,
+                                payload: Lax(packet),
                             },
                         ),
                     });
@@ -124,7 +121,7 @@ pub trait RouterExt<S: Storage>: Router<S> + Sized {
                     let addr = packet.addr.reverse();
                     let icmp = Icmpv4Packet::DstUnreachable {
                         reason: Icmpv4DstUnreachable::ProtoUnreachable,
-                        payload: packet,
+                        payload: Lax(packet),
                     };
                     ipv4::icmp_reply(&device_caps, addr, icmp)
                 }
@@ -133,7 +130,7 @@ pub trait RouterExt<S: Storage>: Router<S> + Sized {
                     let icmp = Icmpv6Packet::ParamProblem {
                         reason: Icmpv6ParamProblem::UnrecognizedNxtHdr,
                         pointer: packet.header_len() as u32,
-                        payload: packet,
+                        payload: Lax(packet),
                     };
                     ipv6::icmp_reply(&device_caps, addr, icmp)
                 }
@@ -150,9 +147,10 @@ pub trait RouterExt<S: Storage>: Router<S> + Sized {
         now: Instant,
         addr: Ends<IpAddr>,
         next_header: IpProtocol,
-        packet: impl FnOnce(&Self::Tx<'_>) -> Result<(IpPacket<Buf<S>>, Ss), E>,
+        packet: impl FnOnce(&Self::Tx<'_>) -> Result<(IpPacket<P>, Ss), E>,
     ) -> Result<TxResult, E>
     where
+        P: PayloadBuild,
         Ss: SocketState,
     {
         match self.route(now, Query { addr, next_header }) {
@@ -172,18 +170,18 @@ pub trait RouterExt<S: Storage>: Router<S> + Sized {
         }
     }
 }
-impl<S: Storage, R: Router<S>> RouterExt<S> for R {}
+impl<P: Payload, R: Router<P>> RouterExt<P> for R {}
 
-fn transmit<S, Tx, Ss>(
+fn transmit<P, Tx, Ss>(
     now: Instant,
     next_hop: IpAddr,
     mut tx: Tx,
-    packet: IpPacket<Buf<S>>,
+    packet: IpPacket<P>,
     ss: Ss,
 ) -> TxResult
 where
-    S: Storage,
-    Tx: NetTx<S>,
+    P: PayloadBuild,
+    Tx: NetTx<P>,
     Ss: SocketState,
 {
     let ip = packet.ip_addr();
@@ -237,7 +235,7 @@ where
                 payload: NoPayloadHolder,
             };
 
-            let buf = buf.add_reservation(packet.buffer_len() + tx.device_caps().header_len);
+            let buf = buf.reserve(packet.buffer_len() + tx.device_caps().header_len);
             let packet = packet.sub_no_payload(|_| buf);
 
             let _ = tx.transmit(

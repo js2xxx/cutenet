@@ -1,14 +1,6 @@
 use core::{fmt, net::SocketAddr, num::NonZero};
 
-use crate::{
-    iface::NetTx,
-    route::Router,
-    stack::RouterExt,
-    storage::{Buf, Storage},
-    time::Instant,
-    wire::*,
-    TxResult,
-};
+use crate::{iface::NetTx, route::Router, stack::RouterExt, time::Instant, wire::*, TxResult};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BindError {
@@ -109,15 +101,10 @@ impl Socket {
         self.addr.is_some()
     }
 
-    pub fn send<S, R>(
-        &mut self,
-        now: Instant,
-        router: R,
-        data: Buf<S>,
-    ) -> Result<TxResult, SendError<Buf<S>>>
+    pub fn send<P, R>(&mut self, now: Instant, router: R, data: P) -> Result<TxResult, SendError<P>>
     where
-        S: Storage,
-        R: Router<S>,
+        P: PayloadBuild,
+        R: Router<P>,
     {
         match self.peer {
             Some(dst) => self.send_to(now, router, dst, data),
@@ -125,15 +112,15 @@ impl Socket {
         }
     }
 
-    pub fn send_with<S, R>(
+    pub fn send_with<P, R>(
         &mut self,
         now: Instant,
         router: R,
-        data: impl FnOnce(&R::Tx<'_>) -> Buf<S>,
-    ) -> Result<TxResult, SendError<Option<Buf<S>>>>
+        data: impl FnOnce(&R::Tx<'_>) -> P,
+    ) -> Result<TxResult, SendError<Option<P>>>
     where
-        S: Storage,
-        R: Router<S>,
+        P: PayloadBuild,
+        R: Router<P>,
     {
         match self.peer {
             Some(dst) => self.send_to_with(now, router, dst, data),
@@ -141,16 +128,16 @@ impl Socket {
         }
     }
 
-    pub fn send_to<S, R>(
+    pub fn send_to<P, R>(
         &mut self,
         now: Instant,
         router: R,
         dst: SocketAddr,
-        data: Buf<S>,
-    ) -> Result<TxResult, SendError<Buf<S>>>
+        data: P,
+    ) -> Result<TxResult, SendError<P>>
     where
-        S: Storage,
-        R: Router<S>,
+        P: PayloadBuild,
+        R: Router<P>,
     {
         let mut slot = Some(data);
         match self.send_to_with(now, router, dst, |_| slot.take().unwrap()) {
@@ -162,16 +149,16 @@ impl Socket {
         }
     }
 
-    pub fn send_to_with<S, R>(
+    pub fn send_to_with<P, R>(
         &mut self,
         now: Instant,
         mut router: R,
         dst: SocketAddr,
-        data: impl FnOnce(&R::Tx<'_>) -> Buf<S>,
-    ) -> Result<TxResult, SendError<Option<Buf<S>>>>
+        data: impl FnOnce(&R::Tx<'_>) -> P,
+    ) -> Result<TxResult, SendError<Option<P>>>
     where
-        S: Storage,
-        R: Router<S>,
+        P: PayloadBuild,
+        R: Router<P>,
     {
         let Some(src) = self.addr else {
             return Err(SendErrorKind::Unbound.with(None));

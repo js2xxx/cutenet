@@ -8,23 +8,22 @@ use crate::{
     route::Router,
     socket::{AllSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet},
     stack::RouterExt,
-    storage::{Buf, ReserveBuf, Storage},
     time::Instant,
     wire::*,
 };
 
-pub(super) fn process<S, R, A>(
+pub(super) fn process<P, R, A>(
     now: Instant,
     device_caps: &DeviceCaps,
     router: &mut R,
     sockets: &mut A,
     hw: Ends<HwAddr>,
-    mut packet: Ipv6Packet<Buf<S>>,
-) -> SocketRecv<IpPacket<Buf<S>>, ()>
+    mut packet: Ipv6Packet<P>,
+) -> SocketRecv<IpPacket<P>, ()>
 where
-    S: Storage,
-    R: Router<S>,
-    A: AllSocketSet<S>,
+    P: PayloadParse + PayloadBuild,
+    R: Router<P>,
+    A: AllSocketSet<P>,
 {
     let v6_addr = packet.addr;
     let addr = v6_addr.map(IpAddr::V6);
@@ -57,7 +56,7 @@ where
                     icmp_reply(device_caps, v6_addr.reverse(), Icmpv6Packet::ParamProblem {
                         reason: Icmpv6ParamProblem::UnrecognizedOption,
                         pointer: packet.buffer_len() as u32,
-                        payload: packet,
+                        payload: Lax(packet),
                     });
                     SocketRecv::Received(())
                 }
@@ -69,9 +68,8 @@ where
             }
             Ipv6Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
                 SocketRecv::Received(()) => SocketRecv::Received(()),
-                SocketRecv::NotReceived(mut udp) => SocketRecv::NotReceived({
-                    udp.payload.prepend(UDP_HEADER_LEN);
-                    packet.payload = udp.payload;
+                SocketRecv::NotReceived(udp) => SocketRecv::NotReceived({
+                    packet.payload = uncheck_build!(udp.payload.prepend(UDP_HEADER_LEN));
                     IpPacket::V6(packet)
                 }),
             },
@@ -91,9 +89,9 @@ where
                         Ok::<_, ()>((IpPacket::V6(packet), ss))
                     });
                 })),
-                SocketRecv::NotReceived(mut tcp) => SocketRecv::NotReceived({
-                    tcp.payload.prepend(tcp.header_len());
-                    packet.payload = tcp.payload;
+                SocketRecv::NotReceived(tcp) => SocketRecv::NotReceived({
+                    let header_len = tcp.header_len();
+                    packet.payload = uncheck_build!(tcp.payload.prepend(header_len));
                     IpPacket::V6(packet)
                 }),
             },
@@ -101,13 +99,11 @@ where
     }
 }
 
-fn process_hbh<S>(
-    addr: Ends<Ipv6Addr>,
-    mut header: Ipv6HopByHopHeader<Buf<S>>,
-) -> Result<Buf<S>, Option<Buf<S>>>
+fn process_hbh<P>(addr: Ends<Ipv6Addr>, header: Ipv6HopByHopHeader<P>) -> Result<P, Option<P>>
 where
-    S: Storage,
+    P: PayloadBuild,
 {
+    let header_len = header.header_len();
     for opt in &header.options {
         match opt {
             Ipv6Opt::Pad1 | Ipv6Opt::PadN(_) | Ipv6Opt::RouterAlert(_) => {}
@@ -115,12 +111,10 @@ where
                 Ipv6OptFailureType::Skip => {}
                 Ipv6OptFailureType::Discard => return Err(None),
                 Ipv6OptFailureType::DiscardSendAll => {
-                    header.payload.prepend(header.header_len());
-                    return Err(Some(header.payload));
+                    return Err(Some(uncheck_build!(header.payload.prepend(header_len))));
                 }
                 Ipv6OptFailureType::DiscardSendUnicast if !addr.dst.is_multicast() => {
-                    header.payload.prepend(header.header_len());
-                    return Err(Some(header.payload));
+                    return Err(Some(uncheck_build!(header.payload.prepend(header_len))));
                 }
                 _ => unreachable!(),
             },
@@ -131,16 +125,16 @@ where
     Ok(header.payload)
 }
 
-fn process_icmp<S, R>(
+fn process_icmp<P, R>(
     now: Instant,
     device_caps: &DeviceCaps,
     router: &mut R,
     hw: Ends<HwAddr>,
     addr: Ends<Ipv6Addr>,
-    packet: Icmpv6Packet<Buf<S>, ReserveBuf<S>>,
+    packet: Icmpv6Packet<P, P::NoPayload>,
 ) where
-    S: Storage,
-    R: Router<S>,
+    P: PayloadBuild,
+    R: Router<P>,
 {
     match packet {
         Icmpv6Packet::EchoRequest { ident, seq_no, payload }
@@ -168,17 +162,17 @@ fn process_icmp<S, R>(
     );
 }
 
-fn process_nd<S, R>(
+fn process_nd<P, R>(
     now: Instant,
     device_caps: &DeviceCaps,
     router: &mut R,
     hw: Ends<HwAddr>,
     addr: Ends<Ipv6Addr>,
     nd: Icmpv6Nd,
-    payload: ReserveBuf<S>,
+    payload: P::NoPayload,
 ) where
-    S: Storage,
-    R: Router<S>,
+    P: PayloadBuild,
+    R: Router<P>,
 {
     match nd {
         Icmpv6Nd::NeighborSolicit { target_addr, lladdr }
@@ -223,27 +217,18 @@ fn process_nd<S, R>(
     }
 }
 
-pub(super) fn icmp_reply<S: Storage>(
+pub(super) fn icmp_reply<P: PayloadBuild>(
     device_caps: &DeviceCaps,
     addr: Ends<Ipv6Addr>,
-    icmp: Icmpv6Packet<Buf<S>, ReserveBuf<S>>,
-) -> EthernetPayload<Buf<S>, ReserveBuf<S>> {
+    icmp: Icmpv6Packet<P, P::NoPayload>,
+) -> EthernetPayload<P, P::NoPayload> {
     let (icmp, buf) = icmp.sub_ref(|b| PayloadHolder(b.len()), |_| NoPayloadHolder);
     let packet_len = icmp.buffer_len();
-    let additional = device_caps.header_len + IPV4_HEADER_LEN;
+    let additional = device_caps.header_len + IPV6_HEADER_LEN;
 
     let icmp = match buf {
-        Either::Left(mut buf) => {
-            let header_len = packet_len - buf.len();
-
-            if let Some(delta) = (additional + header_len).checked_sub(buf.head_len()) {
-                buf.move_truncate(delta as isize);
-            }
-            icmp.sub_payload(|_| buf)
-        }
-        Either::Right(buf) => {
-            icmp.sub_no_payload(|_| buf.reset().add_reservation(additional + packet_len))
-        }
+        Either::Left(buf) => icmp.sub_payload(|_| buf),
+        Either::Right(buf) => icmp.sub_no_payload(|_| buf.reset().reserve(additional + packet_len)),
     };
 
     EthernetPayload::Ip(IpPacket::V6(Ipv6Packet {

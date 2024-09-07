@@ -1,7 +1,7 @@
 use core::net::IpAddr;
 
 use super::iface::NetTx;
-use crate::{storage::Storage, time::Instant, wire::*};
+use crate::{time::Instant, wire::*};
 
 pub mod r#static;
 
@@ -39,8 +39,8 @@ impl<Tx> Action<Tx> {
     }
 }
 
-pub trait Router<S: Storage> {
-    type Tx<'a>: NetTx<S>
+pub trait Router<P: Payload> {
+    type Tx<'a>: NetTx<P>
     where
         Self: 'a;
 
@@ -51,7 +51,7 @@ pub trait Router<S: Storage> {
     fn device(&mut self, now: Instant, hw: HwAddr) -> Option<Self::Tx<'_>>;
 }
 
-impl<S: Storage, R: Router<S>> Router<S> for &mut R {
+impl<P: Payload, R: Router<P>> Router<P> for &mut R {
     type Tx<'a> = R::Tx<'a> where Self: 'a;
 
     fn loopback(&mut self, now: Instant) -> Option<Self::Tx<'_>> {

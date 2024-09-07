@@ -2,12 +2,11 @@ use core::net::{IpAddr, Ipv6Addr};
 
 use heapless::Vec;
 
-use super::{neighbor::StaticNeighborCache, HwAddr, NetRx, NetTx, Payload};
+use super::{neighbor::StaticNeighborCache, HwAddr, NetPayload, NetRx, NetTx};
 use crate::{
     config::*,
     iface::neighbor::{CacheOption, LookupError},
     phy::{DeviceCaps, PhyRx, PhyTx},
-    storage::Storage,
     time::Instant,
     wire::*,
     TxResult,
@@ -24,7 +23,11 @@ impl<D> EthernetRx<D> {
     }
 }
 
-impl<S: Storage, D: PhyRx<S> + ?Sized> NetRx<S> for EthernetRx<D> {
+impl<P, D> NetRx<P> for EthernetRx<D>
+where
+    P: PayloadParse,
+    D: PhyRx<P> + ?Sized,
+{
     fn hw_addr(&self) -> HwAddr {
         self.device.hw_addr()
     }
@@ -33,7 +36,7 @@ impl<S: Storage, D: PhyRx<S> + ?Sized> NetRx<S> for EthernetRx<D> {
         self.device.caps().add_header_len(ETHERNET_HEADER_LEN)
     }
 
-    fn receive(&mut self, now: Instant) -> Option<(HwAddr, Payload<S>)> {
+    fn receive(&mut self, now: Instant) -> Option<(HwAddr, NetPayload<P>)> {
         let buf = self.device.receive(now)?;
 
         let packet = match EthernetFrame::parse(&(), buf) {
@@ -81,7 +84,11 @@ impl<D: ?Sized> EthernetTx<D> {
     }
 }
 
-impl<S: Storage, D: PhyTx<S> + ?Sized> NetTx<S> for EthernetTx<D> {
+impl<P, D> NetTx<P> for EthernetTx<D>
+where
+    P: PayloadBuild,
+    D: PhyTx<P> + ?Sized,
+{
     fn hw_addr(&self) -> HwAddr {
         self.device.hw_addr()
     }
@@ -122,7 +129,7 @@ impl<S: Storage, D: PhyTx<S> + ?Sized> NetTx<S> for EthernetTx<D> {
         self.neighbor_cache.lookup(now, ip)
     }
 
-    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: Payload<S>) -> TxResult {
+    fn transmit(&mut self, now: Instant, dst: HwAddr, packet: NetPayload<P>) -> TxResult {
         let addr = Ends { src: self.hw_addr(), dst };
 
         let packet = EthernetFrame {

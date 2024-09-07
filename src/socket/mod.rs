@@ -1,11 +1,6 @@
 use core::net::IpAddr;
 
-use crate::{
-    phy::DeviceCaps,
-    storage::{Buf, Storage},
-    time::Instant,
-    wire::*,
-};
+use crate::{phy::DeviceCaps, time::Instant, wire::*};
 
 pub mod udp;
 
@@ -29,29 +24,24 @@ pub enum SocketRecv<Orig, Reply> {
     Received(Reply),
 }
 
-pub trait RawSocketSet<S: Storage> {
-    fn receive(
-        &mut self,
-        now: Instant,
-        device_caps: &DeviceCaps,
-        packet: &IpPacket<Buf<S>>,
-    ) -> bool;
+pub trait RawSocketSet<T: Wire> {
+    fn receive(&mut self, now: Instant, device_caps: &DeviceCaps, packet: &IpPacket<T>) -> bool;
 }
 
-pub trait UdpSocketSet<S: Storage> {
+pub trait UdpSocketSet<T: Wire> {
     fn receive(
         self,
         now: Instant,
         device_caps: &DeviceCaps,
         addr: Ends<IpAddr>,
-        packet: UdpPacket<Buf<S>>,
-    ) -> SocketRecv<UdpPacket<Buf<S>>, ()>;
+        packet: UdpPacket<T>,
+    ) -> SocketRecv<UdpPacket<T>, ()>;
 }
 
-pub type TcpSocketRecv<S: Storage, Ss: SocketState> =
-    SocketRecv<TcpPacket<Buf<S>>, Option<(TcpPacket<Buf<S>>, Ss)>>;
+pub type TcpSocketRecv<T: Wire, Ss: SocketState> =
+    SocketRecv<TcpPacket<T>, Option<(TcpPacket<T>, Ss)>>;
 
-pub trait TcpSocketSet<S: Storage> {
+pub trait TcpSocketSet<T: Wire> {
     type SocketState: SocketState;
 
     fn receive(
@@ -59,22 +49,22 @@ pub trait TcpSocketSet<S: Storage> {
         now: Instant,
         device_caps: &DeviceCaps,
         addr: Ends<IpAddr>,
-        packet: TcpPacket<Buf<S>>,
-    ) -> TcpSocketRecv<S, Self::SocketState>;
+        packet: TcpPacket<T>,
+    ) -> TcpSocketRecv<T, Self::SocketState>;
 }
 
-pub trait AllSocketSet<S: Storage> {
-    type Raw<'a>: RawSocketSet<S>
+pub trait AllSocketSet<T: Wire> {
+    type Raw<'a>: RawSocketSet<T>
     where
         Self: 'a;
     fn raw(&mut self) -> Self::Raw<'_>;
 
-    type Udp<'a>: UdpSocketSet<S>
+    type Udp<'a>: UdpSocketSet<T>
     where
         Self: 'a;
     fn udp(&mut self) -> Self::Udp<'_>;
 
-    type Tcp<'a>: TcpSocketSet<S>
+    type Tcp<'a>: TcpSocketSet<T>
     where
         Self: 'a;
     fn tcp(&mut self) -> Self::Tcp<'_>;

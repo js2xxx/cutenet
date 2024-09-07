@@ -5,29 +5,28 @@ use core::{
 
 use heapless::mpmc::MpMcQueue;
 
-use super::{NetRx, NetTx, Payload};
+use super::{NetRx, NetTx, NetPayload};
 use crate::{
     config::STATIC_LOOPBACK_CAPACITY,
     iface::neighbor::{CacheOption, LookupError},
     phy::DeviceCaps,
-    storage::Storage,
     time::Instant,
     wire::*,
     TxDropReason::QueueFull,
     TxResult,
 };
 
-pub struct StaticLoopback<S: Storage> {
-    q: MpMcQueue<Payload<S>, STATIC_LOOPBACK_CAPACITY>,
+pub struct StaticLoopback<P: Payload> {
+    q: MpMcQueue<NetPayload<P>, STATIC_LOOPBACK_CAPACITY>,
 }
 
-impl<S: Storage> fmt::Debug for StaticLoopback<S> {
+impl<P: Payload> fmt::Debug for StaticLoopback<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaticLoopback").finish_non_exhaustive()
     }
 }
 
-impl<S: Storage> StaticLoopback<S> {
+impl<P: Payload> StaticLoopback<P> {
     pub const fn new() -> Self {
         Self { q: MpMcQueue::new() }
     }
@@ -45,13 +44,13 @@ pub const DEVICE_CAPS: DeviceCaps = DeviceCaps {
     tx_checksums: Checksums::IGNORE,
 };
 
-impl<S: Storage> Default for StaticLoopback<S> {
+impl<P: Payload> Default for StaticLoopback<P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: Storage> NetRx<S> for &StaticLoopback<S> {
+impl<P: Payload> NetRx<P> for &StaticLoopback<P> {
     fn hw_addr(&self) -> HwAddr {
         HwAddr::Ip
     }
@@ -60,14 +59,14 @@ impl<S: Storage> NetRx<S> for &StaticLoopback<S> {
         DEVICE_CAPS
     }
 
-    fn receive(&mut self, now: Instant) -> Option<(HwAddr, Payload<S>)> {
+    fn receive(&mut self, now: Instant) -> Option<(HwAddr, NetPayload<P>)> {
         #[cfg(feature = "log")]
         tracing::trace!(target: "net::loopback", "receive at {now}");
         self.q.dequeue().map(|payload| (HwAddr::Ip, payload))
     }
 }
 
-impl<S: Storage> NetTx<S> for &StaticLoopback<S> {
+impl<P: Payload> NetTx<P> for &StaticLoopback<P> {
     fn hw_addr(&self) -> HwAddr {
         HwAddr::Ip
     }
@@ -111,7 +110,7 @@ impl<S: Storage> NetTx<S> for &StaticLoopback<S> {
         }
     }
 
-    fn transmit(&mut self, now: Instant, _: HwAddr, packet: Payload<S>) -> TxResult {
+    fn transmit(&mut self, now: Instant, _: HwAddr, packet: NetPayload<P>) -> TxResult {
         #[cfg(feature = "log")]
         tracing::trace!(target: "net::loopback", "receiving packet at {now}");
         match self.q.enqueue(packet) {
@@ -131,22 +130,21 @@ mod alloc {
     use crossbeam_queue::ArrayQueue;
 
     use super::*;
-    use crate::storage::Storage;
 
     #[derive(Debug, Clone)]
-    pub struct ArcLoopbackRx<S: Storage>(Arc<ArrayQueue<Payload<S>>>);
+    pub struct ArcLoopbackRx<P: Payload>(Arc<ArrayQueue<NetPayload<P>>>);
 
     #[derive(Debug, Clone)]
-    pub struct ArcLoopbackTx<S: Storage>(Arc<ArrayQueue<Payload<S>>>);
+    pub struct ArcLoopbackTx<P: Payload>(Arc<ArrayQueue<NetPayload<P>>>);
 
-    pub fn arc_loopback<S: Storage>(capacity: usize) -> (ArcLoopbackTx<S>, ArcLoopbackRx<S>) {
+    pub fn arc_loopback<P: Payload>(capacity: usize) -> (ArcLoopbackTx<P>, ArcLoopbackRx<P>) {
         let q = Arc::new(ArrayQueue::new(capacity));
         let tx = ArcLoopbackTx(q.clone());
         let rx = ArcLoopbackRx(q);
         (tx, rx)
     }
 
-    impl<S: Storage> NetRx<S> for ArcLoopbackRx<S> {
+    impl<P: Payload> NetRx<P> for ArcLoopbackRx<P> {
         fn hw_addr(&self) -> HwAddr {
             HwAddr::Ip
         }
@@ -155,14 +153,14 @@ mod alloc {
             DEVICE_CAPS
         }
 
-        fn receive(&mut self, now: Instant) -> Option<(HwAddr, Payload<S>)> {
+        fn receive(&mut self, now: Instant) -> Option<(HwAddr, NetPayload<P>)> {
             #[cfg(feature = "log")]
             tracing::trace!(target: "net::loopback", "receive at {now}");
             self.0.pop().map(|p| (HwAddr::Ip, p))
         }
     }
 
-    impl<S: Storage> NetTx<S> for ArcLoopbackTx<S> {
+    impl<P: Payload> NetTx<P> for ArcLoopbackTx<P> {
         fn hw_addr(&self) -> HwAddr {
             HwAddr::Ip
         }
@@ -206,7 +204,7 @@ mod alloc {
             }
         }
 
-        fn transmit(&mut self, now: Instant, _: HwAddr, packet: Payload<S>) -> TxResult {
+        fn transmit(&mut self, now: Instant, _: HwAddr, packet: NetPayload<P>) -> TxResult {
             #[cfg(feature = "log")]
             tracing::trace!(target: "net::loopback", "receiving packet at {now}");
             match self.0.push(packet) {

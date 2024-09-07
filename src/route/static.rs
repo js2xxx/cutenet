@@ -1,7 +1,7 @@
 use heapless::{FnvIndexMap, Vec};
 
 use super::{Action, Query, Router};
-use crate::{config::*, iface::NetTx, storage::Storage, time::Instant, wire::*};
+use crate::{config::*, iface::NetTx, time::Instant, wire::*};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Route {
@@ -53,7 +53,7 @@ impl<N> Default for StaticRouter<N> {
     }
 }
 
-impl<S: Storage, N: NetTx<S>> Router<S> for StaticRouter<N> {
+impl<P: Payload, N: NetTx<P>> Router<P> for StaticRouter<N> {
     type Tx<'a> = &'a mut N
     where
         Self: 'a;

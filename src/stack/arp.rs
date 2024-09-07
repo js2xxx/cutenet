@@ -3,19 +3,18 @@ use core::net::IpAddr;
 use crate::{
     iface::{neighbor::CacheOption, NetTx},
     route::Router,
-    storage::{ReserveBuf, Storage},
     time::Instant,
     wire::*,
 };
 
-pub(super) fn process_arp<S, R>(
+pub(super) fn process_arp<P, R>(
     now: Instant,
     router: &mut R,
     hw: HwAddr,
-    packet: ArpPacket<ReserveBuf<S>>,
+    packet: ArpPacket<P::NoPayload>,
 ) where
-    S: Storage,
-    R: Router<S>,
+    P: Payload,
+    R: Router<P>,
 {
     let Ends {
         src: (src_hw, src_ip),
