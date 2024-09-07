@@ -3,7 +3,7 @@ use core::{fmt, net::Ipv6Addr, time::Duration};
 use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::{ip::IpAddrExt, prelude::*, Data, DataMut, RawHwAddr, HWADDR_MAX_LEN};
+use crate::{ip::IpAddrExt, prelude::*, RawHwAddr, HWADDR_MAX_LEN};
 
 enum_with_unknown! {
     /// NDISC Option Type
@@ -160,7 +160,7 @@ wire!(impl RawOpt {
         |data, value| data[field::PREFIX].copy_from_slice(&value.octets());
 });
 
-impl<T: DataMut + ?Sized> RawOpt<T> {
+impl<T: AsMut<[u8]> + ?Sized> RawOpt<T> {
     fn clear_prefix_reserved(&mut self) {
         NetworkEndian::write_u32(&mut self.0.as_mut()[field::PREF_RESERVED], 0);
     }

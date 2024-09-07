@@ -5,7 +5,6 @@ use byteorder::{ByteOrder, NetworkEndian};
 use crate::{
     context::{Ends, WireCx},
     prelude::*,
-    Data, DataMut,
 };
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
@@ -93,7 +92,7 @@ wire!(impl RawFrame {
         |data, value| NetworkEndian::write_u16(&mut data[field::ETHERTYPE], value.into());
 });
 
-impl<T: Data + ?Sized> RawFrame<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawFrame<T> {
     pub fn addr(&self) -> Ends<Addr> {
         Ends {
             src: self.src_addr(),
@@ -111,20 +110,20 @@ pub struct Frame<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Frame<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
         if len < HEADER_LEN {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
-        let frame = RawFrame(raw);
+        let frame = RawFrame(raw.data());
 
         Ok(Frame {
             addr: frame.addr(),
             protocol: frame.protocol(),
 
-            payload: T::parse(&[cx, &(frame.protocol(),)], frame.0.pop(HEADER_LEN..len)?)?,
+            payload: T::parse(&[cx, &(frame.protocol(),)], raw.pop(HEADER_LEN..len)?)?,
         })
     }
 }
@@ -171,7 +170,7 @@ impl<T, U> EthernetPayload<T, U> {
 impl<T, P, U> WireParse for EthernetPayload<T, U>
 where
     T: WireParse<Payload = P>,
-    P: PayloadParse<NoPayload = U> + super::Data,
+    P: PayloadParse<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {

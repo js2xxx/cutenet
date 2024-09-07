@@ -6,7 +6,6 @@ use crate::{
     context::{Ends, WireCx},
     ip::{self, checksum},
     prelude::*,
-    Data, DataMut,
 };
 
 mod opt;
@@ -188,7 +187,7 @@ wire!(impl RawPacket {
 
 macro_rules! wire_flags {
     ($($get:ident/$set:ident => $c:ident,)*) => {
-        impl<T: Data + ?Sized> RawPacket<T> {
+        impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
             $(
                 #[allow(unused)]
                 fn $get(&self) -> bool {
@@ -197,7 +196,7 @@ macro_rules! wire_flags {
             )*
         }
 
-        impl<T: DataMut + ?Sized> RawPacket<T> {
+        impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
             $(
                 #[allow(unused)]
                 fn $set(&mut self, value: bool) {
@@ -218,7 +217,7 @@ wire_flags! {
     ece/set_ece => ECE, cwr/set_cwr => CWR, ns/set_ns => NS,
 }
 
-impl<T: Data + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     pub fn port(&self) -> Ends<u16> {
         Ends {
             src: self.src_port(),
@@ -277,7 +276,7 @@ impl<T: Data + ?Sized> RawPacket<T> {
     }
 }
 
-impl<T: DataMut + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
     /// Compute and fill in the header checksum.
     ///
     /// # Panics
@@ -320,30 +319,30 @@ pub struct Packet<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw);
+        let packet = RawPacket(raw.data());
 
         let len = packet.0.len();
         if len < field::URGENT.end {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
         let header_len = usize::from(packet.header_len());
         if len < header_len || header_len < field::URGENT.end {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         // Source and destination ports must be present.
         if packet.src_port() == 0 {
-            return Err(ParseErrorKind::SrcInvalid.with(packet.0));
+            return Err(ParseErrorKind::SrcInvalid.with(raw));
         }
         if packet.dst_port() == 0 {
-            return Err(ParseErrorKind::DstInvalid.with(packet.0));
+            return Err(ParseErrorKind::DstInvalid.with(raw));
         }
 
         // Valid checksum is expected.
         if cx.checksums().tcp() && !packet.verify_checksum(cx.ip_addrs()) {
-            return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
+            return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
         let control = match (packet.syn(), packet.fin(), packet.rst(), packet.psh()) {
@@ -352,7 +351,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             (true, false, false, _) => Control::Syn,
             (false, true, false, _) => Control::Fin,
             (false, false, true, _) => Control::Rst,
-            _ => return Err(ParseErrorKind::FormatInvalid.with(packet.0)),
+            _ => return Err(ParseErrorKind::FormatInvalid.with(raw)),
         };
 
         let ack_number = match packet.ack() {
@@ -375,7 +374,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
         while !options.is_empty() {
             let (next_options, option) = match TcpOption::parse(options) {
                 Ok(ret) => ret,
-                Err(kind) => return Err(kind.with(packet.0)),
+                Err(kind) => return Err(kind.with(raw)),
             };
             match option {
                 TcpOption::EndOfList => break,
@@ -419,7 +418,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             sack_permitted,
             sack_ranges,
             timestamp,
-            payload: T::parse(cx, packet.0.pop(header_len..len)?)?,
+            payload: T::parse(cx, raw.pop(header_len..len)?)?,
         })
     }
 }

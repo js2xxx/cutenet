@@ -2,7 +2,7 @@ use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::{prelude::*, Data, DataMut};
+use crate::prelude::*;
 
 enum_with_unknown! {
     /// IPv6 Extension Header Option Type
@@ -90,7 +90,7 @@ struct RawOpt<T: ?Sized>(T);
 // Format of Option
 //
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+- - - - - - - - -
-// |  Option Type  |  Opt Data Len |  Option Data
+// |  Option Type  |  Opt AsRef<[u8]> Len |  Option AsRef<[u8]>
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+- - - - - - - - -
 //
 //
@@ -127,7 +127,7 @@ wire!(impl RawOpt {
         |data, value| NetworkEndian::write_u16(&mut data[field::ROUTER_ALERT], value.into());
 });
 
-impl<T: ?Sized + DataMut> RawOpt<T> {
+impl<T: ?Sized + AsRef<[u8]> + AsMut<[u8]>> RawOpt<T> {
     fn data_mut(&mut self) -> &mut [u8] {
         let index = field::DATA(self.data_len());
         &mut self.0.as_mut()[index]

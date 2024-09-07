@@ -100,12 +100,6 @@ mod prelude {
     pub use super::{error::*, traits::*};
 }
 
-pub trait Data: AsRef<[u8]> {}
-impl<T: AsRef<[u8]> + ?Sized> Data for T {}
-
-pub trait DataMut: Data + AsMut<[u8]> {}
-impl<T: Data + AsMut<[u8]> + ?Sized> DataMut for T {}
-
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     pub struct Checksums: u8 {

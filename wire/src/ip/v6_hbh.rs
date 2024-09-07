@@ -4,7 +4,7 @@ use cutenet_config::*;
 use heapless::Vec;
 
 use super::option::Opt;
-use crate::{context::WireCx, prelude::*, Data, DataMut, IpProtocol};
+use crate::{context::WireCx, prelude::*, IpProtocol};
 
 struct RawHeader<T: ?Sized>(T);
 
@@ -46,21 +46,21 @@ pub struct Header<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Header<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Header<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
-        let header = RawHeader(raw);
+        let header = RawHeader(raw.data());
 
         if len < field::MIN_HEADER_SIZE {
-            return Err(ParseErrorKind::PacketTooShort.with(header.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         let opts_range = field::PAYLOAD(header.data_len());
         if len < opts_range.end {
-            return Err(ParseErrorKind::PacketTooShort.with(header.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
-        let mut raw_opts = &header.0.as_ref()[opts_range.clone()];
+        let mut raw_opts = &header.0[opts_range.clone()];
         let mut iter = iter::from_fn(|| {
             (!raw_opts.is_empty()).then(|| {
                 Opt::parse(raw_opts)
@@ -74,13 +74,13 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Header<T> 
                 .map_or(Err(ParseErrorKind::PacketTooLong), |_| Ok(acc))
         }) {
             Ok(t) => t,
-            Err(err) => return Err(err.with(header.0)),
+            Err(err) => return Err(err.with(raw)),
         };
 
         Ok(Header {
             next_header: header.next_header(),
             options,
-            payload: T::parse(cx, header.0.pop(opts_range.end..len)?)?,
+            payload: T::parse(cx, raw.pop(opts_range.end..len)?)?,
         })
     }
 }

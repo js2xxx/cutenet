@@ -17,10 +17,14 @@ pub trait Payload {
     }
 
     fn truncate(self) -> Self::NoPayload;
+
+    fn reset(self) -> Self::NoPayload;
 }
 
 pub trait NoPayload {
     type Init: Payload<NoPayload = Self>;
+
+    fn reserve(self, size: usize) -> Self;
 
     fn init(self) -> Self::Init;
 }
@@ -42,6 +46,8 @@ pub trait PayloadBuild: Payload + Sized {
 }
 
 pub trait PayloadParse: Payload + Sized {
+    fn data(&self) -> &[u8];
+
     fn pop(self, range: Range<usize>) -> Result<Self, ParseError<Self>>;
 }
 
@@ -181,7 +187,6 @@ impl<T: Payload + Wire<Payload = T>> WireParse for T {
 
 mod holder {
     use super::*;
-    use crate::error::ParseErrorKind;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct PayloadHolder(pub usize);
@@ -199,10 +204,19 @@ mod holder {
         fn truncate(self) -> Self::NoPayload {
             NoPayloadHolder
         }
+
+        fn reset(self) -> Self::NoPayload {
+            NoPayloadHolder
+        }
     }
 
     impl NoPayload for NoPayloadHolder {
         type Init = PayloadHolder;
+
+        fn reserve(self, _size: usize) -> Self {
+            self
+        }
+
         fn init(self) -> Self::Init {
             PayloadHolder(0)
         }
@@ -233,16 +247,6 @@ mod holder {
             }))
         }
     }
-
-    impl PayloadParse for PayloadHolder {
-        fn pop(self, range: Range<usize>) -> Result<Self, ParseError<Self>> {
-            if range.end <= self.0 {
-                Ok(PayloadHolder(range.len()))
-            } else {
-                Err(ParseErrorKind::PacketTooShort.with(self))
-            }
-        }
-    }
 }
 pub use self::holder::{NoPayloadHolder, PayloadHolder};
 
@@ -264,10 +268,18 @@ mod slice {
         fn truncate(self) -> Self::NoPayload {
             ZeroSlice(PhantomData)
         }
+
+        fn reset(self) -> Self::NoPayload {
+            ZeroSlice(PhantomData)
+        }
     }
 
     impl<'a> NoPayload for ZeroSlice<'a> {
         type Init = &'a [u8];
+
+        fn reserve(self, _size: usize) -> Self {
+            self
+        }
 
         fn init(self) -> Self::Init {
             &[]
@@ -275,6 +287,10 @@ mod slice {
     }
 
     impl<'a> PayloadParse for &'a [u8] {
+        fn data(&self) -> &[u8] {
+            self
+        }
+
         fn pop(self, range: Range<usize>) -> Result<Self, ParseError<Self>> {
             self.get(range)
                 .ok_or(ParseErrorKind::PacketTooShort.with(self))
@@ -298,10 +314,19 @@ mod buf {
         fn truncate(self) -> Self::NoPayload {
             ReserveBuf::from_buf_truncate(self)
         }
+
+        fn reset(self) -> Self::NoPayload {
+            self.reset()
+        }
     }
 
     impl<S: Storage> NoPayload for ReserveBuf<S> {
         type Init = Buf<S>;
+
+        fn reserve(self, size: usize) -> Self {
+            self.add_reservation(size)
+        }
+
         fn init(self) -> Self::Init {
             self.build()
         }
@@ -351,6 +376,10 @@ mod buf {
     }
 
     impl<S: Storage> PayloadParse for Buf<S> {
+        fn data(&self) -> &[u8] {
+            self.data()
+        }
+
         fn pop(mut self, range: Range<usize>) -> Result<Self, ParseError<Self>> {
             if range.end <= self.len() {
                 self.slice_into(range);

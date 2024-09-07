@@ -7,7 +7,6 @@ use crate::{
     ethernet,
     ip::IpAddrExt,
     prelude::*,
-    Data, DataMut,
 };
 
 enum_with_unknown! {
@@ -124,7 +123,7 @@ wire!(impl RawPacket {
         };
 });
 
-impl<T: Data + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     pub fn addr(&self) -> Ends<(ethernet::Addr, Ipv4Addr)> {
         Ends {
             src: (self.source_hardware_addr(), self.source_protocol_addr()),
@@ -144,16 +143,16 @@ pub struct Packet<#[no_payload] U> {
 
 impl<P, U> WireParse for Packet<U>
 where
-    P: PayloadParse<NoPayload = U> + Data,
+    P: PayloadParse<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
     fn parse(_: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw);
+        let packet = RawPacket(raw.data());
         let len = packet.0.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
         {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         if !matches!(
@@ -170,13 +169,13 @@ where
                 PROTOCOL_LEN,
             )
         ) {
-            return Err(ParseErrorKind::ProtocolUnknown.with(packet.0));
+            return Err(ParseErrorKind::ProtocolUnknown.with(raw));
         }
 
         Ok(Packet {
             operation: packet.operation(),
             addr: packet.addr(),
-            payload: packet.0.truncate(),
+            payload: raw.truncate(),
         })
     }
 }

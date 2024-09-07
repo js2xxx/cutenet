@@ -6,7 +6,6 @@ use crate::{
     context::{Ends, WireCx},
     ip::{self, checksum},
     prelude::*,
-    Data, DataMut,
 };
 
 struct RawPacket<T: ?Sized>(T);
@@ -44,7 +43,7 @@ wire!(impl RawPacket {
         |data, value| NetworkEndian::write_u16(&mut data[field::CHECKSUM], value);
 });
 
-impl<T: Data + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     fn port(&self) -> Ends<u16> {
         Ends {
             src: self.src_port(),
@@ -73,7 +72,7 @@ impl<T: Data + ?Sized> RawPacket<T> {
     }
 }
 
-impl<T: DataMut + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
     fn fill_checksum(&mut self, addr: Ends<IpAddr>) {
         self.set_checksum(0);
 
@@ -94,30 +93,30 @@ pub struct Packet<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw);
+        let packet = RawPacket(raw.data());
         let buffer_len = packet.0.len();
         if buffer_len < HEADER_LEN {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         let field_len = usize::from(packet.len());
         if buffer_len < field_len || field_len < HEADER_LEN {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         if packet.dst_port() == 0 {
-            return Err(ParseErrorKind::DstInvalid.with(packet.0));
+            return Err(ParseErrorKind::DstInvalid.with(raw));
         }
 
         if cx.checksums().udp() && !packet.verify_checksum(cx.ip_addrs()) {
-            return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
+            return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
         Ok(Packet {
             port: packet.port(),
-            payload: T::parse(cx, packet.0.pop(HEADER_LEN..field_len)?)?,
+            payload: T::parse(cx, raw.pop(HEADER_LEN..field_len)?)?,
         })
     }
 }

@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
 use super::{IpAddrExt, Protocol, WireCx};
-use crate::{context::Ends, prelude::*, Data, DataMut};
+use crate::{context::Ends, prelude::*};
 
 #[path = "v6_cidr.rs"]
 mod cidr;
@@ -176,7 +176,7 @@ wire!(impl RawPacket {
         |data, value| data[field::DST_ADDR].copy_from_slice(&value.octets());
 });
 
-impl<T: Data + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     /// Return the payload length added to the known header length.
     pub fn total_len(&self) -> usize {
         HEADER_LEN + usize::from(self.payload_len())
@@ -200,17 +200,17 @@ pub struct Packet<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw);
+        let packet = RawPacket(raw.data());
 
         let len = packet.0.len();
         let total_len = packet.total_len();
         if len < field::DST_ADDR.end || len < total_len {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
         if packet.version() != 6 {
-            return Err(ParseErrorKind::VersionInvalid.with(packet.0));
+            return Err(ParseErrorKind::VersionInvalid.with(raw));
         }
 
         let generic_addr = packet.addr().map(IpAddr::V6);
@@ -223,7 +223,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 
             payload: T::parse(
                 &[cx, &(generic_addr, next_header)],
-                packet.0.pop(HEADER_LEN..total_len)?,
+                raw.pop(HEADER_LEN..total_len)?,
             )?,
         })
     }
@@ -278,7 +278,7 @@ pub enum Ipv6Payload<#[wire] T, #[no_payload] U> {
 impl<T, P, U> WireParse for Ipv6Payload<T, U>
 where
     T: WireParse<Payload = P>,
-    P: PayloadParse<NoPayload = U> + Data,
+    P: PayloadParse<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {

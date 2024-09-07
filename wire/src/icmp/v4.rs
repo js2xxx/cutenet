@@ -2,7 +2,7 @@ use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::{context::WireCx, ip::checksum, prelude::*, Data, DataMut, Ipv4Packet};
+use crate::{context::WireCx, ip::checksum, prelude::*, Ipv4Packet};
 
 enum_with_unknown! {
     /// Internet protocol control message type.
@@ -213,14 +213,14 @@ wire!(impl RawPacket {
         |data, value| NetworkEndian::write_u16(&mut data[field::ECHO_SEQNO], value);
 });
 
-impl<T: Data + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     /// Validate the header checksum.
     pub fn verify_checksum(&self) -> bool {
         checksum::data(self.0.as_ref()) == !0
     }
 }
 
-impl<T: DataMut + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
     pub fn fill_checksum(&mut self) {
         self.set_checksum(0);
         let checksum = !checksum::data(self.0.as_ref());
@@ -256,43 +256,43 @@ pub enum Packet<#[wire] T> {
     },
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw);
+        let packet = RawPacket(raw.data());
 
         let len = packet.0.len();
         if len < field::HEADER_END {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         if cx.checksums().icmp() && !packet.verify_checksum() {
-            return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
+            return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
         match (packet.msg_type(), packet.msg_code()) {
             (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
 
             (Message::EchoReply, 0) => Ok(Packet::EchoReply {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
 
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Ipv4Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv4Packet::parse(&(), raw.pop(field::UNUSED.end..len)?)?,
             }),
 
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Ipv4Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv4Packet::parse(&(), raw.pop(field::UNUSED.end..len)?)?,
             }),
 
-            _ => Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
+            _ => Err(ParseErrorKind::ProtocolUnknown.with(raw)),
         }
     }
 }

@@ -6,7 +6,6 @@ use crate::{
     context::{Ends, WireCx},
     ip::IpAddrExt,
     prelude::*,
-    Data, DataMut,
 };
 
 enum_with_unknown! {
@@ -204,7 +203,7 @@ macro_rules! fc_bit_field {
 
         fn $set_field(&mut self, val: bool)
         where
-            T: DataMut,
+            T: AsMut<[u8]>,
         {
             let data = &mut self.0.as_mut()[field::FRAMECONTROL];
             let mut raw = LittleEndian::read_u16(data);
@@ -295,7 +294,7 @@ wire!(impl RawFrame {
         };
 });
 
-impl<T: Data + ?Sized> RawFrame<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawFrame<T> {
     fc_bit_field!(security_enabled, set_security_enabled, 3);
     fc_bit_field!(frame_pending, set_frame_pending, 4);
     fc_bit_field!(ack_request, set_ack_request, 5);
@@ -319,7 +318,7 @@ impl<T: Data + ?Sized> RawFrame<T> {
 
     fn set_sequence_number(&mut self, value: u8)
     where
-        T: DataMut,
+        T: AsMut<[u8]>,
     {
         self.0.as_mut()[field::SEQUENCE_NUMBER] = value;
     }
@@ -337,7 +336,7 @@ impl<T: Data + ?Sized> RawFrame<T> {
 
     fn set_dst_pan_id(&mut self, value: Pan)
     where
-        T: DataMut,
+        T: AsMut<[u8]>,
     {
         // NOTE the destination addressing mode must be different than Absent.
         // This is the reason why we set it to Extended.
@@ -377,7 +376,7 @@ impl<T: Data + ?Sized> RawFrame<T> {
 
     fn set_dst_addr(&mut self, value: Addr)
     where
-        T: DataMut,
+        T: AsMut<[u8]>,
     {
         match value {
             Addr::Absent => self.set_dst_addressing_mode(AddressingMode::Absent),
@@ -415,7 +414,7 @@ impl<T: Data + ?Sized> RawFrame<T> {
 
     fn set_src_pan_id(&mut self, value: Pan)
     where
-        T: DataMut,
+        T: AsMut<[u8]>,
     {
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => 0,
@@ -460,7 +459,7 @@ impl<T: Data + ?Sized> RawFrame<T> {
 
     fn set_src_addr(&mut self, value: Addr)
     where
-        T: DataMut,
+        T: AsMut<[u8]>,
     {
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => 0,
@@ -709,20 +708,20 @@ pub struct Frame<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Frame<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let frame = RawFrame(raw);
+        let frame = RawFrame(raw.data());
 
         let len = frame.0.len();
 
         // We need at least 3 bytes
         if len < 3 {
-            return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         // We don't handle frames with a payload larger than 127 bytes.
         if len > 127 {
-            return Err(ParseErrorKind::PacketTooLong.with(frame.0));
+            return Err(ParseErrorKind::PacketTooLong.with(raw));
         }
 
         let mut offset = field::ADDRESSING.start
@@ -734,7 +733,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
                 offset += src_addr.size();
 
                 if offset > len {
-                    return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+                    return Err(ParseErrorKind::PacketTooShort.with(raw));
                 }
                 offset
             } else {
@@ -744,14 +743,14 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
         if frame.security_enabled() {
             // First check that we can access the security header control bits.
             if offset + 1 > len {
-                return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+                return Err(ParseErrorKind::PacketTooShort.with(raw));
             }
 
             offset += frame.security_header_len();
         }
 
         if offset > len {
-            return Err(ParseErrorKind::PacketTooShort.with(frame.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         Ok(Frame {
@@ -764,7 +763,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Frame<T> {
             frame_version: frame.frame_version(),
             ends: frame.ends(),
 
-            payload: T::parse(cx, frame.0.pop(offset..len)?)?,
+            payload: T::parse(cx, raw.pop(offset..len)?)?,
         })
     }
 }

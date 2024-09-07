@@ -379,7 +379,7 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
             {
                 parse_quote!(<#ident as #prefix::WireSubstitute<#sub_ty>>::Output)
             }
-            GenericParam::Type(TypeParam { ident, ..}) if payload_ty == ident => {
+            GenericParam::Type(TypeParam { ident, .. }) if payload_ty == ident => {
                 parse_quote!(#sub_ty)
             }
             GenericParam::Type(TypeParam { ident, .. }) if no_payload_ty == ident => {

@@ -493,7 +493,7 @@ impl<T> Packet<T> {
 impl<T, P, U> WireParse for Packet<T>
 where
     T: WireParse<Payload = P>,
-    P: PayloadParse<NoPayload = U> + super::Data,
+    P: PayloadParse<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {

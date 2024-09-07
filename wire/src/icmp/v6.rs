@@ -6,7 +6,7 @@ use crate::{
     context::{Ends, WireCx},
     ip::{self, checksum},
     prelude::*,
-    Data, DataMut, IpAddrExt, Ipv6Packet,
+    IpAddrExt, Ipv6Packet,
 };
 
 #[path = "v6_nd.rs"]
@@ -290,7 +290,7 @@ wire!(impl RawPacket {
         |data, value| NetworkEndian::write_u32(&mut data[field::POINTER], value);
 });
 
-impl<T: Data + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
             Message::DstUnreachable => field::UNUSED.end,
@@ -331,7 +331,7 @@ impl<T: Data + ?Sized> RawPacket<T> {
     }
 }
 
-impl<T: DataMut + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
     pub fn data_mut(&mut self) -> &mut [u8] {
         let header_len = self.header_len();
         &mut self.0.as_mut()[header_len..]
@@ -423,16 +423,16 @@ pub enum Packet<#[wire] T, #[no_payload] U> {
 
 impl<P, T, U> WireParse for Packet<T, U>
 where
-    P: PayloadParse<NoPayload = U> + Data,
+    P: PayloadParse<NoPayload = U>,
     T: WireParse<Payload = P>,
     U: NoPayload<Init = P>,
 {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
-        let packet = RawPacket(raw);
+        let packet = RawPacket(raw.data());
 
         if len < 4 {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         match packet.msg_type() {
@@ -450,53 +450,53 @@ where
             | Message::Redirect
             | Message::MldReport => {
                 if len < field::HEADER_END || len < packet.header_len() {
-                    return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+                    return Err(ParseErrorKind::PacketTooShort.with(raw));
                 }
             }
-            Message::RplControl => return Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
-            Message::Unknown(_) => return Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
+            Message::RplControl => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
+            Message::Unknown(_) => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
         }
 
         if cx.checksums().icmp() && !packet.verify_checksum(cx.ip_addrs()) {
-            return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
+            return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
         match (packet.msg_type(), packet.msg_code()) {
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), raw.pop(field::UNUSED.end..len)?)?,
             }),
             (Message::PktTooBig, 0) => Ok(Packet::PktTooBig {
                 mtu: packet.pkt_too_big_mtu(),
-                payload: Ipv6Packet::parse(&(), packet.0.pop(field::MTU.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), raw.pop(field::MTU.end..len)?)?,
             }),
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Ipv6Packet::parse(&(), packet.0.pop(field::UNUSED.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), raw.pop(field::UNUSED.end..len)?)?,
             }),
             (Message::ParamProblem, code) => Ok(Packet::ParamProblem {
                 reason: ParamProblem::from(code),
                 pointer: packet.param_problem_ptr(),
-                payload: Ipv6Packet::parse(&(), packet.0.pop(field::POINTER.end..len)?)?,
+                payload: Ipv6Packet::parse(&(), raw.pop(field::POINTER.end..len)?)?,
             }),
             (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
             (Message::EchoReply, 0) => Ok(Packet::EchoReply {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, packet.0.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
             (msg, 0) if msg.is_nd() => Ok(Packet::Nd {
-                nd: match nd::Nd::parse(RawPacket(packet.0.as_ref())) {
+                nd: match nd::Nd::parse(RawPacket(raw.data())) {
                     Ok(nd) => nd,
-                    Err(kind) => return Err(kind.with(packet.0)),
+                    Err(kind) => return Err(kind.with(raw)),
                 },
-                payload: packet.0.truncate(),
+                payload: raw.truncate(),
             }),
-            _ => Err(ParseErrorKind::ProtocolUnknown.with(packet.0)),
+            _ => Err(ParseErrorKind::ProtocolUnknown.with(raw)),
         }
     }
 }

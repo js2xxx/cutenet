@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
 use super::{checksum, IpAddrExt, Protocol, WireCx};
-use crate::{context::Ends, prelude::*, Data, DataMut};
+use crate::{context::Ends, prelude::*};
 
 #[path = "v4_cidr.rs"]
 mod cidr;
@@ -129,7 +129,7 @@ wire!(impl RawPacket {
         |data, value| data[field::DST_ADDR].copy_from_slice(&value.octets());
 });
 
-impl<T: Data + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     pub fn addr(&self) -> Ends<Ipv4Addr> {
         Ends {
             src: self.src_addr(),
@@ -151,7 +151,7 @@ impl<T: Data + ?Sized> RawPacket<T> {
     }
 }
 
-impl<T: DataMut + ?Sized> RawPacket<T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
     fn clear_flags(&mut self) {
         let raw = NetworkEndian::read_u16(&self.0.as_mut()[field::FLG_OFF]);
         let raw = raw & !0xe000;
@@ -176,9 +176,9 @@ pub struct Packet<#[wire] T> {
     pub payload: T,
 }
 
-impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> {
+impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw);
+        let packet = RawPacket(raw.data());
 
         let len = packet.0.len();
         let total_len = packet.total_len();
@@ -187,15 +187,15 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
             || u16::from(packet.header_len()) > total_len
             || len < usize::from(packet.total_len())
         {
-            return Err(ParseErrorKind::PacketTooShort.with(packet.0));
+            return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
         if packet.version() != 4 {
-            return Err(ParseErrorKind::VersionInvalid.with(packet.0));
+            return Err(ParseErrorKind::VersionInvalid.with(raw));
         }
 
         if cx.checksums().ip() && !packet.verify_checksum() {
-            return Err(ParseErrorKind::ChecksumInvalid.with(packet.0));
+            return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
         let generic_addr = packet.addr().map(IpAddr::V4);
@@ -212,7 +212,7 @@ impl<P: PayloadParse + Data, T: WireParse<Payload = P>> WireParse for Packet<T> 
 
             payload: T::parse(
                 &[cx, &(generic_addr, next_header)],
-                packet.0.pop(HEADER_LEN..usize::from(total_len))?,
+                raw.pop(HEADER_LEN..usize::from(total_len))?,
             )?,
         })
     }
@@ -285,7 +285,7 @@ pub enum Ipv4Payload<#[wire] T> {
 impl<T, P, U> WireParse for Ipv4Payload<T>
 where
     T: WireParse<Payload = P>,
-    P: PayloadParse<NoPayload = U> + Data,
+    P: PayloadParse<NoPayload = U>,
     U: NoPayload<Init = P>,
 {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {

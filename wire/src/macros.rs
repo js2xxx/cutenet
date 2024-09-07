@@ -47,7 +47,7 @@ macro_rules! wire {
                 |$data_mut:ident, $arg:ident| $setter:expr;
         )*
     }) => {
-        impl<T: Data + ?Sized> $packet<T> {
+        impl<T: AsRef<[u8]> + ?Sized> $packet<T> {
             $(
                 #[allow(clippy::len_without_is_empty)]
                 $(#[$attr])*
@@ -60,7 +60,7 @@ macro_rules! wire {
             )*
         }
 
-        impl<T: DataMut + ?Sized> $packet<T> {
+        impl<T: AsMut<[u8]> + ?Sized> $packet<T> {
             $(
                 fn $set(&mut self, $arg: $ty) {
                     (|$data_mut: &mut [u8]| $setter)(self.0.as_mut())

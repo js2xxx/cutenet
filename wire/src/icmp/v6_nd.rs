@@ -5,7 +5,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use self::option::NdOption;
 use super::{field, Message, RawPacket};
-use crate::{ip::IpAddrExt, prelude::*, Data, DataMut, RawHwAddr};
+use crate::{ip::IpAddrExt, prelude::*, RawHwAddr};
 
 #[path = "v6_ndopt.rs"]
 mod option;
