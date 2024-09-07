@@ -51,16 +51,18 @@ where
                     payload = parse!(p);
                     continue;
                 }
-                Err(Some(buf)) => {
+                Err(Some(buf)) if let Some(mut tx) = router.device(now, hw.dst) => {
                     packet.payload = buf;
-                    icmp_reply(device_caps, v6_addr.reverse(), Icmpv6Packet::ParamProblem {
+                    let icmp = Icmpv6Packet::ParamProblem {
                         reason: Icmpv6ParamProblem::UnrecognizedOption,
                         pointer: packet.buffer_len() as u32,
                         payload: Lax(packet),
-                    });
+                    };
+                    let addr = v6_addr.reverse();
+                    let _ = tx.transmit(now, hw.src, icmp_reply(device_caps, addr, icmp));
                     SocketRecv::Received(())
                 }
-                Err(None) => SocketRecv::Received(()),
+                Err(_) => SocketRecv::Received(()),
             },
             Ipv6Payload::Icmp(packet) => {
                 process_icmp(now, device_caps, router, hw, v6_addr, packet);

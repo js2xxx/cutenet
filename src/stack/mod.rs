@@ -80,7 +80,7 @@ pub trait RouterExt<P: Payload>: Router<P> + Sized {
                 Action::Discard => {
                     let _ = tx.transmit(now, src_hw, match packet {
                         IpPacket::V4(packet) => ipv4::icmp_reply(
-                            &device_caps,
+                            &tx.device_caps(),
                             packet.addr.reverse(),
                             Icmpv4Packet::DstUnreachable {
                                 reason: Icmpv4DstUnreachable::HostUnreachable,
@@ -88,7 +88,7 @@ pub trait RouterExt<P: Payload>: Router<P> + Sized {
                             },
                         ),
                         IpPacket::V6(packet) => ipv6::icmp_reply(
-                            &device_caps,
+                            &tx.device_caps(),
                             packet.addr.reverse(),
                             Icmpv6Packet::DstUnreachable {
                                 reason: Icmpv6DstUnreachable::NoRoute,
@@ -116,14 +116,18 @@ pub trait RouterExt<P: Payload>: Router<P> + Sized {
         let packet = match res {
             SocketRecv::Received(()) => return true,
             SocketRecv::NotReceived(_) if raw_processed => return true,
-            SocketRecv::NotReceived(packet) => match packet {
+            SocketRecv::NotReceived(packet) => packet,
+        };
+
+        if let Some(mut tx) = self.device(now, hw.dst) {
+            let packet = match packet {
                 IpPacket::V4(packet) => {
                     let addr = packet.addr.reverse();
                     let icmp = Icmpv4Packet::DstUnreachable {
                         reason: Icmpv4DstUnreachable::ProtoUnreachable,
                         payload: Lax(packet),
                     };
-                    ipv4::icmp_reply(&device_caps, addr, icmp)
+                    ipv4::icmp_reply(&tx.device_caps(), addr, icmp)
                 }
                 IpPacket::V6(packet) => {
                     let addr = packet.addr.reverse();
@@ -132,11 +136,9 @@ pub trait RouterExt<P: Payload>: Router<P> + Sized {
                         pointer: packet.header_len() as u32,
                         payload: Lax(packet),
                     };
-                    ipv6::icmp_reply(&device_caps, addr, icmp)
+                    ipv6::icmp_reply(&tx.device_caps(), addr, icmp)
                 }
-            },
-        };
-        if let Some(mut tx) = self.device(now, hw.dst) {
+            };
             let _ = tx.transmit(now, src_hw, packet);
         }
         true

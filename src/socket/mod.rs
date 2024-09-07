@@ -24,24 +24,24 @@ pub enum SocketRecv<Orig, Reply> {
     Received(Reply),
 }
 
-pub trait RawSocketSet<T: Wire> {
-    fn receive(&mut self, now: Instant, device_caps: &DeviceCaps, packet: &IpPacket<T>) -> bool;
+pub trait RawSocketSet<P: Payload> {
+    fn receive(&mut self, now: Instant, device_caps: &DeviceCaps, packet: &IpPacket<P>) -> bool;
 }
 
-pub trait UdpSocketSet<T: Wire> {
+pub trait UdpSocketSet<P: Payload> {
     fn receive(
         self,
         now: Instant,
         device_caps: &DeviceCaps,
         addr: Ends<IpAddr>,
-        packet: UdpPacket<T>,
-    ) -> SocketRecv<UdpPacket<T>, ()>;
+        packet: UdpPacket<P>,
+    ) -> SocketRecv<UdpPacket<P>, ()>;
 }
 
-pub type TcpSocketRecv<T: Wire, Ss: SocketState> =
-    SocketRecv<TcpPacket<T>, Option<(TcpPacket<T>, Ss)>>;
+pub type TcpSocketRecv<P: Payload, Ss: SocketState> =
+    SocketRecv<TcpPacket<P>, Option<(TcpPacket<P>, Ss)>>;
 
-pub trait TcpSocketSet<T: Wire> {
+pub trait TcpSocketSet<P: Payload> {
     type SocketState: SocketState;
 
     fn receive(
@@ -49,22 +49,22 @@ pub trait TcpSocketSet<T: Wire> {
         now: Instant,
         device_caps: &DeviceCaps,
         addr: Ends<IpAddr>,
-        packet: TcpPacket<T>,
-    ) -> TcpSocketRecv<T, Self::SocketState>;
+        packet: TcpPacket<P>,
+    ) -> TcpSocketRecv<P, Self::SocketState>;
 }
 
-pub trait AllSocketSet<T: Wire> {
-    type Raw<'a>: RawSocketSet<T>
+pub trait AllSocketSet<P: Payload> {
+    type Raw<'a>: RawSocketSet<P>
     where
         Self: 'a;
     fn raw(&mut self) -> Self::Raw<'_>;
 
-    type Udp<'a>: UdpSocketSet<T>
+    type Udp<'a>: UdpSocketSet<P>
     where
         Self: 'a;
     fn udp(&mut self) -> Self::Udp<'_>;
 
-    type Tcp<'a>: TcpSocketSet<T>
+    type Tcp<'a>: TcpSocketSet<P>
     where
         Self: 'a;
     fn tcp(&mut self) -> Self::Tcp<'_>;
