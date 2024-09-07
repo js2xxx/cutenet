@@ -10,12 +10,13 @@ use quote::{
 use syn::*;
 
 const MSG_UNION: &str = "`Wire` cannot be derived on unions";
-const MSG_ONCE_STRUCT: &str = "`Wire` requires exactly one field with `#[wire]` or `#[no_payload]`";
+const MSG_ONCE_STRUCT: &str =
+    "`Wire` requires exactly one field with `#[wire]`, `#[payload]` or `#[no_payload]`";
 const MSG_ONCE_VARIANT: &str =
-    "`Wire` requires exactly one field with `#[wire]` or `#[no_payload]` in each variant";
-const MSG_ONCE_TY: &str = "`Wire` requires at most one type param with #[wire]";
+    "`Wire` requires exactly one field with `#[wire]`, `#[payload]` or `#[no_payload]` in each variant";
+const MSG_ONCE_TY: &str = "`Wire` requires at most one type param with";
 
-#[proc_macro_derive(Wire, attributes(wire, no_payload, prefix))]
+#[proc_macro_derive(Wire, attributes(wire, payload, no_payload, prefix))]
 pub fn derive_wire(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     match derive_impl(parse_macro_input!(input as DeriveInput)) {
         Ok(tokens) => tokens.into(),
@@ -37,9 +38,15 @@ impl ToTokens for IdentOrIndex {
     }
 }
 
+enum WireType {
+    Wire,
+    Payload,
+    NoPayload,
+}
+
 struct WirePayload {
     ident: IdentOrIndex,
-    is_inner: bool,
+    ty: WireType,
 }
 
 struct Branch {
@@ -91,7 +98,7 @@ fn derive_fields(
         matches!(
             &attr.meta,
             Meta::Path(p)
-                if p.is_ident("wire") || p.is_ident("no_payload")
+                if p.is_ident("wire") || p.is_ident("payload") || p.is_ident("no_payload")
         )
     };
     let pred_f = |(_, field): &(usize, &Field)| field.attrs.iter().any(pred_a);
@@ -105,14 +112,16 @@ fn derive_fields(
                     Some(ident) => IdentOrIndex::Ident(ident),
                     None => IdentOrIndex::Index(*ime),
                 },
-                is_inner: {
-                    let (wire, no_payload) = me.attrs.iter().fold((false, false), |(payload, no_payload), attr| (
-                        payload || matches!(&attr.meta, Meta::Path(p) if p.is_ident("wire")),
+                ty: {
+                    let [wire, payload, no_payload] = me.attrs.iter().fold([false; 3], |[wire, payload, no_payload], attr| [
+                        wire || matches!(&attr.meta, Meta::Path(p) if p.is_ident("wire")),
+                        payload || matches!(&attr.meta, Meta::Path(p) if p.is_ident("payload")),
                         no_payload || matches!(&attr.meta, Meta::Path(p) if p.is_ident("no_payload")),
-                    ));
-                    match (wire, no_payload) {
-                        (true, false) => true,
-                        (false, true) => false,
+                    ]);
+                    match (wire, payload, no_payload) {
+                        (true, false, false) => WireType::Wire,
+                        (false, true, false) => WireType::Payload,
+                        (false, false, true) => WireType::NoPayload,
                         _ => return Err(Error::new_spanned(&me.ident, msg)),
                     }
                 },
@@ -148,62 +157,96 @@ fn derive_fields(
 
 fn derive_variant(prefix: &Path, ident: &Ident, fields: Fields, msg: &str) -> Result<Branch> {
     let (wire, before, after) = derive_fields(ident, fields, msg)?;
-    match &wire.ident {
-        IdentOrIndex::Ident(field) if wire.is_inner => Ok(Branch {
-            payload_len: quote! {
-                #ident { #field, .. } =>
-                #prefix::Wire::payload_len(#field)
+    Ok(match &wire.ident {
+        IdentOrIndex::Ident(field) => match wire.ty {
+            WireType::Wire => Branch {
+                payload_len: quote! {
+                    #ident { #field, .. } =>
+                    #prefix::Wire::payload_len(#field)
+                },
+                substitute_pat: quote!(#ident { #(#before,)* #field, #(#after,)* } =>),
+                substitute_expr: quote! {
+                    #ident {
+                        #(#before,)*
+                        #field: #field .substitute(__sub_payload, __sub_no_payload),
+                        #(#after,)*
+                    }
+                },
+                wire,
             },
-            substitute_pat: quote!(#ident { #(#before,)* #field, #(#after,)* } =>),
-            substitute_expr: quote! {
-                #ident {
-                    #(#before,)*
-                    #field: #field .substitute(__sub_payload, __sub_no_payload),
-                    #(#after,)*
-                }
+            WireType::Payload => Branch {
+                payload_len: quote! {
+                    #ident { #field, .. } =>
+                    #prefix::Payload::len(#field)
+                },
+                substitute_pat: quote!(#ident { #(#before,)* #field, #(#after,)* } =>),
+                substitute_expr: quote! {
+                    #ident {
+                        #(#before,)*
+                        #field: __sub_payload(#field),
+                        #(#after,)*
+                    }
+                },
+                wire,
             },
-            wire,
-        }),
-        IdentOrIndex::Ident(field) => Ok(Branch {
-            payload_len: quote!(#ident { .. } => 0),
-            substitute_pat: quote!(#ident { #(#before,)* #field, #(#after,)* } =>),
-            substitute_expr: quote! {
-                #ident {
-                    #(#before,)*
-                    #field: __sub_no_payload(#field),
-                    #(#after,)*
-                }
+            WireType::NoPayload => Branch {
+                payload_len: quote!(#ident { .. } => 0),
+                substitute_pat: quote!(#ident { #(#before,)* #field, #(#after,)* } =>),
+                substitute_expr: quote! {
+                    #ident {
+                        #(#before,)*
+                        #field: __sub_no_payload(#field),
+                        #(#after,)*
+                    }
+                },
+                wire,
             },
-            wire,
-        }),
-        &IdentOrIndex::Index(_) if wire.is_inner => Ok(Branch {
-            payload_len: quote! {
-                #ident (#(#before,)* field, ..) =>
-                #prefix::Wire::payload_len(field)
+        },
+        &IdentOrIndex::Index(_) => match wire.ty {
+            WireType::Wire => Branch {
+                payload_len: quote! {
+                    #ident (#(#before,)* field, ..) =>
+                    #prefix::Wire::payload_len(field)
+                },
+                substitute_pat: quote!(#ident ( #(#before,)* field, #(#after,)* ) =>),
+                substitute_expr: quote! {
+                    #ident (
+                        #(#before,)*
+                        field .substitute(__sub_payload, __sub_no_payload),
+                        #(#after,)*
+                    )
+                },
+                wire,
             },
-            substitute_pat: quote!(#ident ( #(#before,)* field, #(#after,)* ) =>),
-            substitute_expr: quote! {
-                #ident (
-                    #(#before,)*
-                    field .substitute(__sub_payload, __sub_no_payload),
-                    #(#after,)*
-                )
+            WireType::Payload => Branch {
+                payload_len: quote! {
+                    #ident (#(#before,)* field, ..) =>
+                    #prefix::Payload::len(field)
+                },
+                substitute_pat: quote!(#ident ( #(#before,)* field, #(#after,)* ) =>),
+                substitute_expr: quote! {
+                    #ident (
+                        #(#before,)*
+                        __sub_payload(field),
+                        #(#after,)*
+                    )
+                },
+                wire,
             },
-            wire,
-        }),
-        IdentOrIndex::Index(_) => Ok(Branch {
-            payload_len: quote!(#ident (..) => 0),
-            substitute_pat: quote!(#ident ( #(#before,)* field, #(#after,)* ) =>),
-            substitute_expr: quote! {
-                #ident (
-                    #(#before,)*
-                    __sub_no_payload(field),
-                    #(#after,)*
-                )
+            WireType::NoPayload => Branch {
+                payload_len: quote!(#ident (..) => 0),
+                substitute_pat: quote!(#ident ( #(#before,)* field, #(#after,)* ) =>),
+                substitute_expr: quote! {
+                    #ident (
+                        #(#before,)*
+                        __sub_no_payload(field),
+                        #(#after,)*
+                    )
+                },
+                wire,
             },
-            wire,
-        }),
-    }
+        },
+    })
 }
 
 fn derive_struct(prefix: &Path, ident: &Ident, data: DataStruct) -> Result<Vec<Branch>> {
@@ -242,11 +285,14 @@ fn derive_generics(generics: &mut Generics) -> Result<(Generics, WireTys)> {
                 param.attrs.retain(|attr| !pred_a(attr));
                 Some(param.clone())
             }
-            [_, two, ..] => return Err(Error::new_spanned(two, MSG_ONCE_TY)),
+            [_, two, ..] => {
+                return Err(Error::new_spanned(two, format!("{MSG_ONCE_TY} #[{ident}]")))
+            }
         })
     }
 
     let wire_ty = type_param(generics, "wire")?;
+    let payload_ty = type_param(generics, "payload")?;
     let no_payload_ty = type_param(generics, "no_payload")?;
 
     let orig = generics.clone();
@@ -254,10 +300,13 @@ fn derive_generics(generics: &mut Generics) -> Result<(Generics, WireTys)> {
 
     Ok((orig, WireTys {
         wire_ty: wire_ty.map(|TypeParam { ident, .. }| ident),
-        payload_ty: {
-            let ident = Ident::new("__PayloadType", Span::call_site());
-            generics.params.push(parse_quote!(#ident));
-            ident
+        payload_ty: match payload_ty {
+            Some(TypeParam { ident, .. }) => ident,
+            None => {
+                let ident = Ident::new("__PayloadType", Span::call_site());
+                generics.params.push(parse_quote!(#ident));
+                ident
+            }
         },
         no_payload_ty: match no_payload_ty {
             Some(TypeParam { ident, .. }) => ident,
@@ -329,6 +378,9 @@ fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
                     && wire_ty == ident =>
             {
                 parse_quote!(<#ident as #prefix::WireSubstitute<#sub_ty>>::Output)
+            }
+            GenericParam::Type(TypeParam { ident, ..}) if payload_ty == ident => {
+                parse_quote!(#sub_ty)
             }
             GenericParam::Type(TypeParam { ident, .. }) if no_payload_ty == ident => {
                 parse_quote!(<#sub_ty as #prefix::Payload>::NoPayload)
