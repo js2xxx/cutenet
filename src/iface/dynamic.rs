@@ -1,17 +1,14 @@
 use core::{
+    fmt,
     net::{IpAddr, Ipv6Addr},
     ptr,
 };
 
 use super::{HwAddr, NetPayload, NetRx, NetTx, TxResult};
-use crate::{
-    iface::neighbor::{CacheOption, LookupError},
-    phy::DeviceCaps,
-    time::Instant,
-    wire::*,
-};
+use crate::{iface::neighbor::CacheOption, phy::DeviceCaps, time::Instant, wire::*};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
+#[allow(clippy::type_complexity)]
 pub struct DynNetTxVTable<P: Payload> {
     pub hw_addr: unsafe fn(*const ()) -> HwAddr,
 
@@ -25,15 +22,28 @@ pub struct DynNetTxVTable<P: Payload> {
 
     pub has_solicited_node: unsafe fn(*const (), ip: Ipv6Addr) -> bool,
 
-    pub fill_neighbor_cache:
-        unsafe fn(*mut (), now: Instant, entry: (IpAddr, HwAddr), opt: CacheOption),
+    pub fill_neighbor_cache: unsafe fn(
+        *mut (),
+        now: Instant,
+        opt: CacheOption,
+        nop: Option<P::NoPayload>,
+        entry: (IpAddr, HwAddr),
+    ),
 
     pub lookup_neighbor_cache:
-        unsafe fn(*const (), now: Instant, ip: IpAddr) -> Result<HwAddr, LookupError>,
+        unsafe fn(*mut (), now: Instant, ip: IpAddr) -> Result<HwAddr, Option<P::NoPayload>>,
 
     pub transmit: unsafe fn(*mut (), now: Instant, dst: HwAddr, packet: NetPayload<P>) -> TxResult,
 
     pub drop: unsafe fn(*mut ()),
+}
+
+impl<P: Payload> fmt::Debug for DynNetTxVTable<P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("DynNetTxVTable")
+            .field(&ptr::from_ref(self))
+            .finish()
+    }
 }
 
 impl<P: Payload> PartialEq for DynNetTxVTable<P> {
@@ -102,18 +112,19 @@ macro_rules! dyn_net_tx {
             fn fill_neighbor_cache(
                 &mut self,
                 now: Instant,
-                entry: (IpAddr, HwAddr),
                 opt: CacheOption,
+                nop: Option<P::NoPayload>,
+                entry: (IpAddr, HwAddr),
             ) {
                 // SAFETY: `self.data` and `self.vtable` is valid.
-                unsafe { (self.vtable.fill_neighbor_cache)(self.data, now, entry, opt) }
+                unsafe { (self.vtable.fill_neighbor_cache)(self.data, now, opt, nop, entry) }
             }
 
             fn lookup_neighbor_cache(
-                &self,
+                &mut self,
                 now: Instant,
                 ip: IpAddr,
-            ) -> Result<HwAddr, LookupError> {
+            ) -> Result<HwAddr, Option<P::NoPayload>> {
                 // SAFETY: `self.data` and `self.vtable` is valid.
                 unsafe { (self.vtable.lookup_neighbor_cache)(self.data, now, ip) }
             }
@@ -144,8 +155,8 @@ macro_rules! dyn_net_tx {
                         has_solicited_node: |data, ip| unsafe {
                             ($($ref)? *data.cast::<X>()).has_solicited_node(ip)
                         },
-                        fill_neighbor_cache: |data, now, entry, opt| unsafe {
-                            ($($ref)? *data.cast::<X>()).fill_neighbor_cache(now, entry, opt)
+                        fill_neighbor_cache: |data, now, opt, nop, entry| unsafe {
+                            ($($ref)? *data.cast::<X>()).fill_neighbor_cache(now, opt, nop, entry)
                         },
                         lookup_neighbor_cache: |data, now, ip| unsafe {
                             ($($ref)? *data.cast::<X>()).lookup_neighbor_cache(now, ip)
@@ -173,8 +184,8 @@ macro_rules! dyn_net_tx {
                         has_solicited_node: |data, ip| unsafe {
                             ($($ref)? *data.cast::<X>()).has_solicited_node(ip)
                         },
-                        fill_neighbor_cache: |data, now, entry, opt| unsafe {
-                            ($($ref)? *data.cast::<X>()).fill_neighbor_cache(now, entry, opt)
+                        fill_neighbor_cache: |data, now, opt, nop, entry| unsafe {
+                            ($($ref)? *data.cast::<X>()).fill_neighbor_cache(now, opt, nop, entry)
                         },
                         lookup_neighbor_cache: |data, now, ip| unsafe {
                             ($($ref)? *data.cast::<X>()).lookup_neighbor_cache(now, ip)
@@ -239,7 +250,7 @@ dyn_net_tx! {
     / [X: NetTx<P>]
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct DynNetRxVTable<P: Payload> {
     pub hw_addr: unsafe fn(*const ()) -> HwAddr,
 
@@ -249,6 +260,14 @@ pub struct DynNetRxVTable<P: Payload> {
     pub receive: unsafe fn(*mut (), now: Instant) -> Option<(HwAddr, NetPayload<P>)>,
 
     pub drop: unsafe fn(*mut ()),
+}
+
+impl<P: Payload> fmt::Debug for DynNetRxVTable<P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("DynNetRxVTable")
+            .field(&ptr::from_ref(self))
+            .finish()
+    }
 }
 
 impl<P: Payload> PartialEq for DynNetRxVTable<P> {

@@ -6,8 +6,7 @@ use crate::{
     iface::{neighbor::CacheOption, NetTx},
     phy::DeviceCaps,
     route::Router,
-    socket::{AllSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet},
-    stack::RouterExt,
+    socket::{AllSocketSet, TcpSocketSet, UdpSocketSet},
     time::Instant,
     wire::*,
 };
@@ -19,7 +18,7 @@ pub(super) fn process<P, R, A>(
     sockets: &mut A,
     hw: Ends<HwAddr>,
     mut packet: Ipv6Packet<P>,
-) -> SocketRecv<IpPacket<P>, ()>
+) -> Result<(), IpPacket<P>>
 where
     P: PayloadParse + PayloadBuild,
     R: Router<P>,
@@ -35,7 +34,7 @@ where
                 $payload,
             ) {
                 Ok(payload) => payload,
-                Err(err) => log_parse!(err => SocketRecv::NotReceived({
+                Err(err) => log_parse!(err => Err({
                     packet.payload = err.data;
                     IpPacket::V6(packet)
                 })),
@@ -60,43 +59,31 @@ where
                     };
                     let addr = v6_addr.reverse();
                     let _ = tx.transmit(now, hw.src, icmp_reply(device_caps, addr, icmp));
-                    SocketRecv::Received(())
+                    Ok(())
                 }
-                Err(_) => SocketRecv::Received(()),
+                Err(_) => Ok(()),
             },
             Ipv6Payload::Icmp(packet) => {
                 process_icmp(now, device_caps, router, hw, v6_addr, packet);
-                SocketRecv::Received(())
+                Ok(())
             }
             Ipv6Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
-                SocketRecv::Received(()) => SocketRecv::Received(()),
-                SocketRecv::NotReceived(udp) => SocketRecv::NotReceived({
+                Ok(()) => Ok(()),
+                Err(udp) => Err({
                     packet.payload = uncheck_build!(udp.payload.prepend(UDP_HEADER_LEN));
                     IpPacket::V6(packet)
                 }),
             },
-            Ipv6Payload::Tcp(tcp) => match sockets.tcp().receive(now, device_caps, addr, tcp) {
-                SocketRecv::Received(opt) => SocketRecv::Received(opt.map_or((), |(reply, ss)| {
-                    let addr = v6_addr.reverse();
-                    let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V6));
-                    let packet = Ipv6Packet {
-                        addr,
-                        next_header: IpProtocol::Tcp,
-                        hop_limit: 64,
-                        payload: uncheck_build!(reply.build(cx)),
-                    };
-
-                    // The result is ignored here because it is already recorded in `ss`.
-                    let _ = router.dispatch(now, addr.map(Into::into), IpProtocol::Tcp, |_| {
-                        Ok::<_, ()>((IpPacket::V6(packet), ss))
-                    });
-                })),
-                SocketRecv::NotReceived(tcp) => SocketRecv::NotReceived({
-                    let header_len = tcp.header_len();
-                    packet.payload = uncheck_build!(tcp.payload.prepend(header_len));
-                    IpPacket::V6(packet)
-                }),
-            },
+            Ipv6Payload::Tcp(tcp) => {
+                match sockets.tcp().receive(now, device_caps, router, addr, tcp) {
+                    Ok(()) => Ok(()),
+                    Err(tcp) => Err({
+                        let header_len = tcp.header_len();
+                        packet.payload = uncheck_build!(tcp.payload.prepend(header_len));
+                        IpPacket::V6(packet)
+                    }),
+                }
+            }
         };
     }
 }
@@ -180,12 +167,20 @@ fn process_nd<P, R>(
         Icmpv6Nd::NeighborSolicit { target_addr, lladdr }
             if let Some(mut dev) = router.device(now, hw.dst) =>
         {
-            if let Some(lladdr) = lladdr.and_then(|lladdr| lladdr.parse(&hw.src))
-                && (lladdr.is_unicast() && target_addr.is_unicast())
-            {
-                dev.fill_neighbor_cache(now, (target_addr.into(), lladdr), CacheOption::Override);
-            }
+            let lladdr = lladdr
+                .and_then(|lladdr| lladdr.parse(&hw.src))
+                .filter(|lladdr| lladdr.is_unicast() && target_addr.is_unicast());
+
             if dev.has_solicited_node(addr.dst) && dev.has_ip(target_addr.into()) {
+                if let Some(lladdr) = lladdr {
+                    dev.fill_neighbor_cache(
+                        now,
+                        CacheOption::Override,
+                        None,
+                        (target_addr.into(), lladdr),
+                    );
+                }
+
                 let icmp = Icmpv6Packet::Nd {
                     nd: Icmpv6Nd::NeighborAdvert {
                         flags: Icmpv6NeighborFlags::SOLICITED,
@@ -196,6 +191,13 @@ fn process_nd<P, R>(
                 };
                 let addr = Ends { src: target_addr, dst: addr.src };
                 let _ = dev.transmit(now, hw.src, icmp_reply(device_caps, addr, icmp));
+            } else if let Some(lladdr) = lladdr {
+                dev.fill_neighbor_cache(
+                    now,
+                    CacheOption::Override,
+                    Some(payload),
+                    (target_addr.into(), lladdr),
+                );
             }
         }
         Icmpv6Nd::NeighborSolicit { .. } => {}
@@ -210,7 +212,7 @@ fn process_nd<P, R>(
             } else {
                 CacheOption::TryInsert
             };
-            dev.fill_neighbor_cache(now, (target_addr.into(), lladdr), opt);
+            dev.fill_neighbor_cache(now, opt, Some(payload), (target_addr.into(), lladdr));
         }
         Icmpv6Nd::NeighborAdvert { .. } => {}
 

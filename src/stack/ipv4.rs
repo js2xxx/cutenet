@@ -4,8 +4,7 @@ use crate::{
     iface::NetTx,
     phy::DeviceCaps,
     route::Router,
-    socket::{AllSocketSet, SocketRecv, TcpSocketSet, UdpSocketSet},
-    stack::RouterExt,
+    socket::{AllSocketSet, TcpSocketSet, UdpSocketSet},
     time::Instant,
     wire::*,
 };
@@ -17,7 +16,7 @@ pub(super) fn process<P, R, A>(
     sockets: &mut A,
     hw: Ends<HwAddr>,
     mut packet: Ipv4Packet<P>,
-) -> SocketRecv<IpPacket<P>, ()>
+) -> Result<(), IpPacket<P>>
 where
     P: PayloadParse + PayloadBuild,
     R: Router<P>,
@@ -31,7 +30,7 @@ where
         packet.payload,
     ) {
         Ok(payload) => payload,
-        Err(err) => log_parse!(err => SocketRecv::NotReceived({
+        Err(err) => log_parse!(err => Err({
             packet.payload = err.data;
             IpPacket::V4(packet)
         })),
@@ -40,33 +39,18 @@ where
     match payload {
         Ipv4Payload::Icmp(packet) => {
             process_icmp(now, device_caps, router, hw, v4_addr, packet);
-            SocketRecv::Received(())
+            Ok(())
         }
         Ipv4Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
-            SocketRecv::Received(()) => SocketRecv::Received(()),
-            SocketRecv::NotReceived(udp) => SocketRecv::NotReceived({
+            Ok(()) => Ok(()),
+            Err(udp) => Err({
                 packet.payload = uncheck_build!(udp.payload.prepend(UDP_HEADER_LEN));
                 IpPacket::V4(packet)
             }),
         },
-        Ipv4Payload::Tcp(tcp) => match sockets.tcp().receive(now, device_caps, addr, tcp) {
-            SocketRecv::Received(opt) => SocketRecv::Received(opt.map_or((), |(reply, ss)| {
-                let addr = v4_addr.reverse();
-                let cx = &(device_caps.tx_checksums, addr.map(IpAddr::V4));
-                let packet = Ipv4Packet {
-                    addr,
-                    next_header: IpProtocol::Tcp,
-                    hop_limit: 64,
-                    frag_info: None,
-                    payload: uncheck_build!(reply.build(cx)),
-                };
-
-                // The result is ignored here because it is already recorded in `ss`.
-                let _ = router.dispatch(now, addr.map(Into::into), IpProtocol::Tcp, |_| {
-                    Ok::<_, ()>((IpPacket::V4(packet), ss))
-                });
-            })),
-            SocketRecv::NotReceived(tcp) => SocketRecv::NotReceived({
+        Ipv4Payload::Tcp(tcp) => match sockets.tcp().receive(now, device_caps, router, addr, tcp) {
+            Ok(()) => Ok(()),
+            Err(tcp) => Err({
                 let header_len = tcp.header_len();
                 packet.payload = uncheck_build!(tcp.payload.prepend(header_len));
                 IpPacket::V4(packet)

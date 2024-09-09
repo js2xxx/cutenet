@@ -7,6 +7,7 @@ pub const STATIC_MAX_FRAGMENT_PACKET_COUNT: usize = 16;
 pub const STATIC_NEIGHBOR_CACHE_CAPACITY: usize = 8;
 
 pub const STATIC_IFACE_IP_CAPACITY: usize = 5;
+pub const STATIC_IFACE_ND_PAYLOAD_CAPACITY: usize = 32;
 
 pub const STATIC_LOOPBACK_CAPACITY: usize = 1024;
 

@@ -5,14 +5,13 @@ use heapless::Vec;
 use super::{neighbor::StaticNeighborCache, HwAddr, NetPayload, NetRx, NetTx};
 use crate::{
     config::*,
-    iface::neighbor::{CacheOption, LookupError},
+    iface::neighbor::CacheOption,
     phy::{DeviceCaps, PhyRx, PhyTx},
     time::Instant,
     wire::*,
     TxResult,
 };
 
-#[derive(Debug)]
 pub struct EthernetRx<D: ?Sized> {
     device: D,
 }
@@ -62,29 +61,50 @@ where
 }
 
 #[derive(Debug)]
-pub struct EthernetTx<D: ?Sized> {
+pub struct EthernetTx<P, D>
+where
+    P: Payload,
+    D: PhyTx<P> + ?Sized,
+{
     ip: Vec<IpCidr, STATIC_IFACE_IP_CAPACITY>,
     neighbor_cache: StaticNeighborCache,
+    nd_payload_cache: Vec<P::NoPayload, STATIC_IFACE_ND_PAYLOAD_CAPACITY>,
     device: D,
 }
 
-impl<D> EthernetTx<D> {
+impl<P, D> EthernetTx<P, D>
+where
+    P: Payload,
+    D: PhyTx<P>,
+{
     pub const fn new(device: D) -> Self {
         Self {
             ip: Vec::new(),
             neighbor_cache: StaticNeighborCache::new(),
+            nd_payload_cache: Vec::new(),
             device,
         }
     }
 }
 
-impl<D: ?Sized> EthernetTx<D> {
+impl<P, D> EthernetTx<P, D>
+where
+    P: Payload,
+    D: PhyTx<P> + ?Sized,
+{
     pub fn flush_cache(&mut self) {
         self.neighbor_cache.flush()
     }
+
+    pub fn update_nd_payload_cache<T, F>(&mut self, f: F) -> T
+    where
+        F: FnOnce(&mut Vec<P::NoPayload, STATIC_IFACE_ND_PAYLOAD_CAPACITY>) -> T,
+    {
+        f(&mut self.nd_payload_cache)
+    }
 }
 
-impl<P, D> NetTx<P> for EthernetTx<D>
+impl<P, D> NetTx<P> for EthernetTx<P, D>
 where
     P: PayloadBuild,
     D: PhyTx<P> + ?Sized,
@@ -121,12 +141,29 @@ where
         })
     }
 
-    fn fill_neighbor_cache(&mut self, now: Instant, entry: (IpAddr, HwAddr), opt: CacheOption) {
+    fn fill_neighbor_cache(
+        &mut self,
+        now: Instant,
+        opt: CacheOption,
+        nop: Option<P::NoPayload>,
+        entry: (IpAddr, HwAddr),
+    ) {
         self.neighbor_cache.fill(now, entry, opt);
+        if let Some(nop) = nop {
+            let _ = self.nd_payload_cache.push(nop);
+        }
     }
 
-    fn lookup_neighbor_cache(&self, now: Instant, ip: IpAddr) -> Result<HwAddr, LookupError> {
-        self.neighbor_cache.lookup(now, ip)
+    fn lookup_neighbor_cache(
+        &mut self,
+        now: Instant,
+        ip: IpAddr,
+    ) -> Result<HwAddr, Option<P::NoPayload>> {
+        let lookup = self.neighbor_cache.lookup(now, ip);
+        lookup.map_err(|err| match err.rate_limited {
+            true => None,
+            false => self.nd_payload_cache.pop(),
+        })
     }
 
     fn transmit(&mut self, now: Instant, dst: HwAddr, packet: NetPayload<P>) -> TxResult {

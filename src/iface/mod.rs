@@ -1,6 +1,6 @@
 use core::net::{IpAddr, Ipv6Addr};
 
-use self::neighbor::{CacheOption, LookupError};
+use self::neighbor::CacheOption;
 use super::{phy::DeviceCaps, TxResult};
 use crate::{time::Instant, wire::*};
 
@@ -24,9 +24,19 @@ pub trait NetTx<P: Payload> {
 
     fn has_solicited_node(&self, ip: Ipv6Addr) -> bool;
 
-    fn fill_neighbor_cache(&mut self, now: Instant, entry: (IpAddr, HwAddr), opt: CacheOption);
+    fn fill_neighbor_cache(
+        &mut self,
+        now: Instant,
+        opt: CacheOption,
+        nop: Option<P::NoPayload>,
+        entry: (IpAddr, HwAddr),
+    );
 
-    fn lookup_neighbor_cache(&self, now: Instant, ip: IpAddr) -> Result<HwAddr, LookupError>;
+    fn lookup_neighbor_cache(
+        &mut self,
+        now: Instant,
+        ip: IpAddr,
+    ) -> Result<HwAddr, Option<P::NoPayload>>;
 
     fn transmit(&mut self, now: Instant, dst: HwAddr, packet: NetPayload<P>) -> TxResult;
 }
@@ -38,10 +48,19 @@ where
     fn fill_neighbor_cache(
         mut self: &Self,
         now: Instant,
-        entry: (IpAddr, HwAddr),
         opt: CacheOption,
+        nop: Option<P::NoPayload>,
+        entry: (IpAddr, HwAddr),
     ) {
-        NetTx::fill_neighbor_cache(&mut self, now, entry, opt)
+        NetTx::fill_neighbor_cache(&mut self, now, opt, nop, entry)
+    }
+
+    fn lookup_neighbor_cache(
+        mut self: &Self,
+        now: Instant,
+        ip: IpAddr,
+    ) -> Result<HwAddr, Option<P::NoPayload>> {
+        NetTx::lookup_neighbor_cache(&mut self, now, ip)
     }
 
     fn transmit(mut self: &Self, now: Instant, dst: HwAddr, packet: NetPayload<P>) -> TxResult {
@@ -84,11 +103,21 @@ impl<P: Payload, N: NetTx<P>> NetTx<P> for &'_ mut N {
         (**self).has_solicited_node(ip)
     }
 
-    fn fill_neighbor_cache(&mut self, now: Instant, entry: (IpAddr, HwAddr), opt: CacheOption) {
-        (**self).fill_neighbor_cache(now, entry, opt)
+    fn fill_neighbor_cache(
+        &mut self,
+        now: Instant,
+        opt: CacheOption,
+        nop: Option<P::NoPayload>,
+        entry: (IpAddr, HwAddr),
+    ) {
+        (**self).fill_neighbor_cache(now, opt, nop, entry)
     }
 
-    fn lookup_neighbor_cache(&self, now: Instant, ip: IpAddr) -> Result<HwAddr, LookupError> {
+    fn lookup_neighbor_cache(
+        &mut self,
+        now: Instant,
+        ip: IpAddr,
+    ) -> Result<HwAddr, Option<P::NoPayload>> {
         (**self).lookup_neighbor_cache(now, ip)
     }
 

@@ -1,6 +1,6 @@
 use core::{fmt, net::SocketAddr, num::NonZero};
 
-use crate::{iface::NetTx, route::Router, stack::RouterExt, time::Instant, wire::*, TxResult};
+use crate::{iface::NetTx, route::Router, time::Instant, wire::*, TxResult};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BindError {
@@ -152,7 +152,7 @@ impl Socket {
     pub fn send_to_with<P, R>(
         &mut self,
         now: Instant,
-        mut router: R,
+        router: R,
         dst: SocketAddr,
         data: impl FnOnce(&R::Tx<'_>) -> P,
     ) -> Result<TxResult, SendError<Option<P>>>
@@ -174,7 +174,9 @@ impl Socket {
 
         let ip = Ends { src, dst }.map(|s| s.ip());
 
-        router.dispatch(now, ip, IpProtocol::Udp, |tx| {
+        crate::stack::dispatch(router, now, ip, IpProtocol::Udp, |tx| {
+            let Ok(tx) = tx else { return Ok(None) };
+
             let data = data(tx);
 
             let buffer_len = data.len()
@@ -219,7 +221,7 @@ impl Socket {
                 _ => unreachable!(),
             };
 
-            Ok((packet, ()))
+            Ok(Some(packet))
         })
     }
 }

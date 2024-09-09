@@ -1,28 +1,8 @@
 use core::net::IpAddr;
 
-use crate::{phy::DeviceCaps, time::Instant, wire::*};
+use crate::{phy::DeviceCaps, route::Router, time::Instant, wire::*};
 
 pub mod udp;
-
-pub trait SocketState {
-    fn update(&mut self, now: Instant, test: impl FnOnce(IpAddr) -> bool) -> bool;
-
-    fn neighbor_missing(self, now: Instant, ip: IpAddr);
-}
-
-impl SocketState for () {
-    fn update(&mut self, _now: Instant, _test: impl FnOnce(IpAddr) -> bool) -> bool {
-        false
-    }
-
-    fn neighbor_missing(self, _now: Instant, _ip: IpAddr) {}
-}
-
-#[derive(Debug)]
-pub enum SocketRecv<Orig, Reply> {
-    NotReceived(Orig),
-    Received(Reply),
-}
 
 pub trait RawSocketSet<P: Payload> {
     fn receive(&mut self, now: Instant, device_caps: &DeviceCaps, packet: &IpPacket<P>) -> bool;
@@ -35,22 +15,18 @@ pub trait UdpSocketSet<P: Payload> {
         device_caps: &DeviceCaps,
         addr: Ends<IpAddr>,
         packet: UdpPacket<P>,
-    ) -> SocketRecv<UdpPacket<P>, ()>;
+    ) -> Result<(), UdpPacket<P>>;
 }
 
-pub type TcpSocketRecv<P: Payload, Ss: SocketState> =
-    SocketRecv<TcpPacket<P>, Option<(TcpPacket<P>, Ss)>>;
-
 pub trait TcpSocketSet<P: Payload> {
-    type SocketState: SocketState;
-
-    fn receive(
+    fn receive<R: Router<P>>(
         self,
         now: Instant,
         device_caps: &DeviceCaps,
+        router: &mut R,
         addr: Ends<IpAddr>,
         packet: TcpPacket<P>,
-    ) -> TcpSocketRecv<P, Self::SocketState>;
+    ) -> Result<(), TcpPacket<P>>;
 }
 
 pub trait AllSocketSet<P: Payload> {

@@ -5,15 +5,10 @@ use core::{
 
 use heapless::mpmc::MpMcQueue;
 
-use super::{NetRx, NetTx, NetPayload};
+use super::{NetPayload, NetRx, NetTx};
 use crate::{
-    config::STATIC_LOOPBACK_CAPACITY,
-    iface::neighbor::{CacheOption, LookupError},
-    phy::DeviceCaps,
-    time::Instant,
-    wire::*,
-    TxDropReason::QueueFull,
-    TxResult,
+    config::STATIC_LOOPBACK_CAPACITY, iface::neighbor::CacheOption, phy::DeviceCaps, time::Instant,
+    wire::*, TxDropReason::QueueFull, TxResult,
 };
 
 pub struct StaticLoopback<P: Payload> {
@@ -100,13 +95,24 @@ impl<P: Payload> NetTx<P> for &StaticLoopback<P> {
         })
     }
 
-    fn fill_neighbor_cache(&mut self, _: Instant, _: (IpAddr, HwAddr), _: CacheOption) {}
+    fn fill_neighbor_cache(
+        &mut self,
+        _: Instant,
+        _: CacheOption,
+        _: Option<P::NoPayload>,
+        _: (IpAddr, HwAddr),
+    ) {
+    }
 
-    fn lookup_neighbor_cache(&self, _: Instant, ip: IpAddr) -> Result<HwAddr, LookupError> {
+    fn lookup_neighbor_cache(
+        &mut self,
+        _: Instant,
+        ip: IpAddr,
+    ) -> Result<HwAddr, Option<P::NoPayload>> {
         if self.is_same_net(ip) {
             Ok(HwAddr::Ip)
         } else {
-            Err(LookupError { rate_limited: false })
+            Err(None)
         }
     }
 
@@ -194,13 +200,24 @@ mod alloc {
             })
         }
 
-        fn fill_neighbor_cache(&mut self, _: Instant, _: (IpAddr, HwAddr), _: CacheOption) {}
+        fn fill_neighbor_cache(
+            &mut self,
+            _: Instant,
+            _: CacheOption,
+            _: Option<P::NoPayload>,
+            _: (IpAddr, HwAddr),
+        ) {
+        }
 
-        fn lookup_neighbor_cache(&self, _: Instant, ip: IpAddr) -> Result<HwAddr, LookupError> {
+        fn lookup_neighbor_cache(
+            &mut self,
+            _: Instant,
+            ip: IpAddr,
+        ) -> Result<HwAddr, Option<P::NoPayload>> {
             if self.is_same_net(ip) {
                 Ok(HwAddr::Ip)
             } else {
-                Err(LookupError { rate_limited: false })
+                Err(None)
             }
         }
 
