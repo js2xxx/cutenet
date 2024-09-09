@@ -189,8 +189,8 @@ where
     let ip = packet.ip_addr();
 
     let hw = tx.hw_addr();
-    if let HwAddr::Ip = hw {
-        return tx.transmit(now, hw, EthernetPayload::Ip(packet));
+    if hw == HwAddr::Ip {
+        return tx.transmit(now, HwAddr::Ip, EthernetPayload::Ip(packet));
     }
 
     if tx.is_broadcast(ip.dst) {
