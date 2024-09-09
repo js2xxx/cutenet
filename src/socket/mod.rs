@@ -8,25 +8,15 @@ pub trait RawSocketSet<P: Payload> {
     fn receive(&mut self, now: Instant, device_caps: &DeviceCaps, packet: &IpPacket<P>) -> bool;
 }
 
-pub trait UdpSocketSet<P: Payload> {
-    fn receive(
-        self,
-        now: Instant,
-        device_caps: &DeviceCaps,
-        addr: Ends<IpAddr>,
-        packet: UdpPacket<P>,
-    ) -> Result<(), UdpPacket<P>>;
-}
-
-pub trait TcpSocketSet<P: Payload> {
-    fn receive<R: Router<P>>(
+pub trait SocketSet<T: Wire> {
+    fn receive<R: Router<T::Payload>>(
         self,
         now: Instant,
         device_caps: &DeviceCaps,
         router: &mut R,
         addr: Ends<IpAddr>,
-        packet: TcpPacket<P>,
-    ) -> Result<(), TcpPacket<P>>;
+        packet: T,
+    ) -> Result<(), T>;
 }
 
 pub trait AllSocketSet<P: Payload> {
@@ -35,12 +25,12 @@ pub trait AllSocketSet<P: Payload> {
         Self: 'a;
     fn raw(&mut self) -> Self::Raw<'_>;
 
-    type Udp<'a>: UdpSocketSet<P>
+    type Udp<'a>: SocketSet<UdpPacket<P>>
     where
         Self: 'a;
     fn udp(&mut self) -> Self::Udp<'_>;
 
-    type Tcp<'a>: TcpSocketSet<P>
+    type Tcp<'a>: SocketSet<TcpPacket<P>>
     where
         Self: 'a;
     fn tcp(&mut self) -> Self::Tcp<'_>;

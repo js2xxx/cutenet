@@ -6,7 +6,7 @@ use crate::{
     iface::{neighbor::CacheOption, NetTx},
     phy::DeviceCaps,
     route::Router,
-    socket::{AllSocketSet, TcpSocketSet, UdpSocketSet},
+    socket::{AllSocketSet, SocketSet},
     time::Instant,
     wire::*,
 };
@@ -67,21 +67,23 @@ where
                 process_icmp(now, device_caps, router, hw, v6_addr, packet);
                 Ok(())
             }
-            Ipv6Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
-                Ok(()) => Ok(()),
-                Err(udp) => Err({
-                    packet.payload = uncheck_build!(udp.payload.prepend(UDP_HEADER_LEN));
-                    IpPacket::V6(packet)
-                }),
-            },
+            Ipv6Payload::Udp(udp) => {
+                match sockets.udp().receive(now, device_caps, router, addr, udp) {
+                    Ok(()) => Ok(()),
+                    Err(udp) => {
+                        packet.payload = uncheck_build!(udp.payload.prepend(UDP_HEADER_LEN));
+                        Err(IpPacket::V6(packet))
+                    }
+                }
+            }
             Ipv6Payload::Tcp(tcp) => {
                 match sockets.tcp().receive(now, device_caps, router, addr, tcp) {
                     Ok(()) => Ok(()),
-                    Err(tcp) => Err({
+                    Err(tcp) => {
                         let header_len = tcp.header_len();
                         packet.payload = uncheck_build!(tcp.payload.prepend(header_len));
-                        IpPacket::V6(packet)
-                    }),
+                        Err(IpPacket::V6(packet))
+                    }
                 }
             }
         };

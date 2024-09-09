@@ -4,7 +4,7 @@ use crate::{
     iface::NetTx,
     phy::DeviceCaps,
     route::Router,
-    socket::{AllSocketSet, TcpSocketSet, UdpSocketSet},
+    socket::{AllSocketSet, SocketSet},
     time::Instant,
     wire::*,
 };
@@ -41,20 +41,20 @@ where
             process_icmp(now, device_caps, router, hw, v4_addr, packet);
             Ok(())
         }
-        Ipv4Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, addr, udp) {
+        Ipv4Payload::Udp(udp) => match sockets.udp().receive(now, device_caps, router, addr, udp) {
             Ok(()) => Ok(()),
-            Err(udp) => Err({
+            Err(udp) => {
                 packet.payload = uncheck_build!(udp.payload.prepend(UDP_HEADER_LEN));
-                IpPacket::V4(packet)
-            }),
+                Err(IpPacket::V4(packet))
+            }
         },
         Ipv4Payload::Tcp(tcp) => match sockets.tcp().receive(now, device_caps, router, addr, tcp) {
             Ok(()) => Ok(()),
-            Err(tcp) => Err({
+            Err(tcp) => {
                 let header_len = tcp.header_len();
                 packet.payload = uncheck_build!(tcp.payload.prepend(header_len));
-                IpPacket::V4(packet)
-            }),
+                Err(IpPacket::V4(packet))
+            }
         },
     }
 }
