@@ -13,7 +13,7 @@ pub struct Query {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action<Tx> {
-    Deliver,
+    Deliver { loopback: Tx },
     Forward { next_hop: IpAddr, tx: Tx },
     Discard,
 }
@@ -21,7 +21,7 @@ pub enum Action<Tx> {
 impl<Tx> Action<Tx> {
     pub fn map<U>(self, map: impl FnOnce(Tx) -> U) -> Action<U> {
         match self {
-            Action::Deliver => Action::Deliver,
+            Action::Deliver { loopback } => Action::Deliver { loopback: map(loopback) },
             Action::Forward { next_hop, tx } => Action::Forward { next_hop, tx: map(tx) },
             Action::Discard => Action::Discard,
         }
@@ -29,7 +29,10 @@ impl<Tx> Action<Tx> {
 
     pub fn map_or_discard<U>(self, map: impl FnOnce(Tx) -> Option<U>) -> Action<U> {
         match self {
-            Action::Deliver => Action::Deliver,
+            Action::Deliver { loopback } => match map(loopback) {
+                Some(loopback) => Action::Deliver { loopback },
+                None => Action::Discard,
+            },
             Action::Forward { next_hop, tx } => match map(tx) {
                 Some(tx) => Action::Forward { next_hop, tx },
                 None => Action::Discard,
@@ -44,8 +47,6 @@ pub trait Router<P: Payload> {
     where
         Self: 'a;
 
-    fn loopback(&mut self, now: Instant) -> Option<Self::Tx<'_>>;
-
     fn route(&mut self, now: Instant, query: Query) -> Action<Self::Tx<'_>>;
 
     fn device(&mut self, now: Instant, hw: HwAddr) -> Option<Self::Tx<'_>>;
@@ -53,10 +54,6 @@ pub trait Router<P: Payload> {
 
 impl<P: Payload, R: Router<P>> Router<P> for &mut R {
     type Tx<'a> = R::Tx<'a> where Self: 'a;
-
-    fn loopback(&mut self, now: Instant) -> Option<Self::Tx<'_>> {
-        R::loopback(self, now)
-    }
 
     fn route(&mut self, now: Instant, query: Query) -> Action<Self::Tx<'_>> {
         R::route(self, now, query)

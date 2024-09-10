@@ -58,10 +58,6 @@ impl<P: Payload, N: NetTx<P>> Router<P> for StaticRouter<N> {
     where
         Self: 'a;
 
-    fn loopback(&mut self, now: Instant) -> Option<Self::Tx<'_>> {
-        self.device(now, HwAddr::Ip)
-    }
-
     fn route(&mut self, now: Instant, query: Query) -> Action<Self::Tx<'_>> {
         let route = (self.routes.iter())
             .filter(|i| {

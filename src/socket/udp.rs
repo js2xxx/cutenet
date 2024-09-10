@@ -1,6 +1,14 @@
 use core::{fmt, net::SocketAddr, num::NonZero};
 
-use crate::{iface::NetTx, route::Router, time::Instant, wire::*, TxResult};
+use crate::{
+    iface::NetTx,
+    phy::DeviceCaps,
+    route::Router,
+    stack::{DispatchError, StackTx},
+    time::Instant,
+    wire::*,
+    TxResult,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BindError {
@@ -26,6 +34,7 @@ pub enum SendErrorKind {
     PacketExceedsMtu(usize),
     Unbound,
     NotConnected,
+    Dispatch(DispatchError),
 }
 
 impl fmt::Display for SendErrorKind {
@@ -36,6 +45,7 @@ impl fmt::Display for SendErrorKind {
             SendErrorKind::PacketExceedsMtu(mtu) => write!(f, "packet exceeds MTU: {}", mtu),
             SendErrorKind::Unbound => write!(f, "unbound"),
             SendErrorKind::NotConnected => write!(f, "not connected"),
+            SendErrorKind::Dispatch(e) => write!(f, "dispatch error: {e:?}"),
         }
     }
 }
@@ -58,6 +68,7 @@ impl fmt::Display for RecvError {
 
 impl core::error::Error for RecvError {}
 
+#[derive(Debug)]
 pub struct Socket {
     addr: Option<SocketAddr>,
     peer: Option<SocketAddr>,
@@ -72,7 +83,15 @@ impl Socket {
             hop_limit: 64,
         }
     }
+}
 
+impl Default for Socket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Socket {
     pub fn hop_limit(&self) -> u8 {
         self.hop_limit
     }
@@ -100,38 +119,44 @@ impl Socket {
     pub fn is_open(&self) -> bool {
         self.addr.is_some()
     }
+}
 
-    pub fn send<P, R>(&mut self, now: Instant, router: R, data: P) -> Result<TxResult, SendError<P>>
+impl Socket {
+    pub fn send_data<P, R>(
+        &self,
+        now: Instant,
+        router: &mut R,
+        data: P,
+    ) -> Result<TxResult, SendError<P>>
+    where
+        P: PayloadBuild,
+        R: Router<P>,
+    {
+        match self.send(now, router) {
+            Ok(tx) => tx.consume(now, data),
+            Err(err) => Err(err.map(|_| data)),
+        }
+    }
+
+    pub fn send<'router, P, R>(
+        &self,
+        now: Instant,
+        router: &'router mut R,
+    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError>
     where
         P: PayloadBuild,
         R: Router<P>,
     {
         match self.peer {
-            Some(dst) => self.send_to(now, router, dst, data),
-            None => Err(SendErrorKind::NotConnected.with(data)),
+            Some(dst) => self.send_to(now, router, dst),
+            None => Err(SendErrorKind::NotConnected.into()),
         }
     }
 
-    pub fn send_with<P, R>(
-        &mut self,
+    pub fn send_data_to<P, R>(
+        &self,
         now: Instant,
-        router: R,
-        data: impl FnOnce(&R::Tx<'_>) -> P,
-    ) -> Result<TxResult, SendError<Option<P>>>
-    where
-        P: PayloadBuild,
-        R: Router<P>,
-    {
-        match self.peer {
-            Some(dst) => self.send_to_with(now, router, dst, data),
-            None => Err(SendErrorKind::NotConnected.with(None)),
-        }
-    }
-
-    pub fn send_to<P, R>(
-        &mut self,
-        now: Instant,
-        router: R,
+        router: &mut R,
         dst: SocketAddr,
         data: P,
     ) -> Result<TxResult, SendError<P>>
@@ -139,95 +164,105 @@ impl Socket {
         P: PayloadBuild,
         R: Router<P>,
     {
-        let mut slot = Some(data);
-        match self.send_to_with(now, router, dst, |_| slot.take().unwrap()) {
-            Ok(res) => Ok(res),
-            Err(err) => match err.data {
-                Some(data) => Err(err.kind.with(data)),
-                None => Err(err.kind.with(slot.take().unwrap())),
-            },
+        match self.send_to(now, router, dst) {
+            Ok(tx) => tx.consume(now, data),
+            Err(err) => Err(err.map(|_| data)),
         }
     }
 
-    pub fn send_to_with<P, R>(
-        &mut self,
+    pub fn send_to<'router, P, R>(
+        &self,
         now: Instant,
-        router: R,
+        router: &'router mut R,
         dst: SocketAddr,
-        data: impl FnOnce(&R::Tx<'_>) -> P,
-    ) -> Result<TxResult, SendError<Option<P>>>
+    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError>
     where
         P: PayloadBuild,
         R: Router<P>,
     {
         let Some(src) = self.addr else {
-            return Err(SendErrorKind::Unbound.with(None));
+            return Err(SendErrorKind::Unbound.into());
         };
 
         if dst.ip().is_unspecified() || dst.port() == 0 {
-            return Err(SendErrorKind::Unaddressable.with(None));
+            return Err(SendErrorKind::Unaddressable.into());
         }
 
         if src.is_ipv4() ^ dst.is_ipv4() {
-            return Err(SendErrorKind::Unaddressable.with(None));
+            return Err(SendErrorKind::Unaddressable.into());
         }
 
         let ip = Ends { src, dst }.map(|s| s.ip());
 
-        crate::stack::dispatch(router, now, ip, IpProtocol::Udp, |tx| {
-            let Ok(tx) = tx else { return Ok(None) };
+        let tx = crate::stack::dispatch(router, now, ip, IpProtocol::Udp)
+            .map_err(SendErrorKind::Dispatch)?;
 
-            let data = data(tx);
-
-            let buffer_len = data.len()
-                + UDP_HEADER_LEN
-                + match dst {
-                    SocketAddr::V4(_) => IPV4_HEADER_LEN,
-                    SocketAddr::V6(_) => IPV6_HEADER_LEN,
-                }
-                + tx.device_caps().header_len;
-
-            if buffer_len > data.capacity() {
-                return Err(SendErrorKind::BufferTooSmall.with(Some(data)));
-            }
-
-            let mtu = tx.device_caps().mtu;
-            if buffer_len > mtu {
-                return Err(SendErrorKind::PacketExceedsMtu(mtu).with(Some(data)));
-            }
-
-            let payload = |data| {
-                uncheck_build!(UdpPacket {
-                    port: Ends { src, dst }.map(|s| s.port()),
-                    payload: data,
-                }
-                .build(&(tx.device_caps().tx_checksums, ip)))
-            };
-
-            let packet = match (src, dst) {
-                (SocketAddr::V4(src), SocketAddr::V4(dst)) => IpPacket::V4(Ipv4Packet {
-                    addr: Ends { src, dst }.map(|s| *s.ip()),
-                    next_header: IpProtocol::Udp,
-                    hop_limit: self.hop_limit,
-                    frag_info: None,
-                    payload: payload(data),
-                }),
-                (SocketAddr::V6(src), SocketAddr::V6(dst)) => IpPacket::V6(Ipv6Packet {
-                    addr: Ends { src, dst }.map(|s| *s.ip()),
-                    next_header: IpProtocol::Udp,
-                    hop_limit: self.hop_limit,
-                    payload: payload(data),
-                }),
-                _ => unreachable!(),
-            };
-
-            Ok(Some(packet))
+        Ok(SocketSend {
+            endpoint: Ends { src, dst },
+            hop_limit: self.hop_limit,
+            tx,
         })
     }
 }
 
-impl Default for Socket {
-    fn default() -> Self {
-        Self::new()
+#[derive(Debug, Clone)]
+pub struct SocketSend<P, Tx> {
+    endpoint: Ends<SocketAddr>,
+    hop_limit: u8,
+    tx: StackTx<P, Tx>,
+}
+
+impl<P: PayloadBuild, Tx: NetTx<P>> SocketSend<P, Tx> {
+    pub fn device_caps(&self) -> DeviceCaps {
+        self.tx.device_caps()
+    }
+
+    pub fn consume(self, now: Instant, data: P) -> Result<TxResult, SendError<P>> {
+        let Ends { src, dst } = self.endpoint;
+        let ip = self.endpoint.map(|s| s.ip());
+
+        let buffer_len = data.len()
+            + UDP_HEADER_LEN
+            + match dst {
+                SocketAddr::V4(_) => IPV4_HEADER_LEN,
+                SocketAddr::V6(_) => IPV6_HEADER_LEN,
+            }
+            + self.tx.device_caps().header_len;
+
+        if buffer_len > data.capacity() {
+            return Err(SendErrorKind::BufferTooSmall.with(data));
+        }
+
+        let mtu = self.tx.device_caps().mtu;
+        if buffer_len > mtu {
+            return Err(SendErrorKind::PacketExceedsMtu(mtu).with(data));
+        }
+
+        let payload = |data| {
+            uncheck_build!(UdpPacket {
+                port: Ends { src, dst }.map(|s| s.port()),
+                payload: data,
+            }
+            .build(&(self.tx.device_caps().tx_checksums, ip)))
+        };
+
+        let packet = match (src, dst) {
+            (SocketAddr::V4(src), SocketAddr::V4(dst)) => IpPacket::V4(Ipv4Packet {
+                addr: Ends { src, dst }.map(|s| *s.ip()),
+                next_header: IpProtocol::Udp,
+                hop_limit: self.hop_limit,
+                frag_info: None,
+                payload: payload(data),
+            }),
+            (SocketAddr::V6(src), SocketAddr::V6(dst)) => IpPacket::V6(Ipv6Packet {
+                addr: Ends { src, dst }.map(|s| *s.ip()),
+                next_header: IpProtocol::Udp,
+                hop_limit: self.hop_limit,
+                payload: payload(data),
+            }),
+            _ => unreachable!(),
+        };
+
+        Ok(self.tx.comsume(now, packet))
     }
 }

@@ -1,11 +1,9 @@
-use core::net::IpAddr;
+use core::{marker::PhantomData, net::IpAddr};
 
 use self::icmp::Icmp;
 use crate::{
-    iface::{
-        neighbor::{CacheOption, LookupError},
-        NetRx, NetTx,
-    },
+    iface::{neighbor::CacheOption, NetRx, NetTx},
+    phy::DeviceCaps,
     route::{Action, Query, Router},
     socket::{AllSocketSet, RawSocketSet},
     time::Instant,
@@ -51,13 +49,19 @@ where
         addr,
         next_header: packet.next_header(),
     }) {
-        Action::Deliver => Action::Deliver,
+        Action::Deliver { .. } => Action::Deliver { loopback: () },
 
         // 3.1 Forward the external IP packet.
         Action::Forward { next_hop, mut tx } => {
             let mut packet = packet;
             return Some(if packet.decrease_hop_limit() {
-                transmit(now, addr, next_hop, tx, |_| Ok::<_, ()>(Some(packet))).unwrap()
+                match transmit(now, addr, next_hop, tx) {
+                    Ok(tx) => tx.comsume(now, packet),
+                    Err(err) => TxResult::Dropped(match err {
+                        DispatchError::NoRoute => TxDropReason::NoRoute,
+                        DispatchError::NeighborPending => TxDropReason::NeighborPending,
+                    }),
+                }
             } else {
                 let packet = Icmp::HopLimitExceeded(packet).build(&tx.device_caps());
                 tx.transmit(now, src_hw, packet)
@@ -70,7 +74,7 @@ where
         tx.fill_neighbor_cache(now, CacheOption::UpdateExpiration, None, (addr.src, src_hw));
 
         match action {
-            Action::Deliver => {}
+            Action::Deliver { .. } => {}
             Action::Forward { tx: (), .. } => unreachable!(),
 
             // 3.2 Discard the external IP packet.
@@ -81,7 +85,7 @@ where
         }
     } else {
         match action {
-            Action::Deliver => {}
+            Action::Deliver { .. } => {}
             Action::Forward { tx: (), .. } => unreachable!(),
             Action::Discard => return Some(TxResult::Success),
         }
@@ -112,29 +116,47 @@ where
     Some(TxResult::Success)
 }
 
-pub fn dispatch<P, R, E>(
-    mut router: R,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DispatchError {
+    NoRoute,
+    NeighborPending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackTx<P, Tx> {
+    tx: Tx,
+    dst: HwAddr,
+    payload: PhantomData<fn(P)>,
+}
+
+impl<P: Payload, Tx: NetTx<P>> StackTx<P, Tx> {
+    fn new(tx: Tx, dst: HwAddr) -> Self {
+        Self { tx, dst, payload: PhantomData }
+    }
+
+    pub fn device_caps(&self) -> DeviceCaps {
+        self.tx.device_caps()
+    }
+
+    pub fn comsume(mut self, now: Instant, packet: IpPacket<P>) -> TxResult {
+        self.tx.transmit(now, self.dst, EthernetPayload::Ip(packet))
+    }
+}
+
+pub fn dispatch<P, R>(
+    router: &mut R,
     now: Instant,
     addr: Ends<IpAddr>,
     next_header: IpProtocol,
-    packet: impl FnOnce(Result<&R::Tx<'_>, LookupError>) -> Result<Option<IpPacket<P>>, E>,
-) -> Result<TxResult, E>
+) -> Result<StackTx<P, R::Tx<'_>>, DispatchError>
 where
     P: PayloadBuild,
     R: Router<P>,
 {
     match router.route(now, Query { addr, next_header }) {
-        Action::Deliver => {}
-        Action::Forward { next_hop, tx } => {
-            return transmit(now, addr, next_hop, tx, packet);
-        }
-        Action::Discard => return Ok(TxResult::Dropped(TxDropReason::NoRoute)),
-    }
-    match router.loopback(now) {
-        Some(mut loopback) if let Some(packet) = packet(Ok(&loopback))? => {
-            Ok(loopback.transmit(now, HwAddr::Ip, EthernetPayload::Ip(packet)))
-        }
-        _ => Ok(TxResult::Dropped(TxDropReason::NoRoute)),
+        Action::Deliver { loopback } => Ok(StackTx::new(loopback, HwAddr::Ip)),
+        Action::Forward { next_hop, tx } => transmit(now, addr, next_hop, tx),
+        Action::Discard => Err(DispatchError::NoRoute),
     }
 }
 
@@ -174,30 +196,20 @@ where
     tx.lookup_neighbor_cache(now, next_hop)
 }
 
-fn transmit<P, Tx, E>(
+fn transmit<P, Tx>(
     now: Instant,
     ip: Ends<IpAddr>,
     next_hop: IpAddr,
     mut tx: Tx,
-    packet: impl FnOnce(Result<&Tx, LookupError>) -> Result<Option<IpPacket<P>>, E>,
-) -> Result<TxResult, E>
+) -> Result<StackTx<P, Tx>, DispatchError>
 where
     P: PayloadBuild,
     Tx: NetTx<P>,
 {
-    let nop = match lookup_hw(now, ip, next_hop, &mut tx) {
-        Ok(dst) => match packet(Ok(&tx))? {
-            Some(packet) => return Ok(tx.transmit(now, dst, EthernetPayload::Ip(packet))),
-            None => return Ok(TxResult::Success),
-        },
-        Err(err) => {
-            packet(Err(LookupError { rate_limited: err.is_none() }))?;
-            err
-        }
-    };
-
-    let Some(buf) = nop else {
-        return Ok(TxResult::Dropped(TxDropReason::NeighborPending));
+    let buf = match lookup_hw(now, ip, next_hop, &mut tx) {
+        Ok(dst) => return Ok(StackTx::new(tx, dst)),
+        Err(None) => return Err(DispatchError::NeighborPending),
+        Err(Some(nop)) => nop,
     };
 
     let hw = tx.hw_addr();
@@ -244,5 +256,5 @@ where
         }
         _ => unreachable!(),
     }
-    Ok(TxResult::Dropped(TxDropReason::NeighborPending))
+    Err(DispatchError::NeighborPending)
 }
