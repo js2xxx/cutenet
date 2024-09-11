@@ -250,7 +250,7 @@ mod test_ipv4 {
         assert_eq!(frame.addr, Ends {
             src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
             dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
-        },);
+        });
         assert_eq!(frame.protocol, Protocol::Ipv4);
         assert_eq!(frame.payload.data(), &PAYLOAD_BYTES[..]);
     }

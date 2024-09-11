@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(packet.addr, Ends {
             src: Ipv6Addr::LINK_LOCAL_ALL_ROUTERS,
             dst: Ipv6Addr::LINK_LOCAL_ALL_NODES,
-        },);
+        });
         assert_eq!(packet.payload.data(), &REPR_PAYLOAD_BYTES[..]);
     }
 

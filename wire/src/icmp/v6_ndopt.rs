@@ -6,7 +6,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 use crate::{ip::IpAddrExt, prelude::*, RawHwAddr, HWADDR_MAX_LEN};
 
 enum_with_unknown! {
-    /// NDISC Option Type
+    /// ND Option Type
     pub enum Type(u8) {
         /// Source Link-layer Address
         SrcLLAddr  = 0x1,
@@ -44,7 +44,7 @@ bitflags! {
 
 struct RawOpt<T: ?Sized>(T);
 
-// Format of an NDISC Option
+// Format of an ND Option
 //
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 // |     Type      |    Length     |              ...              |

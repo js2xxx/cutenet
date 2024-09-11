@@ -66,7 +66,7 @@ pub const HWADDR_MAX_LEN: usize = 8;
 
 /// Unparsed hardware address.
 ///
-/// Used to make NDISC parsing agnostic of the hardware medium in use.
+/// Used to make ND parsing agnostic of the hardware medium in use.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct RawHwAddr {
     len: u8,

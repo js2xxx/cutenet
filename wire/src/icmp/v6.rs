@@ -60,9 +60,9 @@ impl Message {
     }
 
     /// Return a boolean value indicating if the given message type
-    /// is an [NDISC] message type.
+    /// is an [ND] message type.
     ///
-    /// [NDISC]: https://tools.ietf.org/html/rfc4861
+    /// [ND]: https://tools.ietf.org/html/rfc4861
     pub const fn is_nd(&self) -> bool {
         matches!(
             self,
@@ -208,7 +208,7 @@ pub(super) mod field {
 
     pub const HEADER_END: usize = 8;
 
-    // NDISC: See https://tools.ietf.org/html/rfc4861
+    // ND: See https://tools.ietf.org/html/rfc4861
     // Router Advertisement message offsets
     pub const CUR_HOP_LIMIT: usize = 4;
     pub const ROUTER_FLAGS: usize = 5;
@@ -490,7 +490,7 @@ where
                 payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
             }),
             (msg, 0) if msg.is_nd() => Ok(Packet::Nd {
-                nd: match nd::Nd::parse(RawPacket(raw.data())) {
+                nd: match nd::Nd::parse(packet) {
                     Ok(nd) => nd,
                     Err(kind) => return Err(kind.with(raw)),
                 },
