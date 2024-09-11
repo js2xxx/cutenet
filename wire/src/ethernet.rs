@@ -246,8 +246,7 @@ mod test_ipv4 {
 
     #[test]
     fn test_deconstruct() {
-        let mut fb = FRAME_BYTES;
-        let frame: Frame<Buf<_>> = Frame::parse(&(), Buf::full(&mut fb[..])).unwrap();
+        let frame: Frame<&[u8]> = Frame::parse(&(), &FRAME_BYTES[..]).unwrap();
         assert_eq!(frame.addr, Ends {
             src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
             dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
@@ -300,8 +299,7 @@ mod test_ipv6 {
 
     #[test]
     fn test_deconstruct() {
-        let mut binding = FRAME_BYTES;
-        let frame: Frame<Buf<_>> = Frame::parse(&(), Buf::full(&mut binding[..])).unwrap();
+        let frame: Frame<&[u8]> = Frame::parse(&(), &FRAME_BYTES[..]).unwrap();
         assert_eq!(frame.addr, Ends {
             src: Addr([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]),
             dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),

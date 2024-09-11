@@ -174,8 +174,7 @@ mod tests {
 
     #[test]
     fn test_deconstruct() {
-        let mut fb = PACKET_BYTES;
-        let packet: Packet<Buf<_>> = Packet::parse(&CX, Buf::full(&mut fb[..])).unwrap();
+        let packet: Packet<&[u8]> = Packet::parse(&CX, &PACKET_BYTES[..]).unwrap();
         assert_eq!(packet.port, Ends { src: 48896, dst: 53 });
         assert_eq!(packet.payload.data(), &PAYLOAD_BYTES[..]);
     }

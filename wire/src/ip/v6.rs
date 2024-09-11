@@ -365,8 +365,7 @@ mod tests {
 
     #[test]
     fn test_packet_deconstruction() {
-        let mut pb = REPR_PACKET_BYTES;
-        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<&[u8]> = Packet::parse(&(), &REPR_PACKET_BYTES[..]).unwrap();
 
         assert_eq!(packet.next_header, Protocol::Udp);
         assert_eq!(packet.hop_limit, 0x40);
@@ -403,7 +402,7 @@ mod tests {
         let mut pb = vec![];
         pb.extend(REPR_PACKET_BYTES);
         pb.push(0);
-        let packet: Packet<Buf<_>> = Packet::parse(&(), Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<&[u8]> = Packet::parse(&(), &pb[..]).unwrap();
 
         assert_eq!(packet.payload.len(), REPR_PAYLOAD_BYTES.len());
     }
@@ -412,6 +411,6 @@ mod tests {
     fn test_repr_parse_smaller_than_header() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Packet::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
+        assert!(Packet::<&[u8]>::parse(&(), &bytes[..]).is_err());
     }
 }

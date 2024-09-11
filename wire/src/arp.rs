@@ -232,8 +232,7 @@ mod tests {
 
     #[test]
     fn test_deconstruct() {
-        let mut fb = PACKET_BYTES;
-        let packet = Packet::parse(&(), Buf::full(&mut fb[..])).unwrap();
+        let packet = Packet::parse(&(), &PACKET_BYTES[..]).unwrap();
 
         assert_eq!(packet.operation, Operation::Request);
         assert_eq!(packet.addr, Ends {

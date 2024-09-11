@@ -381,8 +381,7 @@ mod tests {
 
     #[test]
     fn test_deconstruct() {
-        let mut pb = INGRESS_PACKET_BYTES;
-        let packet: Packet<Buf<_>> = Packet::parse(&CX, Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<&[u8]> = Packet::parse(&CX, &INGRESS_PACKET_BYTES[..]).unwrap();
         assert_eq!(packet.hop_limit, 0x1a);
         assert_eq!(packet.next_header, Protocol::Icmp);
         assert_eq!(packet.addr, Ends {
@@ -430,7 +429,7 @@ mod tests {
         let mut pb = vec![];
         pb.extend(INGRESS_PACKET_BYTES);
         pb.push(0);
-        let packet: Packet<Buf<_>> = Packet::parse(&CX, Buf::full(&mut pb[..])).unwrap();
+        let packet: Packet<&[u8]> = Packet::parse(&CX, &pb[..]).unwrap();
 
         assert_eq!(packet.payload.len(), PAYLOAD_BYTES.len());
     }
@@ -439,6 +438,6 @@ mod tests {
     fn test_parse_total_len_less_than_header_len() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert!(Packet::<Buf<_>>::parse(&(), Buf::full(&mut bytes[..])).is_err());
+        assert!(Packet::<&[u8]>::parse(&(), &bytes[..]).is_err());
     }
 }
