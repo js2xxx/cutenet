@@ -23,6 +23,13 @@ impl<K: fmt::Display, T: ?Sized> fmt::Display for Error<K, T> {
     }
 }
 
+impl<K, T> core::error::Error for Error<K, T>
+where
+    K: fmt::Display + fmt::Debug,
+    T: ?Sized + fmt::Debug,
+{
+}
+
 #[macro_export]
 macro_rules! make_error {
     ($kind:ident => $v:vis $err:ident) => {

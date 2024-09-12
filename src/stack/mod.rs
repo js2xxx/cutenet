@@ -57,14 +57,11 @@ where
             return Some(if packet.decrease_hop_limit() {
                 match transmit(now, addr, next_hop, tx) {
                     Ok(tx) => tx.comsume(now, packet),
-                    Err(err) => TxResult::Dropped(match err {
-                        DispatchError::NoRoute => TxDropReason::NoRoute,
-                        DispatchError::NeighborPending => TxDropReason::NeighborPending,
-                    }),
+                    Err(err) => TxResult::Dropped(err.into()),
                 }
             } else {
-                let packet = Icmp::HopLimitExceeded(packet).build(&tx.device_caps());
-                tx.transmit(now, src_hw, packet)
+                let icmp = Icmp::HopLimitExceeded(packet);
+                tx.transmit(now, src_hw, icmp.build(&tx.device_caps()))
             });
         }
         Action::Discard => Action::Discard,
@@ -120,6 +117,15 @@ where
 pub enum DispatchError {
     NoRoute,
     NeighborPending,
+}
+
+impl From<DispatchError> for TxDropReason {
+    fn from(e: DispatchError) -> Self {
+        match e {
+            DispatchError::NoRoute => TxDropReason::NoRoute,
+            DispatchError::NeighborPending => TxDropReason::NeighborPending,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -63,6 +63,13 @@ impl<T> Ends<T> {
         }
     }
 
+    pub fn zip_map<S, U>(self, other: Ends<S>, mut f: impl FnMut(T, S) -> U) -> Ends<U> {
+        Ends {
+            src: f(self.src, other.src),
+            dst: f(self.dst, other.dst),
+        }
+    }
+
     pub fn reverse(self) -> Self {
         Ends { src: self.dst, dst: self.src }
     }
