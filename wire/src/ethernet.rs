@@ -117,13 +117,17 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Frame<T> {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
-        let frame = RawFrame(raw.data());
+        let frame = RawFrame(raw.header_data());
 
         Ok(Frame {
             addr: frame.addr(),
             protocol: frame.protocol(),
 
-            payload: T::parse(&[cx, &(frame.protocol(),)], raw.pop(HEADER_LEN..len)?)?,
+            payload: T::parse(
+                &[cx, &(frame.protocol(),)],
+                raw.pop(HEADER_LEN..len)
+                    .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
+            )?,
         })
     }
 }
@@ -224,7 +228,7 @@ mod tests {
 mod test_ipv4 {
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     // Tests that are valid only with "proto-ipv4"
     use super::*;
@@ -252,7 +256,7 @@ mod test_ipv4 {
             dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
         });
         assert_eq!(frame.protocol, Protocol::Ipv4);
-        assert_eq!(frame.payload.data(), &PAYLOAD_BYTES[..]);
+        assert_eq!(frame.payload, &PAYLOAD_BYTES[..]);
     }
 
     #[test]
@@ -279,7 +283,7 @@ mod test_ipv4 {
 mod test_ipv6 {
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     // Tests that are valid only with "proto-ipv6"
     use super::*;
@@ -305,7 +309,7 @@ mod test_ipv6 {
             dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
         });
         assert_eq!(frame.protocol, Protocol::Ipv6);
-        assert_eq!(frame.payload.data(), &PAYLOAD_BYTES[..]);
+        assert_eq!(frame.payload, &PAYLOAD_BYTES[..]);
     }
 
     #[test]

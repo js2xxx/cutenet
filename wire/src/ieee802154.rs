@@ -710,7 +710,7 @@ pub struct Frame<#[wire] T> {
 
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Frame<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let frame = RawFrame(raw.data());
+        let frame = RawFrame(raw.header_data());
 
         let len = frame.0.len();
 
@@ -763,7 +763,11 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Frame<T> {
             frame_version: frame.frame_version(),
             ends: frame.ends(),
 
-            payload: T::parse(cx, raw.pop(offset..len)?)?,
+            payload: T::parse(
+                cx,
+                raw.pop(offset..len)
+                    .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
+            )?,
         })
     }
 }
@@ -845,7 +849,7 @@ impl<T> Frame<T> {
 
 #[cfg(test)]
 mod tests {
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     use super::*;
 

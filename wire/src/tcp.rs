@@ -321,7 +321,7 @@ pub struct Packet<#[wire] T> {
 
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw.data());
+        let packet = RawPacket(raw.header_data());
 
         let len = packet.0.len();
         if len < field::URGENT.end {
@@ -418,7 +418,11 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
             sack_permitted,
             sack_ranges,
             timestamp,
-            payload: T::parse(cx, raw.pop(header_len..len)?)?,
+            payload: T::parse(
+                cx,
+                raw.pop(header_len..len)
+                    .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
+            )?,
         })
     }
 }
@@ -562,7 +566,7 @@ mod tests {
     use core::net::Ipv4Addr;
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     use super::*;
     use crate::Checksums;

@@ -178,7 +178,7 @@ pub struct Packet<#[wire] T> {
 
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw.data());
+        let packet = RawPacket(raw.header_data());
 
         let len = packet.0.len();
         let header_len = packet.header_len();
@@ -214,7 +214,8 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
 
             payload: T::parse(
                 &[cx, &(generic_addr, next_header)],
-                raw.pop(usize::from(header_len)..usize::from(total_len))?,
+                raw.pop(usize::from(header_len)..usize::from(total_len))
+                    .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
             )?,
         })
     }
@@ -278,7 +279,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
 
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Lax<Packet<T>> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw.data());
+        let packet = RawPacket(raw.header_data());
 
         let len = packet.0.len();
         if len < HEADER_LEN {
@@ -303,7 +304,8 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Lax<Packet<T>> {
 
             payload: T::parse(
                 &[cx, &(generic_addr, next_header)],
-                raw.pop(HEADER_LEN..len)?,
+                raw.pop(HEADER_LEN..len)
+                    .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
             )?,
         }))
     }
@@ -360,7 +362,7 @@ where
 mod tests {
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     use super::*;
     use crate::Checksums;
@@ -400,7 +402,7 @@ mod tests {
                 }
             })
         );
-        assert_eq!(packet.payload.data(), &PAYLOAD_BYTES[..]);
+        assert_eq!(packet.payload, &PAYLOAD_BYTES[..]);
     }
 
     #[test]

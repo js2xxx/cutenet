@@ -1,7 +1,9 @@
 use core::{
     cmp,
-    ops::{Bound, RangeBounds},
+    ops::{Bound, Range, RangeBounds},
 };
+
+use cutenet_error::Error;
 
 use crate::Storage;
 
@@ -372,6 +374,95 @@ impl<S: Storage> Buf<S> {
             "s must reside within the range (0..len)"
         );
         (self.head, self.tail) = (head, tail);
+    }
+}
+
+impl<S: Storage> crate::Payload for Buf<S> {
+    type NoPayload = ReserveBuf<S>;
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn truncate(self) -> Self::NoPayload {
+        ReserveBuf::from_buf_truncate(self)
+    }
+
+    fn reset(self) -> Self::NoPayload {
+        self.reset()
+    }
+}
+
+impl<S: Storage> crate::NoPayload for ReserveBuf<S> {
+    type Init = Buf<S>;
+
+    fn reset(self) -> Self {
+        self.reset()
+    }
+
+    fn reserve(self, headroom: usize) -> Self {
+        self.add_reservation(headroom)
+    }
+
+    fn init(self) -> Self::Init {
+        self.build()
+    }
+}
+
+impl<S: Storage> crate::PayloadBuild for Buf<S> {
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+
+    fn push_with<F, E>(
+        mut self,
+        size: usize,
+        opt: &crate::PushOption,
+        set_header: F,
+    ) -> Result<Self, Error<E, Self>>
+    where
+        F: FnOnce(&mut [u8]) -> Result<(), E>,
+    {
+        let len = size + self.len();
+        let new_len = match opt.truncate {
+            Some(mtu) => len.min(mtu),
+            None => len,
+        };
+        let new_payload_len = new_len - size;
+        self.slice_into(..new_payload_len);
+
+        if self.try_prepend(size).is_none() {
+            let offset = (size - self.head_len()) as isize;
+            match opt.truncate {
+                Some(_) => self.move_truncate(offset),
+                None if self.try_move(offset) => {}
+                None => panic!("headroom too short; required additional {offset} bytes"),
+            }
+            Buf::prepend(&mut self, size);
+        }
+
+        match set_header(self.data_mut()) {
+            Ok(()) => Ok(self),
+            Err(e) => {
+                self.slice_into(size..);
+                Err((e, self).into())
+            }
+        }
+    }
+}
+
+impl<S: Storage> crate::PayloadParse for Buf<S> {
+    fn header_data(&self) -> &[u8] {
+        self.data()
+    }
+
+    fn pop(mut self, range: Range<usize>) -> Result<Self, Self> {
+        if range.end <= self.len() {
+            self.slice_into(range);
+            Ok(self)
+        } else {
+            Err(self)
+        }
     }
 }
 

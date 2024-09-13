@@ -7,6 +7,12 @@ use stable_deref_trait::StableDeref;
 mod buf;
 pub use self::buf::{Buf, ReserveBuf};
 
+mod payload;
+pub use self::payload::{NoPayload, Payload, PayloadBuild, PayloadParse, PushOption};
+
+mod holder;
+pub use self::holder::{NoPayloadHolder, PayloadHolder};
+
 #[cfg(test)]
 extern crate std;
 

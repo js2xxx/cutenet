@@ -147,7 +147,7 @@ where
     U: NoPayload<Init = P>,
 {
     fn parse(_: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw.data());
+        let packet = RawPacket(raw.header_data());
         let len = packet.0.len();
         if len < field::OPER.end
             || len < field::TPA(packet.hardware_len(), packet.protocol_len()).end
@@ -221,7 +221,7 @@ where
 mod tests {
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, NoPayloadHolder};
 
     use super::*;
 

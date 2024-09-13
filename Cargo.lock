@@ -64,6 +64,7 @@ dependencies = [
 name = "cutenet-storage"
 version = "0.1.0"
 dependencies = [
+ "cutenet-error",
  "stable_deref_trait",
 ]
 

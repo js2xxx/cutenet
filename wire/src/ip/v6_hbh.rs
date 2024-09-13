@@ -49,7 +49,7 @@ pub struct Header<#[wire] T> {
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Header<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
-        let header = RawHeader(raw.data());
+        let header = RawHeader(raw.header_data());
 
         if len < field::MIN_HEADER_SIZE {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
@@ -80,7 +80,11 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Header<T> {
         Ok(Header {
             next_header: header.next_header(),
             options,
-            payload: T::parse(cx, raw.pop(opts_range.end..len)?)?,
+            payload: T::parse(
+                cx,
+                raw.pop(opts_range.end..len)
+                    .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
+            )?,
         })
     }
 }
@@ -121,7 +125,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Header<T> {
 
 #[cfg(test)]
 mod test {
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     use super::*;
 

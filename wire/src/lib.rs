@@ -10,14 +10,14 @@ extern crate std;
 #[macro_use]
 mod macros;
 
+#[doc(hidden)]
+pub use cutenet_storage::{NoPayload, Payload, PayloadBuild, PayloadParse};
+
 mod context;
 pub use self::context::{Ends, WireCx};
 
 mod traits;
-pub use self::traits::{
-    NoPayload, NoPayloadHolder, Payload, PayloadBuild, PayloadHolder, PayloadParse, ReserveExt,
-    Wire, WireBuild, WireParse, WireSubNoPayload, WireSubstitute,
-};
+pub use self::traits::{ReserveExt, Wire, WireBuild, WireParse, WireSubNoPayload, WireSubstitute};
 
 mod error;
 pub use self::error::{BuildError, BuildErrorKind, ParseError, ParseErrorKind};
@@ -96,6 +96,7 @@ mod field {
 
 mod prelude {
     pub use cutenet_macros::Wire;
+    pub use cutenet_storage::{NoPayload, Payload, PayloadBuild, PayloadParse};
 
     pub use super::{error::*, traits::*, Lax};
 }

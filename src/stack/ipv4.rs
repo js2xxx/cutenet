@@ -5,6 +5,7 @@ use crate::{
     phy::DeviceCaps,
     route::Router,
     socket::{AllSocketSet, SocketSet},
+    storage::{PayloadBuild, PayloadHolder, PayloadParse},
     time::Instant,
     wire::*,
 };

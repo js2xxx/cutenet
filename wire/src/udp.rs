@@ -95,7 +95,7 @@ pub struct Packet<#[wire] T> {
 
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw.data());
+        let packet = RawPacket(raw.header_data());
         let buffer_len = packet.0.len();
         if buffer_len < HEADER_LEN {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
@@ -116,7 +116,11 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
 
         Ok(Packet {
             port: packet.port(),
-            payload: T::parse(cx, raw.pop(HEADER_LEN..field_len)?)?,
+            payload: T::parse(
+                cx,
+                raw.pop(HEADER_LEN..field_len)
+                    .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
+            )?,
         })
     }
 }
@@ -152,7 +156,7 @@ mod tests {
     use core::net::Ipv4Addr;
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     use super::*;
     use crate::Checksums;
@@ -176,7 +180,7 @@ mod tests {
     fn test_deconstruct() {
         let packet: Packet<&[u8]> = Packet::parse(&CX, &PACKET_BYTES[..]).unwrap();
         assert_eq!(packet.port, Ends { src: 48896, dst: 53 });
-        assert_eq!(packet.payload.data(), &PAYLOAD_BYTES[..]);
+        assert_eq!(packet.payload, &PAYLOAD_BYTES[..]);
     }
 
     #[test]

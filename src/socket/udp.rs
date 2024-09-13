@@ -320,12 +320,7 @@ pub trait PacketRx {
 
     fn is_connected(&self) -> bool;
 
-    fn receive(
-        &mut self,
-        now: Instant,
-        src: IpAddr,
-        data: Self::Item,
-    ) -> Result<(), Self::Item>;
+    fn receive(&mut self, now: Instant, src: IpAddr, data: Self::Item) -> Result<(), Self::Item>;
 }
 
 #[derive(Debug)]

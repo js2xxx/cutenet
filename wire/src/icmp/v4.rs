@@ -1,6 +1,7 @@
 use core::fmt;
 
 use byteorder::{ByteOrder, NetworkEndian};
+use cutenet_storage::PushOption;
 
 use crate::{context::WireCx, ip::checksum, prelude::*, Ipv4Packet};
 
@@ -258,7 +259,7 @@ pub enum Packet<#[wire] T> {
 
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
-        let packet = RawPacket(raw.data());
+        let packet = RawPacket(raw.header_data());
 
         let len = packet.0.len();
         if len < field::HEADER_END {
@@ -269,27 +270,28 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
             return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
+        let map_err = |err| ParseErrorKind::PacketTooShort.with(err);
         match (packet.msg_type(), packet.msg_code()) {
             (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len).map_err(map_err)?)?,
             }),
 
             (Message::EchoReply, 0) => Ok(Packet::EchoReply {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len).map_err(map_err)?)?,
             }),
 
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len).map_err(map_err)?)?,
             }),
 
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len).map_err(map_err)?)?,
             }),
 
             _ => Err(ParseErrorKind::ProtocolUnknown.with(raw)),
@@ -321,7 +323,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             Ok(())
         };
 
-        let opt = PayloadPush::Truncate(usize::MAX);
+        let opt = PushOption::new().truncate(usize::MAX);
         match self {
             Packet::EchoRequest { ident, seq_no, payload } => {
                 payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
@@ -348,7 +350,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                 })
             }
             Packet::DstUnreachable { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::DstUnreachable);
@@ -358,7 +360,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                 })
             }
             Packet::TimeExceeded { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::TimeExceeded);
@@ -375,7 +377,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
 mod tests {
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
 
     use super::*;
     use crate::Checksums;

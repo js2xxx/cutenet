@@ -263,7 +263,7 @@ mod tests {
     use core::net::IpAddr;
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, NoPayloadHolder};
 
     use super::*;
     use crate::{context::Ends, ethernet, icmp::v6::Packet, Checksums};

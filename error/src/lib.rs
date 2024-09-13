@@ -8,6 +8,12 @@ pub struct Error<K, T: ?Sized> {
     pub data: T,
 }
 
+impl<K, T> From<(K, T)> for Error<K, T> {
+    fn from((kind, data): (K, T)) -> Self {
+        Error { kind, data }
+    }
+}
+
 impl<K, T> Error<K, T> {
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Error<K, U> {
         Error {

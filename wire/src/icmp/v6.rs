@@ -1,6 +1,7 @@
 use core::{fmt, net::IpAddr};
 
 use byteorder::{ByteOrder, NetworkEndian};
+use cutenet_storage::PushOption;
 
 use crate::{
     context::{Ends, WireCx},
@@ -429,7 +430,7 @@ where
 {
     fn parse(cx: &dyn WireCx, raw: P) -> Result<Self, ParseError<P>> {
         let len = raw.len();
-        let packet = RawPacket(raw.data());
+        let packet = RawPacket(raw.header_data());
 
         if len < 4 {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
@@ -461,33 +462,34 @@ where
             return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
+        let m = |err| ParseErrorKind::PacketTooShort.with(err);
         match (packet.msg_type(), packet.msg_code()) {
             (Message::DstUnreachable, code) => Ok(Packet::DstUnreachable {
                 reason: DstUnreachable::from(code),
-                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len).map_err(m)?)?,
             }),
             (Message::PktTooBig, 0) => Ok(Packet::PktTooBig {
                 mtu: packet.pkt_too_big_mtu(),
-                payload: Lax::parse(cx, raw.pop(field::MTU.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::MTU.end..len).map_err(m)?)?,
             }),
             (Message::TimeExceeded, code) => Ok(Packet::TimeExceeded {
                 reason: TimeExceeded::from(code),
-                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::UNUSED.end..len).map_err(m)?)?,
             }),
             (Message::ParamProblem, code) => Ok(Packet::ParamProblem {
                 reason: ParamProblem::from(code),
                 pointer: packet.param_problem_ptr(),
-                payload: Lax::parse(cx, raw.pop(field::POINTER.end..len)?)?,
+                payload: Lax::parse(cx, raw.pop(field::POINTER.end..len).map_err(m)?)?,
             }),
             (Message::EchoRequest, 0) => Ok(Packet::EchoRequest {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len).map_err(m)?)?,
             }),
             (Message::EchoReply, 0) => Ok(Packet::EchoReply {
                 ident: packet.echo_ident(),
                 seq_no: packet.echo_seq_no(),
-                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len)?)?,
+                payload: T::parse(cx, raw.pop(field::ECHO_SEQNO.end..len).map_err(m)?)?,
             }),
             (msg, 0) if msg.is_nd() => Ok(Packet::Nd {
                 nd: match nd::Nd::parse(packet) {
@@ -532,10 +534,10 @@ where
             Ok(())
         };
 
-        let push_opt = PayloadPush::Truncate(MAX_ERROR_PACKET_LEN);
+        let opt = PushOption::new().truncate(MAX_ERROR_PACKET_LEN);
         match self {
             Packet::DstUnreachable { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::DstUnreachable);
                     packet.set_msg_code(reason.into());
@@ -543,7 +545,7 @@ where
                 })
             }
             Packet::PktTooBig { mtu, payload } => {
-                (payload.build(&())?).push_with(field::MTU.end, push_opt, |buf| {
+                (payload.build(&())?).push_with(field::MTU.end, &opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::PktTooBig);
                     packet.set_msg_code(0);
@@ -552,7 +554,7 @@ where
                 })
             }
             Packet::TimeExceeded { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, push_opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::TimeExceeded);
                     packet.set_msg_code(reason.into());
@@ -561,7 +563,7 @@ where
             }
 
             Packet::ParamProblem { reason, pointer, payload } => {
-                (payload.build(&())?).push_with(field::POINTER.end, push_opt, |buf| {
+                (payload.build(&())?).push_with(field::POINTER.end, &opt, |buf| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::ParamProblem);
                     packet.set_msg_code(reason.into());
@@ -602,7 +604,7 @@ mod tests {
     use core::net::Ipv6Addr;
     use std::vec;
 
-    use cutenet_storage::Buf;
+    use cutenet_storage::{Buf, PayloadHolder};
     use ip::IpAddrExt;
 
     use super::*;
