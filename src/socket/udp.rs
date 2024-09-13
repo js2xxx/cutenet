@@ -1,4 +1,8 @@
-use core::{fmt, net::SocketAddr, num::NonZero};
+use core::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+    num::NonZero,
+};
 
 use crate::{
     iface::NetTx,
@@ -28,6 +32,23 @@ impl fmt::Display for BindError {
 impl core::error::Error for BindError {}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ConnectError {
+    Unaddressable,
+    NotBound,
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConnectError::Unaddressable => write!(f, "unaddressable"),
+            ConnectError::NotBound => write!(f, "not bound"),
+        }
+    }
+}
+
+impl core::error::Error for ConnectError {}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SendErrorKind {
     Unaddressable,
     BufferTooSmall,
@@ -51,22 +72,21 @@ impl fmt::Display for SendErrorKind {
 }
 crate::error::make_error!(SendErrorKind => pub SendError);
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum RecvError {
-    Exhausted,
-    Truncated,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvErrorKind {
+    Disconnected,
+    NotAccepted,
 }
+crate::error::make_error!(RecvErrorKind => pub RecvError);
 
-impl fmt::Display for RecvError {
+impl fmt::Display for RecvErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RecvError::Exhausted => write!(f, "exhausted"),
-            RecvError::Truncated => write!(f, "truncated"),
+            RecvErrorKind::Disconnected => write!(f, "disconnected"),
+            RecvErrorKind::NotAccepted => write!(f, "not accepted"),
         }
     }
 }
-
-impl core::error::Error for RecvError {}
 
 #[derive(Debug)]
 pub struct Socket {
@@ -92,7 +112,15 @@ impl Default for Socket {
 }
 
 impl Socket {
-    pub fn hop_limit(&self) -> u8 {
+    pub const fn endpoint(&self) -> Option<SocketAddr> {
+        self.addr
+    }
+
+    pub const fn peer(&self) -> Option<SocketAddr> {
+        self.peer
+    }
+
+    pub const fn hop_limit(&self) -> u8 {
         self.hop_limit
     }
 
@@ -103,7 +131,11 @@ impl Socket {
         };
     }
 
-    pub fn bind(&mut self, bind: SocketAddr) -> Result<(), BindError> {
+    pub fn bind<P: Payload, Rx: PacketRx<Item = P>>(
+        &mut self,
+        bind: SocketAddr,
+        rx: Rx,
+    ) -> Result<SocketRecv<P, Rx>, BindError> {
         if bind.port() == 0 {
             return Err(BindError::Unaddressable);
         }
@@ -113,73 +145,89 @@ impl Socket {
 
         self.addr = Some(bind);
 
-        Ok(())
+        Ok(SocketRecv { addr: bind, peer: self.peer, rx })
     }
 
-    pub fn is_open(&self) -> bool {
+    pub const fn is_open(&self) -> bool {
         self.addr.is_some()
+    }
+
+    pub fn connect<P: Payload, Rx: PacketRx<Item = P>>(
+        &mut self,
+        peer: SocketAddr,
+        rx: Rx,
+    ) -> Result<SocketRecv<P, Rx>, ConnectError> {
+        if peer.port() == 0 {
+            return Err(ConnectError::Unaddressable);
+        }
+        let Some(addr) = self.addr else {
+            return Err(ConnectError::NotBound);
+        };
+
+        self.peer = Some(peer);
+
+        Ok(SocketRecv { addr, peer: self.peer, rx })
+    }
+
+    pub const fn is_connected(&self) -> bool {
+        self.peer.is_some()
+    }
+
+    pub fn close(&mut self) {
+        self.addr = None;
+        self.peer = None;
+    }
+}
+
+impl Drop for Socket {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
 impl Socket {
-    pub fn send_data<P, R>(
+    pub fn send_data<P: PayloadBuild, R: Router<P>>(
         &self,
         now: Instant,
         router: &mut R,
         data: P,
-    ) -> Result<TxResult, SendError<P>>
-    where
-        P: PayloadBuild,
-        R: Router<P>,
-    {
+    ) -> Result<TxResult, SendError<P>> {
         match self.send(now, router) {
             Ok(tx) => tx.consume(now, data),
             Err(err) => Err(err.map(|_| data)),
         }
     }
 
-    pub fn send<'router, P, R>(
+    pub fn send<'router, P: PayloadBuild, R: Router<P>>(
         &self,
         now: Instant,
         router: &'router mut R,
-    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError>
-    where
-        P: PayloadBuild,
-        R: Router<P>,
-    {
+    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError> {
         match self.peer {
             Some(dst) => self.send_to(now, router, dst),
             None => Err(SendErrorKind::NotConnected.into()),
         }
     }
 
-    pub fn send_data_to<P, R>(
+    pub fn send_data_to<P: PayloadBuild, R: Router<P>>(
         &self,
         now: Instant,
         router: &mut R,
         dst: SocketAddr,
         data: P,
-    ) -> Result<TxResult, SendError<P>>
-    where
-        P: PayloadBuild,
-        R: Router<P>,
-    {
+    ) -> Result<TxResult, SendError<P>> {
         match self.send_to(now, router, dst) {
             Ok(tx) => tx.consume(now, data),
             Err(err) => Err(err.map(|_| data)),
         }
     }
 
-    pub fn send_to<'router, P, R>(
+    pub fn send_to<'router, P: PayloadBuild, R: Router<P>>(
         &self,
         now: Instant,
         router: &'router mut R,
         dst: SocketAddr,
-    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError>
-    where
-        P: PayloadBuild,
-        R: Router<P>,
-    {
+    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError> {
         let Some(src) = self.addr else {
             return Err(SendErrorKind::Unbound.into());
         };
@@ -264,5 +312,86 @@ impl<P: PayloadBuild, Tx: NetTx<P>> SocketSend<P, Tx> {
         };
 
         Ok(self.tx.comsume(now, packet))
+    }
+}
+
+pub trait PacketRx {
+    type Item;
+
+    fn is_connected(&self) -> bool;
+
+    fn receive(
+        &mut self,
+        now: Instant,
+        src: IpAddr,
+        data: Self::Item,
+    ) -> Result<(), Self::Item>;
+}
+
+#[derive(Debug)]
+pub struct SocketRecv<P, Rx>
+where
+    P: Payload,
+    Rx: PacketRx<Item = P> + ?Sized,
+{
+    addr: SocketAddr,
+    peer: Option<SocketAddr>,
+    rx: Rx,
+}
+
+impl<P, Rx> SocketRecv<P, Rx>
+where
+    P: Payload,
+    Rx: PacketRx<Item = P> + ?Sized,
+{
+    pub fn endpoint(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn peer(&self) -> Option<SocketAddr> {
+        self.peer
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.rx.is_connected()
+    }
+
+    pub fn accepts(&self, addr: Ends<SocketAddr>) -> bool {
+        if self.addr.port() != addr.dst.port() {
+            return false;
+        }
+
+        if addr.dst.ip().is_unicast() && addr.dst.ip() != self.addr.ip() {
+            return false;
+        }
+
+        if self.peer.is_some_and(|peer| peer != addr.src) {
+            return false;
+        }
+
+        true
+    }
+
+    pub fn process(
+        &mut self,
+        now: Instant,
+        ip: Ends<IpAddr>,
+        mut packet: UdpPacket<P>,
+    ) -> Result<(), RecvError<UdpPacket<P>>> {
+        if !self.rx.is_connected() {
+            return Err(RecvErrorKind::Disconnected.with(packet));
+        }
+
+        if !self.accepts(ip.zip_map(packet.port, SocketAddr::new)) {
+            return Err(RecvErrorKind::NotAccepted.with(packet));
+        }
+
+        match self.rx.receive(now, ip.src, packet.payload) {
+            Ok(()) => Ok(()),
+            Err(payload) => {
+                packet.payload = payload;
+                Err(RecvErrorKind::Disconnected.with(packet))
+            }
+        }
     }
 }
