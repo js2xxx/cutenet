@@ -198,52 +198,31 @@ impl<P: PayloadBuild, Tx: NetTx<P>> SocketSend<P, Tx> {
         self.tx.device_caps()
     }
 
-    pub fn consume(self, now: Instant, data: P) -> Result<TxResult, SendError<P>> {
-        let Ends { src, dst } = self.endpoint;
+    pub fn consume(self, now: Instant, payload: P) -> Result<TxResult, SendError<P>> {
         let ip = self.endpoint.map(|s| s.ip());
+        let port = self.endpoint.map(|s| s.port());
 
-        let buffer_len = data.len()
+        let buffer_len = payload.len()
             + UDP_HEADER_LEN
-            + match dst {
+            + match self.endpoint.dst {
                 SocketAddr::V4(_) => IPV4_HEADER_LEN,
                 SocketAddr::V6(_) => IPV6_HEADER_LEN,
             }
             + self.tx.device_caps().header_len;
 
-        if buffer_len > data.capacity() {
-            return Err(SendErrorKind::BufferTooSmall.with(data));
+        if buffer_len > payload.capacity() {
+            return Err(SendErrorKind::BufferTooSmall.with(payload));
         }
 
         let mtu = self.tx.device_caps().mtu;
         if buffer_len > mtu {
-            return Err(SendErrorKind::PacketExceedsMtu(mtu).with(data));
+            return Err(SendErrorKind::PacketExceedsMtu(mtu).with(payload));
         }
 
-        let payload = |data| {
-            uncheck_build!(UdpPacket {
-                port: Ends { src, dst }.map(|s| s.port()),
-                payload: data,
-            }
-            .build(&(self.tx.device_caps().tx_checksums, ip)))
-        };
+        let cx = &(self.tx.device_caps().tx_checksums, ip);
+        let payload = uncheck_build!(UdpPacket { port, payload }.build(cx));
 
-        let packet = match (src, dst) {
-            (SocketAddr::V4(src), SocketAddr::V4(dst)) => IpPacket::V4(Ipv4Packet {
-                addr: Ends { src, dst }.map(|s| *s.ip()),
-                next_header: IpProtocol::Udp,
-                hop_limit: self.hop_limit,
-                frag_info: None,
-                payload: payload(data),
-            }),
-            (SocketAddr::V6(src), SocketAddr::V6(dst)) => IpPacket::V6(Ipv6Packet {
-                addr: Ends { src, dst }.map(|s| *s.ip()),
-                next_header: IpProtocol::Udp,
-                hop_limit: self.hop_limit,
-                payload: payload(data),
-            }),
-            _ => unreachable!(),
-        };
-
+        let packet = IpPacket::new(ip, IpProtocol::Udp, self.hop_limit, payload);
         Ok(self.tx.comsume(now, packet))
     }
 }

@@ -488,6 +488,25 @@ impl<T> Packet<T> {
         *hop_limit = hop_limit.saturating_sub(1);
         ret
     }
+
+    pub fn new(addr: Ends<IpAddr>, next_header: Protocol, hop_limit: u8, payload: T) -> Self {
+        match (addr.src, addr.dst) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => Packet::V4(v4::Packet {
+                addr: Ends { src, dst },
+                next_header,
+                hop_limit,
+                frag_info: None,
+                payload,
+            }),
+            (IpAddr::V6(src), IpAddr::V6(dst)) => Packet::V6(v6::Packet {
+                addr: Ends { src, dst },
+                next_header,
+                hop_limit,
+                payload,
+            }),
+            _ => unreachable!("IP address family mismatch"),
+        }
+    }
 }
 
 impl<T, P, U> WireParse for Packet<T>

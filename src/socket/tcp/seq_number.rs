@@ -3,8 +3,8 @@ use core::{
     net::{IpAddr, SocketAddr},
 };
 
-use super::{TcpListener, TcpStream};
-use crate::{socket::SocketRx, time::Instant, wire::*};
+use super::TcpListener;
+use crate::{time::Instant, wire::*};
 
 // Alcock, Shane and Richard Nelson. “An Analysis of TCP Maximum Segment Sizes.”
 // (2010).
@@ -25,13 +25,8 @@ fn time_period(time: Instant) -> u32 {
     (time.secs() / 64) as u32 & TIME_MASK
 }
 
-impl<P, Rx, H> TcpListener<P, Rx, H>
-where
-    P: Payload,
-    Rx: SocketRx<Item = TcpStream<P>>,
-    H: BuildHasher,
-{
-    pub(super) fn seq_number(
+impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
+    pub(super) fn seq_number<P: Payload>(
         &self,
         now: Instant,
         ip: Ends<IpAddr>,
@@ -54,7 +49,7 @@ where
         TcpSeqNumber(seq)
     }
 
-    pub(super) fn check_seq_number(
+    pub(super) fn check_seq_number<P: Payload>(
         &self,
         now: Instant,
         ip: Ends<IpAddr>,
