@@ -2,7 +2,16 @@ use core::net::IpAddr;
 
 use crate::{phy::DeviceCaps, route::Router, time::Instant, wire::*};
 
+pub mod tcp;
 pub mod udp;
+
+pub trait SocketRx {
+    type Item;
+
+    fn is_connected(&self) -> bool;
+
+    fn receive(&mut self, now: Instant, src: IpAddr, data: Self::Item) -> Result<(), Self::Item>;
+}
 
 pub trait RawSocketSet<P: Payload> {
     fn receive(&mut self, now: Instant, device_caps: &DeviceCaps, packet: &IpPacket<P>) -> bool;

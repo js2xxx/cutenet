@@ -34,7 +34,7 @@ bitflags::bitflags! {
 /// 2<sup>32</sup>. Sequence numbers do not have a discontiguity when compared
 /// pairwise across a signed overflow.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
-pub struct SeqNumber(pub i32);
+pub struct SeqNumber(pub u32);
 
 impl SeqNumber {
     pub fn max(self, rhs: Self) -> Self {
@@ -56,7 +56,7 @@ impl SeqNumber {
 
 impl fmt::Display for SeqNumber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0 as u32)
+        write!(f, "{}", self.0)
     }
 }
 
@@ -67,7 +67,7 @@ impl ops::Add<usize> for SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to add to sequence number with unsigned overflow")
         }
-        SeqNumber(self.0.wrapping_add(rhs as i32))
+        SeqNumber(self.0.wrapping_add(rhs as u32))
     }
 }
 
@@ -78,7 +78,7 @@ impl ops::Sub<usize> for SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to subtract to sequence number with unsigned overflow")
         }
-        SeqNumber(self.0.wrapping_sub(rhs as i32))
+        SeqNumber(self.0.wrapping_sub(rhs as u32))
     }
 }
 
@@ -92,10 +92,10 @@ impl ops::Sub for SeqNumber {
     type Output = usize;
 
     fn sub(self, rhs: SeqNumber) -> usize {
-        let result = self.0.wrapping_sub(rhs.0);
-        if result < 0 {
+        if self < rhs {
             panic!("attempt to subtract sequence numbers with underflow")
         }
+        let result = self.0.wrapping_sub(rhs.0);
         result as usize
     }
 }
@@ -147,12 +147,12 @@ wire!(impl RawPacket {
         |data, value| NetworkEndian::write_u16(&mut data[field::DST_PORT], value);
 
     seq_number/set_seq_number: SeqNumber =>
-        |data| SeqNumber(NetworkEndian::read_i32(&data[field::SEQ_NUM]));
-        |data, value| NetworkEndian::write_i32(&mut data[field::SEQ_NUM], value.0);
+        |data| SeqNumber(NetworkEndian::read_u32(&data[field::SEQ_NUM]));
+        |data, value| NetworkEndian::write_u32(&mut data[field::SEQ_NUM], value.0);
 
     ack_number/set_ack_number: SeqNumber =>
-        |data| SeqNumber(NetworkEndian::read_i32(&data[field::ACK_NUM]));
-        |data, value| NetworkEndian::write_i32(&mut data[field::ACK_NUM], value.0);
+        |data| SeqNumber(NetworkEndian::read_u32(&data[field::ACK_NUM]));
+        |data, value| NetworkEndian::write_u32(&mut data[field::ACK_NUM], value.0);
 
     flags/set_flags: TcpFlags =>
         |data| TcpFlags::from_bits_truncate(NetworkEndian::read_u16(&data[field::FLAGS]));
@@ -587,7 +587,7 @@ mod tests {
         let packet: Packet<&[u8]> = Packet::parse(&CX, &PACKET_BYTES[..]).unwrap();
         assert_eq!(packet.port, Ends { src: 48896, dst: 80 });
         assert_eq!(packet.seq_number, SeqNumber(0x01234567));
-        assert_eq!(packet.ack_number, Some(SeqNumber(0x89abcdefu32 as i32)));
+        assert_eq!(packet.ack_number, Some(SeqNumber(0x89abcdefu32)));
         assert_eq!(packet.header_len(), 24);
         assert_eq!(packet.control, Control::Fin);
         assert_eq!(packet.window_len, 0x0123);
