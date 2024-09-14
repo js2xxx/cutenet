@@ -4,7 +4,7 @@ use core::{
     num::NonZero,
 };
 
-use super::SocketRx;
+use super::{RxError, RxErrorKind, SocketRx};
 use crate::{
     iface::NetTx,
     phy::DeviceCaps,
@@ -281,14 +281,21 @@ where
             return Err(RecvErrorKind::Disconnected.with(packet));
         }
 
+        if self.rx.is_full() {
+            return Ok(());
+        }
+
         if !self.accepts(ip.zip_map(packet.port, SocketAddr::new)) {
             return Err(RecvErrorKind::NotAccepted.with(packet));
         }
 
         match self.rx.receive(now, ip.src, packet.payload) {
-            Ok(()) => Ok(()),
-            Err(payload) => {
-                packet.payload = payload;
+            Ok(()) | Err(RxError { kind: RxErrorKind::Full, .. }) => Ok(()),
+            Err(RxError {
+                kind: RxErrorKind::Disconnected,
+                data,
+            }) => {
+                packet.payload = data;
                 Err(RecvErrorKind::Disconnected.with(packet))
             }
         }

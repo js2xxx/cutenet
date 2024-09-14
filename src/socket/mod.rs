@@ -5,12 +5,26 @@ use crate::{phy::DeviceCaps, route::Router, time::Instant, wire::*};
 pub mod tcp;
 pub mod udp;
 
+#[derive(Debug, Clone, Copy)]
+pub enum RxErrorKind {
+    Full,
+    Disconnected,
+}
+crate::error::make_error!(RxErrorKind => pub RxError);
+
 pub trait SocketRx {
     type Item;
 
     fn is_connected(&self) -> bool;
 
-    fn receive(&mut self, now: Instant, src: IpAddr, data: Self::Item) -> Result<(), Self::Item>;
+    fn is_full(&self) -> bool;
+
+    fn receive(
+        &mut self,
+        now: Instant,
+        src: IpAddr,
+        data: Self::Item,
+    ) -> Result<(), RxError<Self::Item>>;
 }
 
 pub trait RawSocketSet<P: Payload> {

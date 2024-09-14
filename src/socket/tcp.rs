@@ -179,14 +179,18 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         Rx2: SocketRx<Item = P>,
         W: WithTcpState,
     {
+        if !self.rx.is_connected() {
+            return Err(RecvErrorKind::Disconnected.with(packet));
+        }
+
+        if self.rx.is_full() {
+            todo!("reply RST")
+        }
+
         #[allow(unused)]
         let Some(mss) = self.check_seq_number(now, ip, &packet) else {
             return Err(RecvErrorKind::NotAccepted.with(packet));
         };
-
-        if !self.rx.is_connected() {
-            return Err(RecvErrorKind::Disconnected.with(packet));
-        }
 
         let config = config();
         let state = config.state;

@@ -102,7 +102,7 @@ impl ops::Sub for SeqNumber {
 
 impl cmp::PartialOrd for SeqNumber {
     fn partial_cmp(&self, other: &SeqNumber) -> Option<cmp::Ordering> {
-        self.0.wrapping_sub(other.0).partial_cmp(&0)
+        (self.0.wrapping_sub(other.0) as i32).partial_cmp(&0)
     }
 }
 
@@ -367,10 +367,11 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
 
         let mut max_seg_size = None;
         let mut window_scale = None;
-        let mut options = packet.options();
         let mut sack_permitted = false;
         let mut sack_ranges = [None, None, None];
         let mut timestamp = None;
+
+        let mut options = packet.options();
         while !options.is_empty() {
             let (next_options, option) = match TcpOption::parse(options) {
                 Ok(ret) => ret,
@@ -378,7 +379,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
             };
             match option {
                 TcpOption::EndOfList => break,
-                TcpOption::NoOperation => (),
+                TcpOption::NoOperation => {}
                 TcpOption::MaxSegmentSize(value) => max_seg_size = Some(value),
                 TcpOption::WindowScale(value) => {
                     // RFC 1323: Thus, the shift count must be limited to 14 (which allows windows
@@ -402,7 +403,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
                 TcpOption::TimeStamp { tsval, tsecr } => {
                     timestamp = Some(TcpTimestamp::new(tsval, tsecr));
                 }
-                _ => (),
+                TcpOption::Unknown { .. } => {}
             }
             options = next_options;
         }
