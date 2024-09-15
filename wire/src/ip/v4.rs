@@ -429,8 +429,7 @@ mod tests {
     #[test]
     fn test_overlong() {
         let mut pb = vec![];
-        pb.extend(INGRESS_PACKET_BYTES);
-        pb.push(0);
+        pb.extend(INGRESS_PACKET_BYTES.into_iter().chain([0]));
         let packet: Packet<&[u8]> = Packet::parse(&CX, &pb[..]).unwrap();
 
         assert_eq!(packet.payload.len(), PAYLOAD_BYTES.len());

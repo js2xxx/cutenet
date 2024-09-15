@@ -1,4 +1,6 @@
 #![no_std]
+#![feature(let_chains)]
+#![cfg_attr(feature = "alloc", feature(btree_cursors))]
 
 use core::ops::DerefMut;
 
@@ -7,11 +9,18 @@ use stable_deref_trait::StableDeref;
 mod buf;
 pub use self::buf::{Buf, ReserveBuf};
 
-mod payload;
-pub use self::payload::{NoPayload, Payload, PayloadBuild, PayloadParse, PushOption};
-
 mod holder;
 pub use self::holder::{NoPayloadHolder, PayloadHolder};
+
+mod payload;
+pub use self::payload::{
+    NoPayload, Payload, PayloadBuild, PayloadMerge, PayloadParse, PayloadSplit, PushOption,
+};
+
+pub mod rope;
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 #[cfg(test)]
 extern crate std;

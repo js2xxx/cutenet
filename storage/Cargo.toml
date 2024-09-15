@@ -15,4 +15,5 @@ std = ["alloc", "stable_deref_trait/std"]
 # Local crates
 cutenet-error.workspace = true
 # External crates
+heapless.workspace = true
 stable_deref_trait.workspace = true

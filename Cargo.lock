@@ -65,6 +65,7 @@ name = "cutenet-storage"
 version = "0.1.0"
 dependencies = [
  "cutenet-error",
+ "heapless",
  "stable_deref_trait",
 ]
 
