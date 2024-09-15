@@ -4,17 +4,17 @@ use core::ops::Bound;
 use crate::{PayloadMerge, PayloadSplit};
 
 #[derive(Debug, Clone)]
-pub struct Rope<P> {
+pub struct ReorderQueue<P> {
     map: BTreeMap<usize, P>,
 }
 
-impl<P> Rope<P> {
+impl<P> ReorderQueue<P> {
     pub const fn new() -> Self {
         Self { map: BTreeMap::new() }
     }
 }
 
-impl<P: PayloadMerge + PayloadSplit> Rope<P> {
+impl<P: PayloadMerge + PayloadSplit> ReorderQueue<P> {
     pub fn merge(&mut self, pos: usize, p: P) -> Result<Option<P>, P> {
         if self.map.is_empty() {
             return Ok(if pos == 0 {
@@ -74,10 +74,10 @@ impl<P: PayloadMerge + PayloadSplit> Rope<P> {
     }
 }
 
-impl<P> Default for Rope<P> {
+impl<P> Default for ReorderQueue<P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-vector_tests!(super::Rope::new());
+vector_tests!(super::ReorderQueue::new());

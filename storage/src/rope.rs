@@ -3,7 +3,7 @@ macro_rules! vector_test {
     ([$test:ident] $($name:ident: $perm:expr => $value:expr,)*) => {
         $(#[test]
         fn $name() {
-            test($perm, $value);
+            $test($perm, $value);
         })*
     };
 }
@@ -59,7 +59,7 @@ macro_rules! vector_tests {
 #[cfg(feature = "alloc")]
 mod btree;
 #[cfg(feature = "alloc")]
-pub use self::btree::Rope as BTreeRope;
+pub use self::btree::ReorderQueue as BTreeRq;
 
 mod r#static;
-pub use self::r#static::Rope as StaticRope;
+pub use self::r#static::ReorderQueue as StaticRq;

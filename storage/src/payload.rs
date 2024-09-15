@@ -78,7 +78,14 @@ pub trait PayloadMerge: PayloadBuild {
 }
 
 pub trait PayloadSplit: PayloadParse {
-    fn split(self, mid: usize) -> Result<(Self, Self), Self>;
+    fn split(mut self, mid: usize) -> Result<(Self, Self), Self> {
+        match self.split_off(mid) {
+            Some(right) => Ok((self, right)),
+            None => Err(self),
+        }
+    }
+
+    fn split_off(&mut self, mid: usize) -> Option<Self>;
 
     fn slice_into(self, range: Range<usize>) -> Result<Self, Self> {
         let (_, right) = self.split(range.start)?;
@@ -136,11 +143,13 @@ mod slice {
     }
 
     impl<'a> PayloadSplit for &'a [u8] {
-        fn split(self, mid: usize) -> Result<(Self, Self), Self> {
-            if self.len() < mid {
-                Err(self)
+        fn split_off(&mut self, mid: usize) -> Option<Self> {
+            if self.len() > mid {
+                let (left, right) = self.split_at(mid);
+                *self = left;
+                Some(right)
             } else {
-                Ok(self.split_at(mid))
+                None
             }
         }
 
@@ -251,13 +260,8 @@ mod vec {
     }
 
     impl PayloadSplit for Vec<u8> {
-        fn split(mut self, mid: usize) -> Result<(Self, Self), Self> {
-            if mid <= self.len() {
-                let latter = self.split_off(mid);
-                Ok((self, latter))
-            } else {
-                Err(self)
-            }
+        fn split_off(&mut self, mid: usize) -> Option<Self> {
+            (self.len() > mid).then(|| self.split_off(mid))
         }
     }
 }

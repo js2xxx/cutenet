@@ -15,3 +15,4 @@ pub const STATIC_ROUTER_ROUTE_CAPACITY: usize = 8;
 pub const STATIC_ROUTER_DESTINATION_CAPACITY: usize = 8;
 
 pub const STATIC_TCP_BUFFER_CAPACITY: usize = 1024;
+pub const STATIC_TCP_ROPE_CAPACITY: usize = 16;

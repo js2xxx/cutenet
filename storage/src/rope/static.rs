@@ -3,17 +3,17 @@ use heapless::Vec;
 use crate::{PayloadMerge, PayloadSplit};
 
 #[derive(Debug, Clone)]
-pub struct Rope<P, const CAP: usize> {
+pub struct ReorderQueue<P, const CAP: usize> {
     map: Vec<(usize, P), CAP>,
 }
 
-impl<P, const CAP: usize> Rope<P, CAP> {
+impl<P, const CAP: usize> ReorderQueue<P, CAP> {
     pub const fn new() -> Self {
         Self { map: Vec::new() }
     }
 }
 
-impl<P, const CAP: usize> Rope<P, CAP>
+impl<P, const CAP: usize> ReorderQueue<P, CAP>
 where
     P: PayloadMerge + PayloadSplit,
 {
@@ -76,10 +76,10 @@ where
     }
 }
 
-impl<P, const CAP: usize> Default for Rope<P, CAP> {
+impl<P, const CAP: usize> Default for ReorderQueue<P, CAP> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-vector_tests!(super::Rope::<_, 8>::new());
+vector_tests!(super::ReorderQueue::<_, 8>::new());
