@@ -1,7 +1,7 @@
 use core::net::IpAddr;
 
 use super::iface::NetTx;
-use crate::{time::Instant, wire::*};
+use crate::{storage::*, time::Instant, wire::*};
 
 pub mod r#static;
 

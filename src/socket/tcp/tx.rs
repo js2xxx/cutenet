@@ -72,7 +72,7 @@ pub struct TcpSend<'a, P: Payload, W: WithTcpState<P>, N: NetTx<P>> {
     tx: StackTx<P, N>,
 }
 
-impl<'a, P: PayloadMerge + PayloadSplit + Clone, W: WithTcpState<P>, N: NetTx<P>>
+impl<'a, P: PayloadBuild + PayloadSplit + Clone, W: WithTcpState<P>, N: NetTx<P>>
     TcpSend<'a, P, W, N>
 {
     pub fn consume(self, now: Instant, payload: P) -> Result<Option<P>, SendError<P>> {

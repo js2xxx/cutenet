@@ -1,5 +1,5 @@
 use super::TxResult;
-use crate::{time::Instant, wire::*};
+use crate::{storage::*, time::Instant, wire::*};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeviceCaps {

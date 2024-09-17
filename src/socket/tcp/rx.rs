@@ -4,13 +4,7 @@ use core::{
 };
 
 use super::{RecvState, ReorderQueue, WithTcpState};
-use crate::{
-    route::Router,
-    socket::SocketRx,
-    storage::{PayloadMerge, PayloadSplit},
-    time::Instant,
-    wire::*,
-};
+use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*};
 
 impl<P> RecvState<P> {
     #[allow(unused)]

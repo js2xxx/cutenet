@@ -10,8 +10,7 @@ extern crate std;
 #[macro_use]
 mod macros;
 
-#[doc(hidden)]
-pub use cutenet_storage::{NoPayload, Payload, PayloadBuild, PayloadParse};
+use cutenet_storage::{NoPayload, Payload, PayloadBuild};
 
 mod context;
 pub use self::context::{Ends, WireCx};

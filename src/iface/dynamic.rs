@@ -5,7 +5,7 @@ use core::{
 };
 
 use super::{HwAddr, NetPayload, NetRx, NetTx, TxResult};
-use crate::{iface::neighbor::CacheOption, phy::DeviceCaps, time::Instant, wire::*};
+use crate::{iface::neighbor::CacheOption, phy::DeviceCaps, storage::*, time::Instant};
 
 #[derive(Clone, Copy)]
 #[allow(clippy::type_complexity)]

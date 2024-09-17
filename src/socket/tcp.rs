@@ -1,10 +1,7 @@
 use core::fmt;
 
 use super::SocketRx;
-use crate::{
-    storage::{PayloadMerge, PayloadSplit},
-    wire::*,
-};
+use crate::{storage::*, wire::*};
 
 mod conn;
 mod rx;
@@ -79,7 +76,7 @@ pub struct TcpState<P> {
     last_timestamp: u32,
 }
 
-impl<P: PayloadMerge + PayloadSplit> SendState<P> {
+impl<P: PayloadSplit> SendState<P> {
     fn mss(&self) -> usize {
         let window_mss = self.unacked + self.window - self.next;
         self.remote_mss.min(window_mss)

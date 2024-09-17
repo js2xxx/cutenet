@@ -1,5 +1,5 @@
 use super::{ipv4, ipv6};
-use crate::{phy::DeviceCaps, wire::*};
+use crate::{phy::DeviceCaps, storage::*, wire::*};
 
 pub(crate) enum Icmp<P: Payload> {
     NoRoute(IpPacket<P>),

@@ -2,7 +2,7 @@ use core::net::{IpAddr, Ipv6Addr};
 
 use self::neighbor::CacheOption;
 use super::{phy::DeviceCaps, TxResult};
-use crate::{time::Instant, wire::*};
+use crate::{storage::*, time::Instant, wire::*};
 
 pub mod dynamic;
 pub mod ethernet;

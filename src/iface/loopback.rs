@@ -7,8 +7,8 @@ use heapless::mpmc::MpMcQueue;
 
 use super::{NetPayload, NetRx, NetTx};
 use crate::{
-    config::STATIC_LOOPBACK_CAPACITY, iface::neighbor::CacheOption, phy::DeviceCaps, time::Instant,
-    wire::*, TxDropReason::QueueFull, TxResult,
+    config::STATIC_LOOPBACK_CAPACITY, iface::neighbor::CacheOption, phy::DeviceCaps, storage::*,
+    time::Instant, wire::*, TxDropReason::QueueFull, TxResult,
 };
 
 pub struct StaticLoopback<P: Payload> {
