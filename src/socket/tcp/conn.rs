@@ -4,8 +4,8 @@ use core::{
 };
 
 use super::{
-    CongestionController, RecvError, RecvErrorKind, RecvState, SendState, TcpConfig, TcpRecv,
-    TcpState, TcpStream, WithTcpState,
+    CongestionController, RecvError, RecvErrorKind, RecvState, SendState, Tcb, TcpConfig, TcpRecv,
+    TcpState, TcpStream, WithTcb,
 };
 use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*};
 
@@ -13,7 +13,7 @@ pub type ConnResult<P, Rx, W> = Result<Option<TcpRecv<Rx, W>>, RecvError<TcpPack
 where
     P: PayloadBuild,
     Rx: SocketRx<Item = P>,
-    W: WithTcpState<Payload = P>;
+    W: WithTcb<Payload = P>;
 
 #[derive(Debug)]
 pub struct TcpListener<Rx, H: BuildHasher> {
@@ -60,7 +60,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         C: CongestionController,
         R: Router<P>,
         Rx2: SocketRx<Item = P>,
-        W: WithTcpState<Payload = P, Congestion = C>,
+        W: WithTcb<Payload = P, Congestion = C>,
     {
         if !self.rx.is_connected() {
             return Err(RecvErrorKind::Disconnected.with(packet));
@@ -146,7 +146,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         C: CongestionController,
         Rx: SocketRx<Item = TcpStream<W>>,
         Rx2: SocketRx<Item = P>,
-        W: WithTcpState<Payload = P, Congestion = C>,
+        W: WithTcb<Payload = P, Congestion = C>,
     {
         if !self.rx.is_connected() {
             return Err(RecvErrorKind::Disconnected.with(packet));
@@ -163,7 +163,8 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         let endpoint = ip.zip_map(packet.port, SocketAddr::new).reverse();
 
         let config = config();
-        let state = W::new(TcpState {
+        let tcb = W::new(Tcb {
+            state: TcpState::Established,
             send: SendState {
                 unacked: packet.ack_number.unwrap(),
                 next: packet.ack_number.unwrap(),
@@ -187,10 +188,10 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
             last_timestamp: packet.timestamp.map_or(0, |t| t.tsval),
         });
 
-        let conn = TcpStream::new(endpoint, state.clone());
+        let conn = TcpStream::new(endpoint, tcb.clone());
 
         Ok(match self.rx.receive(now, ip.dst, conn) {
-            Ok(()) => Some(TcpRecv::new(endpoint, config.packet_rx, state)),
+            Ok(()) => Some(TcpRecv::new(endpoint, config.packet_rx, tcb)),
             Err(_) => None,
         })
     }

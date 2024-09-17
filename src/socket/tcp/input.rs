@@ -3,7 +3,7 @@ use core::{
     ops::Range,
 };
 
-use super::{RecvState, WithTcpState};
+use super::{RecvState, WithTcb};
 use crate::{
     route::Router,
     socket::SocketRx,
@@ -44,26 +44,26 @@ impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TcpRecv<Rx, W>
 where
     Rx: SocketRx<Item = W::Payload>,
-    W: WithTcpState,
+    W: WithTcb,
 {
     endpoint: Ends<SocketAddr>,
 
     rx: Rx,
-    state: W,
+    tcb: W,
 }
 
 impl<P, Rx, W> TcpRecv<Rx, W>
 where
     P: Payload,
     Rx: SocketRx<Item = P>,
-    W: WithTcpState<Payload = P>,
+    W: WithTcb<Payload = P>,
 {
-    pub(super) fn new(endpoint: Ends<SocketAddr>, rx: Rx, state: W) -> Self {
-        Self { endpoint, rx, state }
+    pub(super) fn new(endpoint: Ends<SocketAddr>, rx: Rx, tcb: W) -> Self {
+        Self { endpoint, rx, tcb }
     }
 }
 
@@ -71,7 +71,7 @@ impl<P, Rx, W> TcpRecv<Rx, W>
 where
     P: PayloadSplit + PayloadMerge,
     Rx: SocketRx<Item = P>,
-    W: WithTcpState<Payload = P>,
+    W: WithTcb<Payload = P>,
 {
     pub const fn endpoints(&self) -> Ends<SocketAddr> {
         self.endpoint
@@ -80,7 +80,14 @@ where
     pub fn accepts(&self, ip: Ends<IpAddr>, packet: TcpPacket<P>) -> bool {
         self.endpoint == ip.zip_map(packet.port, SocketAddr::new).reverse()
     }
+}
 
+impl<P, Rx, W> TcpRecv<Rx, W>
+where
+    P: PayloadSplit + PayloadMerge,
+    Rx: SocketRx<Item = P>,
+    W: WithTcb<Payload = P>,
+{
     pub fn process<R: Router<P>>(
         &mut self,
         now: Instant,
@@ -90,14 +97,14 @@ where
     ) {
         // https://datatracker.ietf.org/doc/html/rfc9293#name-other-states
 
-        let data = self.state.with(|state| {
+        let data = self.tcb.with(|tcb| {
             let mut data = None;
 
             // 1. Check the sequence number.
             //
             // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.1.1
             let Some((seq_number, range)) =
-                state.recv.accept(packet.seq_number, packet.payload.len())
+                tcb.recv.accept(packet.seq_number, packet.payload.len())
             else {
                 if packet.control == TcpControl::Rst {
                     // Simply drop the RST packet and return.
@@ -113,7 +120,7 @@ where
             if packet.control == TcpControl::Rst {
                 // 2-1. Check if the sequence number is out of window. Processed above.
 
-                if seq_number == state.recv.next {
+                if seq_number == tcb.recv.next {
                     // 2-2. Valid RST; Reset the connection.
                     todo!("reset the connection")
                 } else {
@@ -155,12 +162,12 @@ where
             };
 
             // 5-2. ACK the send queue.
-            if !state.send.ack(seq_number, ack_number, packet.window_len) {
+            if !tcb.send.ack(seq_number, ack_number, packet.window_len) {
                 // Challenge ACK.
                 todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>")
             }
-            state.send.sack(packet.sack_ranges);
-            state.rtte.packet_acked(now, ack_number);
+            tcb.send.sack(packet.sack_ranges);
+            tcb.rtte.packet_acked(now, ack_number);
 
             // 5-3. FIN-WAIT-1 => FIN-WAIT-2. TODO.
             // 5-4. CLOSING => TIME-WAIT. TODO.
@@ -175,7 +182,7 @@ where
                 let payload = (packet.payload.slice_into(range))
                     .unwrap_or_else(|_| unreachable!("slicing into a non-empty range"));
 
-                match state.recv.advance(seq_number, payload) {
+                match tcb.recv.advance(seq_number, payload) {
                     Ok((new_recv, s)) => (data, should_ack) = (new_recv, s),
                     Err(_) => todo!("drop packet (ooo queue full)"),
                 }
@@ -204,6 +211,6 @@ where
     }
 
     pub fn poll_at(&self) -> PollAt {
-        self.state.with(|state| state.timer.poll_at())
+        self.tcb.with(|tcb| tcb.timer.poll_at())
     }
 }

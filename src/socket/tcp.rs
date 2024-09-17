@@ -6,16 +6,16 @@ use crate::{storage::*, wire::*};
 
 mod congestion;
 mod conn;
-mod recv;
-mod send;
+mod input;
+mod output;
 mod seq_number;
 mod timer;
 
 pub use self::{
     congestion::{cubic::Cubic, reno::Reno, CongestionController},
     conn::{ConnResult, TcpListener},
-    recv::TcpRecv,
-    send::{TcpSend, TcpStream},
+    input::TcpRecv,
+    output::{TcpSend, TcpStream},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +70,22 @@ struct RecvState<P> {
 }
 
 #[derive(Debug, Default)]
-pub struct TcpState<P, C> {
+enum TcpState {
+    SynSent,
+    Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    LastAck,
+    TimeWait,
+    #[default]
+    Closed,
+}
+
+#[derive(Debug, Default)]
+pub struct Tcb<P, C> {
+    state: TcpState,
+
     send: SendState<P>,
     recv: RecvState<P>,
 
@@ -136,15 +151,15 @@ impl<P: Payload> RecvState<P> {
     }
 }
 
-pub trait WithTcpState: Clone {
+pub trait WithTcb: Clone {
     type Payload: Payload;
     type Congestion: CongestionController;
 
-    fn new(state: TcpState<Self::Payload, Self::Congestion>) -> Self;
+    fn new(state: Tcb<Self::Payload, Self::Congestion>) -> Self;
 
     fn with<T, F>(&self, f: F) -> T
     where
-        F: FnOnce(&mut TcpState<Self::Payload, Self::Congestion>) -> T;
+        F: FnOnce(&mut Tcb<Self::Payload, Self::Congestion>) -> T;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
