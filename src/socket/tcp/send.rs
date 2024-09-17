@@ -121,7 +121,9 @@ impl<'a, P: PayloadBuild + PayloadSplit + Clone, W: WithTcpState<P>, N: NetTx<P>
 
             let retx = packet.payload.clone();
             (state.send.advance(retx)).map_err(|p| SendErrorKind::QueueFull.with(p))?;
+            state.timer.set_for_retx(now, state.rtte.retx_timeout());
 
+            state.rtte.packet_sent(now, state.send.next);
             Ok((packet, rest, state.hop_limit))
         })?;
 

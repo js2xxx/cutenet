@@ -4,7 +4,13 @@ use core::{
 };
 
 use super::{RecvState, WithTcpState};
-use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*};
+use crate::{
+    route::Router,
+    socket::SocketRx,
+    storage::*,
+    time::{Instant, PollAt},
+    wire::*,
+};
 
 impl<P> RecvState<P> {
     fn accept(&self, seq: TcpSeqNumber, len: usize) -> Option<(TcpSeqNumber, Range<usize>)> {
@@ -158,6 +164,7 @@ where
                 todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>")
             }
             state.send.sack(packet.sack_ranges);
+            state.rtte.packet_acked(now, ack_number);
 
             // 5-3. FIN-WAIT-1 => FIN-WAIT-2. TODO.
             // 5-4. CLOSING => TIME-WAIT. TODO.
@@ -198,5 +205,9 @@ where
         }
 
         todo!()
+    }
+
+    pub fn poll_at(&self) -> PollAt {
+        self.state.with(|state| state.timer.poll_at())
     }
 }

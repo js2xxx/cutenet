@@ -14,8 +14,8 @@ impl Instant {
     pub const ZERO: Instant = Instant::from_micros_const(0);
 
     /// Create a new `Instant` from a number of microseconds.
-    pub fn from_micros<T: Into<u64>>(micros: T) -> Instant {
-        Instant { micros: micros.into() }
+    pub fn from_micros(micros: u64) -> Instant {
+        Instant { micros }
     }
 
     pub const fn from_micros_const(micros: u64) -> Instant {
@@ -23,8 +23,8 @@ impl Instant {
     }
 
     /// Create a new `Instant` from a number of milliseconds.
-    pub fn from_millis<T: Into<u64>>(millis: T) -> Instant {
-        Instant { micros: millis.into() * 1000 }
+    pub fn from_millis(millis: u64) -> Instant {
+        Instant { micros: millis * 1000 }
     }
 
     /// Create a new `Instant` from a number of milliseconds.
@@ -125,4 +125,11 @@ impl ops::Sub<Instant> for Instant {
     fn sub(self, rhs: Instant) -> Duration {
         Duration::from_micros(self.micros - rhs.micros)
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
+pub enum PollAt {
+    Now,
+    Instant(Instant),
+    Pending,
 }

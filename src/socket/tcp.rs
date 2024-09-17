@@ -1,17 +1,21 @@
 use core::fmt;
 
+use self::timer::{RttEstimator, Timer};
 use super::SocketRx;
 use crate::{storage::*, wire::*};
 
+mod congestion;
 mod conn;
-mod rx;
+mod recv;
+mod send;
 mod seq_number;
-mod tx;
+mod timer;
 
 pub use self::{
+    congestion::{CongestionController, cubic::Cubic},
     conn::{ProcessResult, TcpListener},
-    rx::TcpRecv,
-    tx::TcpStream,
+    recv::TcpRecv,
+    send::{TcpSend, TcpStream},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +75,9 @@ pub struct TcpState<P> {
     recv: RecvState<P>,
 
     hop_limit: u8,
+
+    rtte: RttEstimator,
+    timer: Timer,
 
     timestamp_gen: Option<TcpTimestampGenerator>,
     last_timestamp: u32,
