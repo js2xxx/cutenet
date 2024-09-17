@@ -1,9 +1,6 @@
-use core::{
-    net::{IpAddr, SocketAddr},
-    ops::Range,
-};
+use core::net::{IpAddr, SocketAddr};
 
-use super::{RecvState, WithTcb};
+use super::{TcpState, WithTcb};
 use crate::{
     route::Router,
     socket::SocketRx,
@@ -11,38 +8,6 @@ use crate::{
     time::{Instant, PollAt},
     wire::*,
 };
-
-impl<P> RecvState<P> {
-    fn accept(&self, seq: TcpSeqNumber, len: usize) -> Option<(TcpSeqNumber, Range<usize>)> {
-        let seq_start = seq;
-        let seq_end = seq_start + len;
-
-        let window_start = self.next;
-        let window_end = self.next + self.window;
-
-        let start = seq_start.max(window_start);
-        let end = seq_end.min(window_end);
-
-        (start <= end).then(|| {
-            let len = end - start;
-            let offset = start - seq_start;
-            (seq_start, offset..offset + len)
-        })
-    }
-}
-
-impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
-    fn advance(&mut self, seq: TcpSeqNumber, payload: P) -> Result<(Option<P>, bool), P> {
-        let pos = seq - self.next;
-        let new_recv = self.ooo.merge(pos, payload)?;
-
-        if let Some(ref new_recv) = new_recv {
-            self.next += new_recv.len();
-        }
-
-        Ok((new_recv, true))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct TcpRecv<Rx, W>
@@ -95,17 +60,25 @@ where
         ip: Ends<IpAddr>,
         packet: TcpPacket<P>,
     ) {
-        // https://datatracker.ietf.org/doc/html/rfc9293#name-other-states
-
         let data = self.tcb.with(|tcb| {
             let mut data = None;
 
-            // 1. Check the sequence number.
-            //
-            // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.1.1
-            let Some((seq_number, range)) =
-                tcb.recv.accept(packet.seq_number, packet.payload.len())
-            else {
+            // (1) https://datatracker.ietf.org/doc/html/rfc9293#name-syn-sent-state, or
+            // (2) https://datatracker.ietf.org/doc/html/rfc9293#name-other-states
+
+            if tcb.state == TcpState::Closed {
+                match packet.ack_number {
+                    Some(ack) => todo!("<SEQ={ack}><CTL=RST>; drop & return"),
+                    None => todo!("<SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>; drop & return"),
+                }
+            }
+
+            // (2) 1. Check the sequence number.
+            let Some((seq_number, mut range)) = tcb.recv.accept(
+                tcb.state == TcpState::SynSent,
+                packet.seq_number,
+                packet.segment_len(),
+            ) else {
                 if packet.control == TcpControl::Rst {
                     // Simply drop the RST packet and return.
                     return None;
@@ -113,34 +86,29 @@ where
                     todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>; drop & return")
                 }
             };
+            range.end -= packet.control.len();
+            let range = range;
 
-            // 2. Check for a RST.
-            //
-            // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.2.1
+            // (1 | 2) 2. Check for a RST.
             if packet.control == TcpControl::Rst {
                 // 2-1. Check if the sequence number is out of window. Processed above.
 
-                if seq_number == tcb.recv.next {
-                    // 2-2. Valid RST; Reset the connection.
-                    todo!("reset the connection")
-                } else {
+                if seq_number != tcb.recv.next {
                     // 2-3. Challenge ACK.
-                    todo!(
-                        "<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>;\n\
-                        reset the connection"
-                    )
+                    todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>")
                 }
+                // 2-2. Valid RST; Reset the connection.
+                tcb.state = TcpState::Closed;
+                return None;
             }
 
-            // 3. Check security/compartment. TODO.
-            //
-            // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.3.1
+            // (1 | 2) 3. Check security/compartment. TODO.
 
-            // 4. Check for a SYN.
-            //
-            // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.4.1
+            // (1 | 2) 4. Check for a SYN.
             if packet.control == TcpControl::Syn {
-                if let Some(timestamp) = packet.timestamp {
+                if tcb.state == TcpState::SynSent {
+                    tcb.recv.next = seq_number + 1;
+                } else if let Some(timestamp) = packet.timestamp {
                     // TIME-WAIT & Timestamp enabled: Establish new connection if
                     // necessary.
                     todo!("TIME-WAIT & {timestamp:?} enabled")
@@ -153,12 +121,14 @@ where
                 }
             }
 
-            // 5. Check for an ACK.
-            //
-            // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.5.1
+            // (1) 1. | (2) 5. Check for an ACK.
             let Some(ack_number) = packet.ack_number else {
-                // 5-1. No ACK, drop & return.
-                return None;
+                if tcb.state == TcpState::SynSent {
+                    todo!("<SEQ=SEG.ACK><CTL=RST>; drop & return")
+                } else {
+                    // 5-1. No ACK, drop & return.
+                    return None;
+                }
             };
 
             // 5-2. ACK the send queue.
@@ -169,36 +139,83 @@ where
             tcb.send.sack(packet.sack_ranges);
             tcb.rtte.packet_acked(now, ack_number);
 
-            // 5-3. FIN-WAIT-1 => FIN-WAIT-2. TODO.
-            // 5-4. CLOSING => TIME-WAIT. TODO.
-            // 5-5. LAST-ACK => CLOSED. TODO.
-            // 5-6. TIME-WAIT: Restart the 2 MSL timeout. TODO.
+            let fin_acked = tcb.send.fin_acked();
+
+            match (tcb.state, fin_acked) {
+                // (1) 4-2. Establish the new connection.
+                (TcpState::SynSent, _) => {
+                    if tcb.send.unacked > tcb.send.initial {
+                        tcb.state = TcpState::Established;
+
+                        todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>")
+                    } else {
+                        // Interchanged opening (SYN-SENT => SYN-RECEIVED) not supported.
+                        return None;
+                    }
+                }
+                // 5-3. FIN-WAIT-1 => FIN-WAIT-2.
+                (TcpState::FinWait1, true) => tcb.state = TcpState::FinWait2,
+                (TcpState::FinWait2, _) => todo!("acknowledge user's close call"),
+
+                // 5-4. CLOSING => TIME-WAIT.
+                (TcpState::Closing, true) => {
+                    tcb.timer.set_for_close(now);
+                    tcb.state = TcpState::TimeWait
+                }
+
+                // 5-5. LAST-ACK => CLOSED.
+                (TcpState::LastAck, true) => {
+                    tcb.state = TcpState::Closed;
+                    return None;
+                }
+                // 5-6. TIME-WAIT: Restart the 2 MSL timeout.
+                (TcpState::TimeWait, _) => tcb.timer.set_for_close(now),
+                _ => {}
+            }
 
             // 6. Check for an URG. TODO.
 
             // 7. Process the received payload.
-            let mut should_ack = false;
-            if !range.is_empty() {
-                let payload = (packet.payload.slice_into(range))
-                    .unwrap_or_else(|_| unreachable!("slicing into a non-empty range"));
+            if !matches!(
+                tcb.state,
+                TcpState::CloseWait | TcpState::Closing | TcpState::LastAck | TcpState::TimeWait
+            ) {
+                let mut should_ack = false;
+                if !range.is_empty() {
+                    let payload = (packet.payload.slice_into(range))
+                        .unwrap_or_else(|_| unreachable!("slicing into a non-empty range"));
 
-                match tcb.recv.advance(seq_number, payload) {
-                    Ok((new_recv, s)) => (data, should_ack) = (new_recv, s),
-                    Err(_) => todo!("drop packet (ooo queue full)"),
+                    match tcb.recv.advance(seq_number, payload) {
+                        Ok((new_recv, s)) => (data, should_ack) = (new_recv, s),
+                        Err(_) => todo!("drop packet (ooo queue full)"),
+                    }
                 }
-            }
 
-            if should_ack {
-                // 7-1. ACK the received data if necessary. TODO.
+                if should_ack {
+                    // 7-1. ACK the received data if necessary. TODO.
+                }
             }
 
             // 8. Check for a FIN.
             //
             // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.8.1
             if packet.control == TcpControl::Fin {
-                // 8-1. ESTABLISHED => CLOSE-WAIT. TODO.
-                // 8-2. FIN-WAIT-1 => CLOSING. TODO.
-                // 8-3. TIME-WAIT: Restart the 2 MSL timeout. TODO.
+                if tcb.state == TcpState::SynSent {
+                    return None;
+                }
+
+                // TODO: Advance recv.next by FIN and ack it.
+
+                match (tcb.state, fin_acked) {
+                    (TcpState::Established, _) => tcb.state = TcpState::CloseWait,
+                    (TcpState::FinWait1, true) => {
+                        tcb.timer.set_for_close(now);
+                        tcb.state = TcpState::TimeWait
+                    }
+                    (TcpState::FinWait1, false) => tcb.state = TcpState::Closing,
+                    (TcpState::TimeWait, _) => tcb.timer.set_for_close(now),
+                    _ => {}
+                }
             }
             data
         });

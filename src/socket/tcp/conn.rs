@@ -166,6 +166,8 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         let tcb = W::new(Tcb {
             state: TcpState::Established,
             send: SendState {
+                initial: packet.ack_number.unwrap(),
+                fin: TcpSeqNumber(u32::MAX),
                 unacked: packet.ack_number.unwrap(),
                 next: packet.ack_number.unwrap(),
                 window: config.congestion.window(),

@@ -74,8 +74,10 @@ where
         let tcb = W::new(Tcb {
             state: TcpState::SynSent,
             send: SendState {
+                initial: init_seq,
+                fin: TcpSeqNumber(u32::MAX),
                 unacked: init_seq,
-                next: init_seq,
+                next: init_seq + 1,
                 window: config.congestion.window(),
                 seq_lw: TcpSeqNumber(0),
                 ack_lw: init_seq,
@@ -99,17 +101,19 @@ where
         let stream = TcpStream::new(endpoint, tcb.clone());
         let recv = TcpRecv::new(endpoint, config.packet_rx, tcb);
 
-        TcpSend { stream: &stream, tx }.consume_packet(now, |port, tcb| TcpPacket {
-            port,
-            control: TcpControl::Syn,
-            seq_number: init_seq,
-            ack_number: None,
-            window_len: tcb.congestion.window(),
-            max_seg_size: Some(device_caps.mss(ip, TCP_HEADER_LEN)),
-            sack_permitted: true,
-            sack_ranges: [None; 3],
-            timestamp: TcpTimestamp::generate_reply_with_tsval(config.timestamp_gen, 0),
-            payload: buf.init(),
+        TcpSend { stream: &stream, tx }.consume_packet(now, |port, tcb| {
+            Some(TcpPacket {
+                port,
+                control: TcpControl::Syn,
+                seq_number: init_seq,
+                ack_number: None,
+                window_len: tcb.congestion.window(),
+                max_seg_size: Some(device_caps.mss(ip, TCP_HEADER_LEN)),
+                sack_permitted: true,
+                sack_ranges: [None; 3],
+                timestamp: TcpTimestamp::generate_reply_with_tsval(config.timestamp_gen, 0),
+                payload: buf.init(),
+            })
         })?;
 
         Ok((stream, recv))
@@ -144,6 +148,57 @@ where
 
         Ok(TcpSend { stream: self, tx })
     }
+
+    pub fn close<R: Router<P>>(
+        &self,
+        now: Instant,
+        router: &mut R,
+        buf: P::NoPayload,
+    ) -> Result<(), SendError<P>>
+    where
+        P: PayloadSplit + Clone,
+    {
+        match self.send(now, router) {
+            Ok(tx) => (tx.consume_packet(now, |port, tcb| {
+                match tcb.state {
+                    TcpState::SynSent => {
+                        tcb.state = TcpState::Closed;
+                        return None;
+                    }
+                    TcpState::Established => tcb.state = TcpState::FinWait1,
+                    TcpState::CloseWait => tcb.state = TcpState::LastAck,
+                    TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::Closing
+                    | TcpState::LastAck
+                    | TcpState::TimeWait
+                    | TcpState::Closed => return None,
+                }
+
+                Some(TcpPacket {
+                    port,
+                    control: TcpControl::Fin,
+                    seq_number: tcb.send.next,
+                    ack_number: Some(tcb.recv.next),
+                    window_len: tcb.recv.window,
+                    max_seg_size: None,
+                    sack_permitted: true,
+                    sack_ranges: if tcb.send.can_sack {
+                        tcb.recv.ooo_sack_ranges()
+                    } else {
+                        [None; 3]
+                    },
+                    timestamp: TcpTimestamp::generate_reply_with_tsval(
+                        tcb.timestamp_gen,
+                        tcb.last_timestamp,
+                    ),
+                    payload: buf.init(),
+                })
+            }))
+            .map(drop),
+            Err(err) => Err(err.kind.with(buf.init())),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -159,45 +214,50 @@ where
     N: NetTx<P>,
 {
     pub fn consume(self, now: Instant, push: bool, payload: P) -> Result<Option<P>, SendError<P>> {
-        self.consume_packet(now, |port, tcb| TcpPacket {
-            port,
-            control: if push {
-                TcpControl::Psh
-            } else {
-                TcpControl::None
-            },
-            seq_number: tcb.send.next,
-            ack_number: Some(tcb.recv.next),
-            window_len: tcb.recv.window,
-            max_seg_size: None,
-            sack_permitted: true,
-            sack_ranges: if tcb.send.can_sack {
-                tcb.recv.ooo_sack_ranges()
-            } else {
-                [None; 3]
-            },
-            timestamp: TcpTimestamp::generate_reply_with_tsval(
-                tcb.timestamp_gen,
-                tcb.last_timestamp,
-            ),
-            payload,
+        self.consume_packet(now, |port, tcb| {
+            Some(TcpPacket {
+                port,
+                control: if push {
+                    TcpControl::Psh
+                } else {
+                    TcpControl::None
+                },
+                seq_number: tcb.send.next,
+                ack_number: Some(tcb.recv.next),
+                window_len: tcb.recv.window,
+                max_seg_size: None,
+                sack_permitted: true,
+                sack_ranges: if tcb.send.can_sack {
+                    tcb.recv.ooo_sack_ranges()
+                } else {
+                    [None; 3]
+                },
+                timestamp: TcpTimestamp::generate_reply_with_tsval(
+                    tcb.timestamp_gen,
+                    tcb.last_timestamp,
+                ),
+                payload,
+            })
         })
     }
 
     fn consume_packet(
         self,
         now: Instant,
-        packet: impl FnOnce(Ends<u16>, &mut Tcb<P, W::Congestion>) -> TcpPacket<P>,
+        packet: impl FnOnce(Ends<u16>, &mut Tcb<P, W::Congestion>) -> Option<TcpPacket<P>>,
     ) -> Result<Option<P>, SendError<P>> {
         let ip = self.stream.endpoint.map(|s| s.ip());
         let port = self.stream.endpoint.map(|s| s.port());
 
         let device_caps = self.tx.device_caps();
 
-        let (packet, rest, hop_limit) = self.stream.tcb.with(|tcb| {
-            tcb.congestion.pre_transmit(now);
+        if let Some((packet, rest, hop_limit)) = self.stream.tcb.with(|tcb| {
+            let Some(mut packet) = packet(port, tcb) else {
+                return Ok(None);
+            };
+            let control = packet.control;
 
-            let mut packet = packet(port, tcb);
+            tcb.congestion.pre_transmit(now);
 
             let buffer_len = packet.payload_len() + device_caps.header_len(ip, packet.header_len());
             if buffer_len > packet.payload.capacity() {
@@ -210,19 +270,20 @@ where
             let rest = packet.payload.split_off(max_len);
 
             let retx = packet.payload.clone();
-            (tcb.send.advance(retx)).map_err(|p| SendErrorKind::QueueFull.with(p))?;
+            (tcb.send.advance(retx, control)).map_err(|p| SendErrorKind::QueueFull.with(p))?;
             tcb.timer.set_for_retx(now, tcb.rtte.retx_timeout());
 
             tcb.rtte.packet_sent(now, tcb.send.next);
             tcb.congestion.post_transmit(now, packet.payload_len());
 
-            Ok((packet, rest, tcb.hop_limit))
-        })?;
+            Ok(Some((packet, rest, tcb.hop_limit)))
+        })? {
+            let payload = uncheck_build!(packet.build(&(device_caps.tx_checksums, ip)));
+            let packet = IpPacket::new(ip, IpProtocol::Tcp, hop_limit, payload);
+            let _ = self.tx.comsume(now, packet);
 
-        let payload = uncheck_build!(packet.build(&(device_caps.tx_checksums, ip)));
-        let packet = IpPacket::new(ip, IpProtocol::Tcp, hop_limit, payload);
-        let _ = self.tx.comsume(now, packet);
-
-        Ok(rest)
+            return Ok(rest);
+        }
+        Ok(None)
     }
 }

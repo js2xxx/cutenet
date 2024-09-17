@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(packet.ack_number, Some(SeqNumber(0x89abcdefu32)));
         assert_eq!(packet.header_len(), 24);
         assert_eq!(packet.control, Control::Fin);
-        assert_eq!(packet.window_len, 0x0123);
+        assert_eq!(packet.window_len, 0x123000);
         assert_eq!(packet.payload, &PAYLOAD_BYTES[..]);
     }
 

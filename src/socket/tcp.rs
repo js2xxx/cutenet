@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{fmt, ops::Range};
 
 use self::timer::{RttEstimator, Timer};
 use super::SocketRx;
@@ -48,6 +48,9 @@ type RetxQueue<T, P> =
 /// https://datatracker.ietf.org/doc/html/rfc9293#name-send-sequence-variables
 #[derive(Debug, Default)]
 struct SendState<P> {
+    initial: TcpSeqNumber,
+    fin: TcpSeqNumber,
+
     unacked: TcpSeqNumber,
     next: TcpSeqNumber,
     window: usize,
@@ -69,13 +72,14 @@ struct RecvState<P> {
     ooo: ReorderQueue<P>,
 }
 
-#[derive(Debug, Default)]
-enum TcpState {
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TcpState {
     SynSent,
     Established,
     FinWait1,
     FinWait2,
     CloseWait,
+    Closing,
     LastAck,
     TimeWait,
     #[default]
@@ -105,11 +109,18 @@ impl<P: PayloadSplit> SendState<P> {
         self.remote_mss.min(window_mss)
     }
 
-    fn advance(&mut self, p: P) -> Result<(), P> {
+    fn advance(&mut self, p: P, control: TcpControl) -> Result<(), P> {
         let len = p.len();
         self.retx.push(self.next, p)?;
-        self.next += len;
+        if control == TcpControl::Fin {
+            self.fin = self.next;
+        }
+        self.next += len + control.len();
         Ok(())
+    }
+
+    fn fin_acked(&self) -> bool {
+        self.unacked > self.fin
     }
 
     fn ack(&mut self, seq: TcpSeqNumber, ack: TcpSeqNumber, window: usize) -> bool {
@@ -148,6 +159,49 @@ impl<P: Payload> RecvState<P> {
         (self.ooo.ranges().zip(&mut ranges))
             .for_each(|(range, r)| *r = Some((self.next + range.start, self.next + range.end)));
         ranges
+    }
+}
+
+impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
+    fn accept(
+        &self,
+        is_syn_sent: bool,
+        seq: TcpSeqNumber,
+        segment_len: usize,
+    ) -> Option<(TcpSeqNumber, Range<usize>)> {
+        // NOTE: recv.next is uninit when is_syn_sent.
+        if is_syn_sent {
+            return Some((seq, 0..segment_len));
+        }
+
+        let seq_start = seq;
+        let seq_end = seq_start + segment_len;
+
+        let window_start = self.next;
+        let window_end = self.next + self.window;
+
+        let start = seq_start.max(window_start);
+        let end = seq_end.min(window_end);
+
+        (start <= end).then(|| {
+            let segment_len = end - start;
+            let offset = start - seq_start;
+            (seq_start, offset..offset + segment_len)
+        })
+    }
+
+    fn advance(&mut self, seq: TcpSeqNumber, payload: P) -> Result<(Option<P>, bool), P> {
+        if payload.is_empty() {
+            return Ok((None, true));
+        }
+        let pos = seq - self.next;
+        let new_recv = self.ooo.merge(pos, payload)?;
+
+        if let Some(ref new_recv) = new_recv {
+            self.next += new_recv.len();
+        }
+
+        Ok((new_recv, true))
     }
 }
 

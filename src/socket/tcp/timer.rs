@@ -191,15 +191,15 @@ impl Timer {
         }
     }
 
-    fn set_for_fast_retx(&mut self) {
+    pub fn set_for_fast_retx(&mut self) {
         *self = Timer::FastRetx
     }
 
-    fn set_for_close(&mut self, now: Instant) {
+    pub fn set_for_close(&mut self, now: Instant) {
         *self = Timer::Close { expires_at: now + CLOSE_DELAY }
     }
 
-    fn is_retransmit(&self) -> bool {
+    pub fn is_retransmit(&self) -> bool {
         matches!(*self, Timer::Retx { .. } | Timer::FastRetx)
     }
 }
