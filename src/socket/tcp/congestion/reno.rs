@@ -11,13 +11,19 @@ pub struct Reno {
 }
 
 impl Reno {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Reno {
             cwnd: 1024 * 2,
             min_cwnd: 1024 * 2,
             ssthresh: usize::MAX,
             rwnd: 64 * 1024,
         }
+    }
+}
+
+impl Default for Reno {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

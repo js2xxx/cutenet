@@ -25,6 +25,14 @@ impl DeviceCaps {
         self.header_len += len;
         self
     }
+
+    pub fn mss(&self, ip: impl Into<IpVersion>, t: usize) -> u16 {
+        (self.mtu.saturating_sub(self.header_len(ip, t))).min(u16::MAX.into()) as u16
+    }
+
+    pub fn header_len(&self, ip: impl Into<IpVersion>, t: usize) -> usize {
+        self.header_len + ip.into().header_len() + t
+    }
 }
 
 pub trait PhyRx<P: Payload> {

@@ -3,8 +3,17 @@ use core::{
     net::{IpAddr, SocketAddr},
 };
 
-use super::{RecvError, RecvErrorKind, TcpConfig, TcpRecv, TcpStream, WithTcpState};
+use super::{
+    CongestionController, RecvError, RecvErrorKind, RecvState, SendState, TcpConfig, TcpRecv,
+    TcpState, TcpStream, WithTcpState,
+};
 use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*};
+
+pub type ConnResult<P, Rx, W> = Result<Option<TcpRecv<Rx, W>>, RecvError<TcpPacket<P>>>
+where
+    P: PayloadBuild,
+    Rx: SocketRx<Item = P>,
+    W: WithTcpState<Payload = P>;
 
 #[derive(Debug)]
 pub struct TcpListener<Rx, H: BuildHasher> {
@@ -36,27 +45,22 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
     }
 }
 
-pub type ProcessResult<P, Rx, W> = Result<Option<TcpRecv<P, Rx, W>>, RecvError<TcpPacket<P>>>
-where
-    P: PayloadBuild,
-    Rx: SocketRx<Item = P>,
-    W: WithTcpState<P>;
-
 impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
-    pub fn process<P, R, Rx2, W>(
+    pub fn process<P, R, Rx2, C, W>(
         &mut self,
         now: Instant,
         router: &mut R,
         ip: Ends<IpAddr>,
         packet: TcpPacket<P>,
-        config: impl FnOnce() -> TcpConfig<W, P, Rx2>,
-    ) -> ProcessResult<P, Rx2, W>
+        config: impl FnOnce() -> TcpConfig<P, C, Rx2>,
+    ) -> ConnResult<P, Rx2, W>
     where
         P: PayloadBuild,
-        Rx: SocketRx<Item = TcpStream<P, W>>,
+        Rx: SocketRx<Item = TcpStream<W>>,
+        C: CongestionController,
         R: Router<P>,
         Rx2: SocketRx<Item = P>,
-        W: WithTcpState<P>,
+        W: WithTcpState<Payload = P, Congestion = C>,
     {
         if !self.rx.is_connected() {
             return Err(RecvErrorKind::Disconnected.with(packet));
@@ -112,23 +116,13 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         };
         let device_caps = tx.device_caps();
 
-        let header_len = TCP_HEADER_LEN
-            + match reply_ip.dst {
-                IpAddr::V4(_) => IPV4_HEADER_LEN,
-                IpAddr::V6(_) => IPV6_HEADER_LEN,
-            }
-            + device_caps.header_len;
-
-        let mss = device_caps.mtu - header_len;
-
         let payload = uncheck_build!(TcpPacket {
             port: packet.port.reverse(),
             control: TcpControl::Syn,
             seq_number: self.seq_number(now, ip, &packet),
             ack_number: Some(packet.seq_number + 1),
             window_len: 0,
-            window_scale: None,
-            max_seg_size: Some(mss as u16),
+            max_seg_size: Some(device_caps.mss(reply_ip, TCP_HEADER_LEN)),
             sack_permitted: self.sack_enabled,
             sack_ranges: [None; 3],
             timestamp: (packet.timestamp).and_then(|t| t.generate_reply(self.timestamp_gen)),
@@ -140,18 +134,19 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         let _res = tx.comsume(now, reply);
     }
 
-    fn establish<P, Rx2, W>(
+    fn establish<P, C, Rx2, W>(
         &mut self,
         now: Instant,
         ip: Ends<IpAddr>,
         packet: TcpPacket<P>,
-        config: impl FnOnce() -> TcpConfig<W, P, Rx2>,
-    ) -> ProcessResult<P, Rx2, W>
+        config: impl FnOnce() -> TcpConfig<P, C, Rx2>,
+    ) -> ConnResult<P, Rx2, W>
     where
         P: PayloadBuild,
-        Rx: SocketRx<Item = TcpStream<P, W>>,
+        C: CongestionController,
+        Rx: SocketRx<Item = TcpStream<W>>,
         Rx2: SocketRx<Item = P>,
-        W: WithTcpState<P>,
+        W: WithTcpState<Payload = P, Congestion = C>,
     {
         if !self.rx.is_connected() {
             return Err(RecvErrorKind::Disconnected.with(packet));
@@ -168,11 +163,28 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         let endpoint = ip.zip_map(packet.port, SocketAddr::new).reverse();
 
         let config = config();
-        let state = config.state;
-
-        state.with(|state| {
-            state.send.remote_mss = usize::from(mss);
-            state.send.can_sack = can_sack;
+        let state = W::new(TcpState {
+            send: SendState {
+                unacked: packet.ack_number.unwrap(),
+                next: packet.ack_number.unwrap(),
+                window: config.congestion.window(),
+                seq_lw: packet.seq_number,
+                ack_lw: packet.ack_number.unwrap(),
+                retx: Default::default(),
+                remote_mss: usize::from(mss),
+                can_sack,
+            },
+            recv: RecvState {
+                next: packet.seq_number,
+                window: config.congestion.window(),
+                ooo: Default::default(),
+            },
+            hop_limit: config.hop_limit,
+            congestion: config.congestion,
+            rtte: Default::default(),
+            timer: Default::default(),
+            timestamp_gen: config.timestamp_gen,
+            last_timestamp: packet.timestamp.map_or(0, |t| t.tsval),
         });
 
         let conn = TcpStream::new(endpoint, state.clone());

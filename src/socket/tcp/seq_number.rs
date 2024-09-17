@@ -66,7 +66,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         let addr = ip.zip_map(packet.port, SocketAddr::new);
         let time_period = time_period(now);
 
-        let seq = packet.ack_number?.0;
+        let seq = packet.ack_number?.0 - 1;
 
         let hash1 = self.seq_hasher.hash_one(addr) as u32;
         let hash2 = self.seq_hasher.hash_one((addr, time_period)) as u32;

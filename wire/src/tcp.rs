@@ -278,8 +278,7 @@ pub struct Packet<#[wire] T> {
     pub control: Control,
     pub seq_number: SeqNumber,
     pub ack_number: Option<SeqNumber>,
-    pub window_len: u16,
-    pub window_scale: Option<u8>,
+    pub window_len: usize,
     pub max_seg_size: Option<u16>,
     pub sack_permitted: bool,
     // Not `Range<SeqNumber>` because `Range` is not `Copy`.
@@ -287,6 +286,18 @@ pub struct Packet<#[wire] T> {
     pub timestamp: Option<TcpTimestamp>,
     #[wire]
     pub payload: T,
+}
+
+impl<T> Packet<T> {
+    fn scale_window(&self) -> (u16, Option<u8>) {
+        match (usize::BITS - self.window_len.leading_zeros()).checked_sub(u16::BITS) {
+            Some(scale) => {
+                let window_scale = scale as u8;
+                ((self.window_len >> window_scale) as u16, Some(window_scale))
+            }
+            None => (self.window_len as u16, None),
+        }
+    }
 }
 
 impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
@@ -378,13 +389,20 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
             options = next_options;
         }
 
+        let mut window_len = usize::from(packet.window_len());
+        if let Some(scale) = window_scale {
+            window_len = match window_len.checked_shl(scale.into()) {
+                Some(window_len) => window_len,
+                None => return Err(ParseErrorKind::FormatInvalid.with(raw)),
+            }
+        }
+
         Ok(Packet {
             port: packet.port(),
             control,
             seq_number: packet.seq_number(),
             ack_number,
-            window_len: packet.window_len(),
-            window_scale,
+            window_len,
             max_seg_size,
             sack_permitted,
             sack_ranges,
@@ -410,13 +428,14 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
         let header_len = self.header_len();
 
+        let (window_len, window_scale) = self.scale_window();
+
         let Packet {
             port: Ends { src, dst },
             control,
             seq_number,
             ack_number,
-            window_len,
-            window_scale,
+            window_len: _,
             max_seg_size,
             sack_permitted,
             sack_ranges,
@@ -492,7 +511,7 @@ impl<T> Packet<T> {
         if self.max_seg_size.is_some() {
             length += 4
         }
-        if self.window_scale.is_some() {
+        if self.scale_window().1.is_some() {
             length += 3
         }
         if self.sack_permitted {
@@ -582,7 +601,6 @@ mod tests {
             seq_number: SeqNumber(0x01234567),
             ack_number: None,
             window_len: 0x0123,
-            window_scale: None,
             control: Control::Syn,
             max_seg_size: None,
             sack_permitted: false,
@@ -611,8 +629,7 @@ mod tests {
 
     #[test]
     fn test_header_len_multiple_of_4() {
-        let mut repr = packet_repr::<&[u8; 0]>(&[]);
-        repr.window_scale = Some(0); // This TCP Option needs 3 bytes.
+        let repr = packet_repr::<&[u8; 0]>(&[]);
         assert_eq!(repr.header_len() % 4, 0); // Should e.g. be 28 instead of
                                               // 27.
     }

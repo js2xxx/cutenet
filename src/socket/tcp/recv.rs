@@ -45,11 +45,10 @@ impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
 }
 
 #[derive(Debug)]
-pub struct TcpRecv<P, Rx, W>
+pub struct TcpRecv<Rx, W>
 where
-    P: Payload,
-    Rx: SocketRx<Item = P>,
-    W: WithTcpState<P>,
+    Rx: SocketRx<Item = W::Payload>,
+    W: WithTcpState,
 {
     endpoint: Ends<SocketAddr>,
 
@@ -57,22 +56,22 @@ where
     state: W,
 }
 
-impl<P, Rx, W> TcpRecv<P, Rx, W>
+impl<P, Rx, W> TcpRecv<Rx, W>
 where
     P: Payload,
     Rx: SocketRx<Item = P>,
-    W: WithTcpState<P>,
+    W: WithTcpState<Payload = P>,
 {
     pub(super) fn new(endpoint: Ends<SocketAddr>, rx: Rx, state: W) -> Self {
         Self { endpoint, rx, state }
     }
 }
 
-impl<P, Rx, W> TcpRecv<P, Rx, W>
+impl<P, Rx, W> TcpRecv<Rx, W>
 where
     P: PayloadSplit + PayloadMerge,
     Rx: SocketRx<Item = P>,
-    W: WithTcpState<P>,
+    W: WithTcpState<Payload = P>,
 {
     pub const fn endpoints(&self) -> Ends<SocketAddr> {
         self.endpoint

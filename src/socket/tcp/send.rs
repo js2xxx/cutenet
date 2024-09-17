@@ -4,10 +4,11 @@ use core::{
     net::{IpAddr, SocketAddr},
 };
 
-use super::WithTcpState;
+use super::{TcpConfig, TcpRecv, WithTcpState};
 use crate::{
     iface::NetTx,
     route::Router,
+    socket::{tcp::CongestionController, SocketRx},
     stack::{DispatchError, StackTx},
     storage::*,
     time::Instant,
@@ -34,24 +35,61 @@ impl fmt::Display for SendErrorKind {
 crate::error::make_error!(SendErrorKind => pub SendError);
 
 #[derive(Debug)]
-pub struct TcpStream<P: Payload, W: WithTcpState<P>> {
+pub struct TcpStream<W: WithTcpState> {
     endpoint: Ends<SocketAddr>,
 
     state: W,
-    marker: PhantomData<P>,
 }
 
-impl<P: Payload, W: WithTcpState<P>> TcpStream<P, W> {
+impl<W: WithTcpState> TcpStream<W> {
     pub(super) const fn new(endpoint: Ends<SocketAddr>, state: W) -> Self {
-        Self {
-            endpoint,
-            state,
-            marker: PhantomData,
-        }
+        Self { endpoint, state }
     }
 }
 
-impl<P: PayloadBuild, W: WithTcpState<P>> TcpStream<P, W> {
+impl<P, W> TcpStream<W>
+where
+    W: WithTcpState<Payload = P>,
+    P: PayloadBuild,
+{
+    pub fn connect<R, Rx>(
+        now: Instant,
+        router: &mut R,
+        endpoint: Ends<SocketAddr>,
+        buf: P::NoPayload,
+        init_seq: TcpSeqNumber,
+        config: impl FnOnce() -> TcpConfig<P, W::Congestion, Rx>,
+    ) -> Result<(Self, TcpRecv<Rx, W>), SendError<P>>
+    where
+        R: Router<P>,
+        Rx: SocketRx<Item = P>,
+    {
+        let ip = endpoint.map(|s| s.ip());
+        let port = endpoint.map(|s| s.port());
+
+        let tx = match crate::stack::dispatch(router, now, ip, IpProtocol::Tcp) {
+            Ok(tx) => tx,
+            Err(e) => return Err(SendErrorKind::Dispatch(e).with(buf.init())),
+        };
+        let device_caps = tx.device_caps();
+
+        let config = config();
+
+        let packet = TcpPacket {
+            port,
+            control: TcpControl::Syn,
+            seq_number: init_seq,
+            ack_number: None,
+            window_len: config.congestion.window(),
+            max_seg_size: Some(device_caps.mss(ip, TCP_HEADER_LEN)),
+            sack_permitted: true,
+            sack_ranges: [None; 3],
+            timestamp: TcpTimestamp::generate_reply_with_tsval(config.timestamp_gen, 0),
+            payload: buf.init(),
+        };
+        todo!()
+    }
+
     pub fn send<'a, R: Router<P>>(
         &'a self,
         now: Instant,
@@ -67,13 +105,16 @@ impl<P: PayloadBuild, W: WithTcpState<P>> TcpStream<P, W> {
 }
 
 #[derive(Debug)]
-pub struct TcpSend<'a, P: Payload, W: WithTcpState<P>, N: NetTx<P>> {
-    stream: &'a TcpStream<P, W>,
+pub struct TcpSend<'a, P: Payload, W: WithTcpState<Payload = P>, N: NetTx<P>> {
+    stream: &'a TcpStream<W>,
     tx: StackTx<P, N>,
 }
 
-impl<'a, P: PayloadBuild + PayloadSplit + Clone, W: WithTcpState<P>, N: NetTx<P>>
-    TcpSend<'a, P, W, N>
+impl<'a, P, W, N> TcpSend<'a, P, W, N>
+where
+    P: PayloadBuild + PayloadSplit + Clone,
+    W: WithTcpState<Payload = P>,
+    N: NetTx<P>,
 {
     pub fn consume(self, now: Instant, payload: P) -> Result<Option<P>, SendError<P>> {
         let ip = self.stream.endpoint.map(|s| s.ip());
@@ -86,8 +127,7 @@ impl<'a, P: PayloadBuild + PayloadSplit + Clone, W: WithTcpState<P>, N: NetTx<P>
                 control: TcpControl::None,
                 seq_number: state.send.next,
                 ack_number: Some(state.recv.next),
-                window_len: state.recv.window as u16,
-                window_scale: None,
+                window_len: state.recv.window,
                 max_seg_size: None,
                 sack_permitted: true,
                 sack_ranges: if state.send.can_sack {
@@ -102,19 +142,12 @@ impl<'a, P: PayloadBuild + PayloadSplit + Clone, W: WithTcpState<P>, N: NetTx<P>
                 payload,
             };
 
-            let buffer_len = packet.buffer_len()
-                + match ip.dst {
-                    IpAddr::V4(_) => IPV4_HEADER_LEN,
-                    IpAddr::V6(_) => IPV6_HEADER_LEN,
-                }
-                + device_caps.header_len;
-
+            let buffer_len = packet.payload_len() + device_caps.header_len(ip, packet.header_len());
             if buffer_len > packet.payload.capacity() {
                 return Err(SendErrorKind::BufferTooSmall.with(packet.payload));
             }
 
-            let mtu = device_caps.mtu;
-            let mtu_mss = mtu + buffer_len - packet.payload_len();
+            let mtu_mss = usize::from(device_caps.mss(ip, packet.header_len()));
 
             let max_len = mtu_mss.min(state.send.mss());
             let rest = packet.payload.split_off(max_len);

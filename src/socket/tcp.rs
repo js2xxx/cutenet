@@ -12,8 +12,8 @@ mod seq_number;
 mod timer;
 
 pub use self::{
-    congestion::{CongestionController, cubic::Cubic},
-    conn::{ProcessResult, TcpListener},
+    congestion::{cubic::Cubic, reno::Reno, CongestionController},
+    conn::{ConnResult, TcpListener},
     recv::TcpRecv,
     send::{TcpSend, TcpStream},
 };
@@ -70,12 +70,13 @@ struct RecvState<P> {
 }
 
 #[derive(Debug, Default)]
-pub struct TcpState<P> {
+pub struct TcpState<P, C> {
     send: SendState<P>,
     recv: RecvState<P>,
 
     hop_limit: u8,
 
+    congestion: C,
     rtte: RttEstimator,
     timer: Timer,
 
@@ -135,19 +136,26 @@ impl<P: Payload> RecvState<P> {
     }
 }
 
-pub trait WithTcpState<P>: Clone {
+pub trait WithTcpState: Clone {
+    type Payload: Payload;
+    type Congestion: CongestionController;
+
+    fn new(state: TcpState<Self::Payload, Self::Congestion>) -> Self;
+
     fn with<T, F>(&self, f: F) -> T
     where
-        F: FnOnce(&mut TcpState<P>) -> T;
+        F: FnOnce(&mut TcpState<Self::Payload, Self::Congestion>) -> T;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TcpConfig<W, P, R>
+pub struct TcpConfig<P, C, R>
 where
-    W: WithTcpState<P>,
     P: Payload,
+    C: CongestionController,
     R: SocketRx<Item = P>,
 {
-    pub state: W,
+    pub hop_limit: u8,
+    pub timestamp_gen: Option<TcpTimestampGenerator>,
+    pub congestion: C,
     pub packet_rx: R,
 }

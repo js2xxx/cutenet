@@ -170,7 +170,7 @@ impl Socket {
             return Err(SendErrorKind::Unaddressable.into());
         }
 
-        if src.is_ipv4() ^ dst.is_ipv4() {
+        if src.ip().version() != dst.ip().version() {
             return Err(SendErrorKind::Unaddressable.into());
         }
 
@@ -203,24 +203,19 @@ impl<P: PayloadBuild, Tx: NetTx<P>> SocketSend<P, Tx> {
         let ip = self.endpoint.map(|s| s.ip());
         let port = self.endpoint.map(|s| s.port());
 
-        let buffer_len = payload.len()
-            + UDP_HEADER_LEN
-            + match self.endpoint.dst {
-                SocketAddr::V4(_) => IPV4_HEADER_LEN,
-                SocketAddr::V6(_) => IPV6_HEADER_LEN,
-            }
-            + self.tx.device_caps().header_len;
+        let device_caps = self.tx.device_caps();
 
+        let buffer_len = payload.len() + device_caps.header_len(self.endpoint, UDP_HEADER_LEN);
         if buffer_len > payload.capacity() {
             return Err(SendErrorKind::BufferTooSmall.with(payload));
         }
 
-        let mtu = self.tx.device_caps().mtu;
+        let mtu = device_caps.mtu;
         if buffer_len > mtu {
             return Err(SendErrorKind::PacketExceedsMtu(mtu).with(payload));
         }
 
-        let cx = &(self.tx.device_caps().tx_checksums, ip);
+        let cx = &(device_caps.tx_checksums, ip);
         let payload = uncheck_build!(UdpPacket { port, payload }.build(cx));
 
         let packet = IpPacket::new(ip, IpProtocol::Udp, self.hop_limit, payload);

@@ -1,6 +1,6 @@
 use core::{
     fmt,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
 use super::EthernetAddr;
@@ -101,6 +101,13 @@ impl Version {
             _ => None,
         }
     }
+
+    pub fn header_len(&self) -> usize {
+        match *self {
+            Version::V4 => v4::HEADER_LEN,
+            Version::V6 => v6::HEADER_LEN,
+        }
+    }
 }
 
 impl fmt::Display for Version {
@@ -109,6 +116,56 @@ impl fmt::Display for Version {
             Version::V4 => write!(f, "IPv4"),
             Version::V6 => write!(f, "IPv6"),
         }
+    }
+}
+
+impl From<IpAddr> for Version {
+    fn from(addr: IpAddr) -> Self {
+        match addr {
+            IpAddr::V4(_) => Version::V4,
+            IpAddr::V6(_) => Version::V6,
+        }
+    }
+}
+
+impl From<SocketAddr> for Version {
+    fn from(addr: SocketAddr) -> Self {
+        match addr {
+            SocketAddr::V4(_) => Version::V4,
+            SocketAddr::V6(_) => Version::V6,
+        }
+    }
+}
+
+impl From<Ipv4Addr> for Version {
+    fn from(_: Ipv4Addr) -> Self {
+        Version::V4
+    }
+}
+
+impl From<Ipv6Addr> for Version {
+    fn from(_: Ipv6Addr) -> Self {
+        Version::V6
+    }
+}
+
+impl From<SocketAddrV4> for Version {
+    fn from(_: SocketAddrV4) -> Self {
+        Version::V4
+    }
+}
+
+impl From<SocketAddrV6> for Version {
+    fn from(_: SocketAddrV6) -> Self {
+        Version::V6
+    }
+}
+
+impl<T: Into<Version>> From<Ends<T>> for Version {
+    fn from(value: Ends<T>) -> Self {
+        let version = value.map(Into::into);
+        assert_eq!(version.src, version.dst);
+        version.dst
     }
 }
 
@@ -192,6 +249,8 @@ pub trait IpAddrExt: Eq + Copy + fmt::Display + fmt::Debug {
 
     const UNSPECIFIED: Self;
 
+    fn version(&self) -> Version;
+
     fn from_bytes(bytes: &[u8]) -> Self;
 
     fn mask(&self, prefix_len: u8) -> Self;
@@ -213,6 +272,10 @@ impl IpAddrExt for Ipv4Addr {
     type Cidr = v4::Cidr;
 
     const UNSPECIFIED: Self = Ipv4Addr::UNSPECIFIED;
+
+    fn version(&self) -> Version {
+        Version::V4
+    }
 
     fn from_bytes(bytes: &[u8]) -> Self {
         From::<[u8; 4]>::from(bytes.try_into().unwrap())
@@ -253,6 +316,10 @@ impl IpAddrExt for Ipv6Addr {
 
     const UNSPECIFIED: Self = Ipv6Addr::UNSPECIFIED;
 
+    fn version(&self) -> Version {
+        Version::V6
+    }
+
     fn from_bytes(bytes: &[u8]) -> Self {
         From::<[u8; 16]>::from(bytes.try_into().unwrap())
     }
@@ -291,6 +358,13 @@ impl IpAddrExt for IpAddr {
     type Cidr = Cidr;
 
     const UNSPECIFIED: Self = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+    fn version(&self) -> Version {
+        match self {
+            IpAddr::V4(_) => Version::V4,
+            IpAddr::V6(_) => Version::V6,
+        }
+    }
 
     fn from_bytes(bytes: &[u8]) -> Self {
         match bytes.len() {
