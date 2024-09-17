@@ -1,4 +1,7 @@
-use core::{net::IpAddr, ops::Range};
+use core::{
+    net::{IpAddr, SocketAddr},
+    ops::Range,
+};
 
 use super::{RecvState, ReorderQueue, WithTcpState};
 use crate::{
@@ -9,10 +12,14 @@ use crate::{
     wire::*,
 };
 
-impl RecvState {
+impl<P> RecvState<P> {
     #[allow(unused)]
     pub(super) fn new(next: TcpSeqNumber, window: usize) -> Self {
-        Self { next, window }
+        Self {
+            next,
+            window,
+            ooo: ReorderQueue::new(),
+        }
     }
 
     fn accept(&self, seq: TcpSeqNumber, len: usize) -> Option<(TcpSeqNumber, Range<usize>)> {
@@ -42,39 +49,43 @@ impl RecvState {
 }
 
 #[derive(Debug)]
-pub struct TcpRx<P, Rx, W>
+pub struct TcpRecv<P, Rx, W>
 where
     P: Payload,
     Rx: SocketRx<Item = P>,
     W: WithTcpState<P>,
 {
-    ooo: ReorderQueue<P>,
+    endpoint: Ends<SocketAddr>,
 
     rx: Rx,
     state: W,
 }
 
-impl<P, Rx, W> TcpRx<P, Rx, W>
+impl<P, Rx, W> TcpRecv<P, Rx, W>
 where
     P: Payload,
     Rx: SocketRx<Item = P>,
     W: WithTcpState<P>,
 {
-    pub(super) fn new(rx: Rx, state: W) -> Self {
-        Self {
-            ooo: ReorderQueue::new(),
-            rx,
-            state,
-        }
+    pub(super) fn new(endpoint: Ends<SocketAddr>, rx: Rx, state: W) -> Self {
+        Self { endpoint, rx, state }
     }
 }
 
-impl<P, Rx, W> TcpRx<P, Rx, W>
+impl<P, Rx, W> TcpRecv<P, Rx, W>
 where
     P: PayloadSplit + PayloadMerge,
     Rx: SocketRx<Item = P>,
     W: WithTcpState<P>,
 {
+    pub const fn endpoints(&self) -> Ends<SocketAddr> {
+        self.endpoint
+    }
+
+    pub fn accepts(&self, ip: Ends<IpAddr>, packet: TcpPacket<P>) -> bool {
+        self.endpoint == ip.zip_map(packet.port, SocketAddr::new).reverse()
+    }
+
     pub fn process<R: Router<P>>(
         &mut self,
         now: Instant,
@@ -84,7 +95,9 @@ where
     ) {
         // https://datatracker.ietf.org/doc/html/rfc9293#name-other-states
 
-        self.state.with(|state| {
+        let data = self.state.with(|state| {
+            let mut data = None;
+
             // 1. Check the sequence number.
             //
             // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.1.1
@@ -93,7 +106,7 @@ where
             else {
                 if packet.control == TcpControl::Rst {
                     // Simply drop the RST packet and return.
-                    return;
+                    return None;
                 } else {
                     todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>; drop & return")
                 }
@@ -143,7 +156,7 @@ where
             // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.5.1
             let Some(ack_number) = packet.ack_number else {
                 // 5-1. No ACK, drop & return.
-                return;
+                return None;
             };
 
             // 5-2. ACK the send queue.
@@ -154,6 +167,7 @@ where
                 // Challenge ACK.
                 todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>")
             }
+            state.send.sack(packet.sack_ranges);
 
             // 5-3. FIN-WAIT-1 => FIN-WAIT-2. TODO.
             // 5-4. CLOSING => TIME-WAIT. TODO.
@@ -169,7 +183,7 @@ where
 
                 let pos = state.recv.offset(seq_number);
                 let new_recv = if pos != 0 {
-                    match self.ooo.merge(pos, payload) {
+                    match state.recv.ooo.merge(pos, payload) {
                         Ok(merged) => merged,
                         Err(_) => todo!("drop packet (ooo queue full)"),
                     }
@@ -178,11 +192,8 @@ where
                 };
 
                 if let Some(new_recv) = new_recv {
-                    let len = new_recv.len();
-
-                    let _ = self.rx.receive(now, ip.src, new_recv);
-
-                    state.recv.advance(len);
+                    state.recv.advance(new_recv.len());
+                    data = Some(new_recv);
                 }
             }
             // 7-1. ACK the received data if necessary. TODO.
@@ -195,7 +206,12 @@ where
                 // 8-2. FIN-WAIT-1 => CLOSING. TODO.
                 // 8-3. TIME-WAIT: Restart the 2 MSL timeout. TODO.
             }
+            data
         });
+
+        if let Some(data) = data {
+            let _ = self.rx.receive(now, ip.src, data);
+        }
 
         todo!()
     }

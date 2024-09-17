@@ -74,7 +74,7 @@ pub trait PayloadParse: Payload + Sized {
 }
 
 pub trait PayloadMerge: PayloadBuild {
-    fn merge(&mut self, latter: Self) -> Result<(), Self>;
+    fn merge(&mut self, latter: Self);
 }
 
 pub trait PayloadSplit: PayloadParse {
@@ -253,9 +253,8 @@ mod vec {
     }
 
     impl PayloadMerge for Vec<u8> {
-        fn merge(&mut self, latter: Self) -> Result<(), Self> {
+        fn merge(&mut self, latter: Self) {
             self.extend(latter);
-            Ok(())
         }
     }
 

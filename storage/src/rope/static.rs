@@ -1,6 +1,9 @@
+use core::ops::{Add, Range, RangeBounds, Sub};
+
 use heapless::Vec;
 
-use crate::{PayloadMerge, PayloadSplit};
+use super::retx;
+use crate::{Payload, PayloadMerge, PayloadSplit};
 
 #[derive(Debug, Clone)]
 pub struct ReorderQueue<P, const CAP: usize> {
@@ -43,7 +46,7 @@ where
             && prev_pos + prev.len() >= pos
         {
             let (_, p) = p.split(prev_pos + prev.len() - pos)?;
-            prev.merge(p)?;
+            prev.merge(p);
             let prev_len = prev.len();
 
             if let Some(&(next_pos, _)) = self.map.get(index)
@@ -52,7 +55,7 @@ where
                 let (_, next) = self.map.remove(index);
                 let (_, prev) = &mut self.map[prev_index];
                 let (_, next) = next.split(prev_pos + prev_len - next_pos)?;
-                prev.merge(next)?;
+                prev.merge(next);
             }
         } else {
             self.map.insert(index, (pos, p)).map_err(m)?;
@@ -64,7 +67,7 @@ where
                 let (_, next) = self.map.remove(next_index);
                 let (_, cur) = &mut self.map[index];
                 let (_, next) = next.split(pos + len - next_pos)?;
-                cur.merge(next)?;
+                cur.merge(next);
             }
         }
 
@@ -76,10 +79,78 @@ where
     }
 }
 
+impl<P, const CAP: usize> ReorderQueue<P, CAP>
+where
+    P: Payload,
+{
+    pub fn ranges(&self) -> impl Iterator<Item = Range<usize>> + use<'_, P, CAP> {
+        self.map.iter().map(|&(pos, ref p)| pos..pos + p.len())
+    }
+}
+
 impl<P, const CAP: usize> Default for ReorderQueue<P, CAP> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-vector_tests!(super::ReorderQueue::<_, 8>::new());
+#[derive(Debug, Clone)]
+pub struct RetxQueue<T, P, const CAP: usize> {
+    // INVARIANT: map is sorted by T.
+    map: Vec<(T, P), CAP>,
+    len: usize,
+}
+
+impl<T, P, const CAP: usize> RetxQueue<T, P, CAP> {
+    pub const fn new() -> Self {
+        Self { map: Vec::new(), len: 0 }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl<T, P, const CAP: usize> RetxQueue<T, P, CAP>
+where
+    T: PartialOrd + Copy + Sub<Output = usize> + Add<usize, Output = T>,
+    P: Payload,
+{
+    pub fn push(&mut self, pos: T, p: P) -> Result<(), P> {
+        let data = retx::push(self.map.last(), pos, p)?;
+        self.len += data.1.len();
+        self.map.push(data).map_err(|(_, p)| p)
+    }
+
+    pub fn peek(&mut self, end: T) -> impl Iterator<Item = (T, P)> + '_
+    where
+        P: Clone,
+    {
+        retx::peek(self.map.iter_mut(), end)
+    }
+
+    pub fn remove(&mut self, range: impl RangeBounds<T>) {
+        if let Some((start_index, end_index)) = retx::remove(&self.map, range) {
+            // self.map.drain(start_index..end_index);
+            for _ in 0..(end_index - start_index) {
+                let (_, p) = self.map.remove(start_index);
+                self.len -= p.len();
+            }
+        }
+    }
+}
+
+impl<T, P, const CAP: usize> Default for RetxQueue<T, P, CAP> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+vector_tests!(
+    super::ReorderQueue::<_, 8>::new(),
+    super::RetxQueue::<_, _, 8>::new()
+);

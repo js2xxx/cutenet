@@ -7,7 +7,7 @@ pub enum TcpOption<'a> {
     MaxSegmentSize(u16),
     WindowScale(u8),
     SackPermitted,
-    SackRange([Option<(u32, u32)>; 3]),
+    SackRange([Option<(SeqNumber, SeqNumber)>; 3]),
     TimeStamp { tsval: u32, tsecr: u32 },
     Unknown { kind: u8, data: &'a [u8] },
 }
@@ -57,7 +57,7 @@ impl<'a> TcpOption<'a> {
                             #[cfg(feature = "log")]
                             tracing::debug!("sACK with >3 blocks, truncating to 3");
                         }
-                        let mut sack_ranges: [Option<(u32, u32)>; 3] = [None; 3];
+                        let mut sack_ranges: [Option<(SeqNumber, SeqNumber)>; 3] = [None; 3];
 
                         // RFC 2018: Each contiguous block of data queued at the data receiver is
                         // defined in the SACK option by two 32-bit unsigned integers in network
@@ -69,7 +69,7 @@ impl<'a> TcpOption<'a> {
                                 let right = mid + 4;
                                 let range_left = NetworkEndian::read_u32(&data[left..mid]);
                                 let range_right = NetworkEndian::read_u32(&data[mid..right]);
-                                Some((range_left, range_right))
+                                Some((SeqNumber(range_left), SeqNumber(range_right)))
                             } else {
                                 None
                             };
@@ -138,7 +138,7 @@ impl<'a> TcpOption<'a> {
                             .filter(|s| s.is_some())
                             .enumerate()
                             .for_each(|(i, s)| {
-                                let (first, second) = *s.as_ref().unwrap();
+                                let (SeqNumber(first), SeqNumber(second)) = s.unwrap();
                                 let pos = i * 8 + 2;
                                 NetworkEndian::write_u32(&mut buffer[pos..], first);
                                 NetworkEndian::write_u32(&mut buffer[pos + 4..], second);

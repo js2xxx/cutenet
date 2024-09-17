@@ -3,7 +3,7 @@ use core::{
     net::{IpAddr, SocketAddr},
 };
 
-use super::{RecvError, RecvErrorKind, TcpConfig, TcpRx, TcpStream, WithTcpState};
+use super::{RecvError, RecvErrorKind, TcpConfig, TcpRecv, TcpStream, WithTcpState};
 use crate::{route::Router, socket::SocketRx, time::Instant, wire::*};
 
 #[derive(Debug)]
@@ -36,7 +36,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
     }
 }
 
-pub type ProcessResult<P, Rx, W> = Result<Option<TcpRx<P, Rx, W>>, RecvError<TcpPacket<P>>>
+pub type ProcessResult<P, Rx, W> = Result<Option<TcpRecv<P, Rx, W>>, RecvError<TcpPacket<P>>>
 where
     P: PayloadBuild,
     Rx: SocketRx<Item = P>,
@@ -161,21 +161,24 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
             todo!("reply RST")
         }
 
-        #[allow(unused)]
-        let Some(mss) = self.check_seq_number(now, ip, &packet) else {
+        let Some((mss, can_sack)) = self.check_seq_number(now, ip, &packet) else {
             return Err(RecvErrorKind::NotAccepted.with(packet));
         };
+
+        let endpoint = ip.zip_map(packet.port, SocketAddr::new).reverse();
 
         let config = config();
         let state = config.state;
 
-        let conn = TcpStream {
-            data: core::marker::PhantomData,
-            state: state.clone(),
-        };
+        state.with(|state| {
+            state.send.remote_mss = usize::from(mss);
+            state.send.can_sack = can_sack;
+        });
+
+        let conn = TcpStream::new(endpoint, state.clone());
 
         Ok(match self.rx.receive(now, ip.dst, conn) {
-            Ok(()) => Some(TcpRx::new(config.packet_rx, state)),
+            Ok(()) => Some(TcpRecv::new(endpoint, config.packet_rx, state)),
             Err(_) => None,
         })
     }

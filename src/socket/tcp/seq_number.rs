@@ -14,12 +14,15 @@ const MSS_TABLE: [u16; 4] = [
 ];
 
 const MSS_OFFSET: u32 = 16;
+const SACK_OFFSET: u32 = 18;
 const TIME_OFFSET: u32 = 20;
 
 const MSS_MASK: u32 = 3;
+const SACK_MASK: u32 = 1;
 const TIME_MASK: u32 = 15;
 
-const HASH_MASK: u32 = !0 - (MSS_MASK << MSS_OFFSET) - (TIME_MASK << TIME_OFFSET);
+const HASH_MASK: u32 =
+    !0 - (MSS_MASK << MSS_OFFSET) - (SACK_MASK << SACK_OFFSET) - (TIME_MASK << TIME_OFFSET);
 
 fn time_period(time: Instant) -> u32 {
     (time.secs() / 64) as u32 & TIME_MASK
@@ -40,11 +43,16 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
             None => MSS_TABLE.len() - 1,
         } as u32;
 
+        let sack_permitted = u32::from(packet.sack_permitted);
+
         let hash1 = self.seq_hasher.hash_one(addr) as u32;
         let hash2 = self.seq_hasher.hash_one((addr, time_period)) as u32;
 
-        let seq = hash1
-            ^ ((hash2 & HASH_MASK) + (mss_index << MSS_OFFSET) + (time_period << TIME_OFFSET));
+        let seq = ((hash2 & HASH_MASK)
+            + (mss_index << MSS_OFFSET)
+            + (sack_permitted << SACK_OFFSET)
+            + (time_period << TIME_OFFSET))
+            ^ hash1;
 
         TcpSeqNumber(seq)
     }
@@ -54,7 +62,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         now: Instant,
         ip: Ends<IpAddr>,
         packet: &TcpPacket<P>,
-    ) -> Option<u16> {
+    ) -> Option<(u16, bool)> {
         let addr = ip.zip_map(packet.port, SocketAddr::new);
         let time_period = time_period(now);
 
@@ -74,6 +82,10 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         }
 
         let mss_index = (data >> MSS_OFFSET) & MSS_MASK;
-        MSS_TABLE.get(mss_index as usize).copied()
+        let sack_permitted = (data >> SACK_OFFSET) & SACK_MASK != 0;
+        MSS_TABLE
+            .get(mss_index as usize)
+            .copied()
+            .map(|mss| (mss, sack_permitted))
     }
 }

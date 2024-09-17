@@ -225,37 +225,6 @@ impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
         }
     }
 
-    /// Returns whether the selective acknowledgement SYN flag is set or not.
-    #[allow(unused)]
-    pub fn selective_ack_permitted(&self) -> Result<bool, ParseErrorKind> {
-        let data = self.0.as_ref();
-        let mut options = &data[field::OPTIONS(self.header_len())];
-        while !options.is_empty() {
-            let (next_options, option) = TcpOption::parse(options)?;
-            if option == TcpOption::SackPermitted {
-                return Ok(true);
-            }
-            options = next_options;
-        }
-        Ok(false)
-    }
-
-    /// Return the selective acknowledgement ranges, if any. If there are none
-    /// in the packet, an array of ``None`` values will be returned.
-    #[allow(unused)]
-    pub fn selective_ack_ranges(&self) -> Result<[Option<(u32, u32)>; 3], ParseErrorKind> {
-        let data = self.0.as_ref();
-        let mut options = &data[field::OPTIONS(self.header_len())];
-        while !options.is_empty() {
-            let (next_options, option) = TcpOption::parse(options)?;
-            if let TcpOption::SackRange(slice) = option {
-                return Ok(slice);
-            }
-            options = next_options;
-        }
-        Ok([None, None, None])
-    }
-
     /// Validate the packet checksum.
     ///
     /// # Panics
@@ -313,7 +282,8 @@ pub struct Packet<#[wire] T> {
     pub window_scale: Option<u8>,
     pub max_seg_size: Option<u16>,
     pub sack_permitted: bool,
-    pub sack_ranges: [Option<(u32, u32)>; 3],
+    // Not `Range<SeqNumber>` because `Range` is not `Copy`.
+    pub sack_ranges: [Option<(SeqNumber, SeqNumber)>; 3],
     pub timestamp: Option<TcpTimestamp>,
     #[wire]
     pub payload: T,
@@ -663,11 +633,16 @@ mod tests {
         assert_option_parses!(TcpOption::MaxSegmentSize(1500), &[0x02, 0x04, 0x05, 0xdc]);
         assert_option_parses!(TcpOption::WindowScale(12), &[0x03, 0x03, 0x0c]);
         assert_option_parses!(TcpOption::SackPermitted, &[0x4, 0x02]);
-        assert_option_parses!(TcpOption::SackRange([Some((500, 1500)), None, None]), &[
-            0x05, 0x0a, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x00, 0x05, 0xdc
-        ]);
         assert_option_parses!(
-            TcpOption::SackRange([Some((875, 1225)), Some((1500, 2500)), None]),
+            TcpOption::SackRange([Some((SeqNumber(500), SeqNumber(1500))), None, None]),
+            &[0x05, 0x0a, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x00, 0x05, 0xdc]
+        );
+        assert_option_parses!(
+            TcpOption::SackRange([
+                Some((SeqNumber(875), SeqNumber(1225))),
+                Some((SeqNumber(1500), SeqNumber(2500))),
+                None
+            ]),
             &[
                 0x05, 0x12, 0x00, 0x00, 0x03, 0x6b, 0x00, 0x00, 0x04, 0xc9, 0x00, 0x00, 0x05, 0xdc,
                 0x00, 0x00, 0x09, 0xc4
@@ -675,9 +650,9 @@ mod tests {
         );
         assert_option_parses!(
             TcpOption::SackRange([
-                Some((875000, 1225000)),
-                Some((1500000, 2500000)),
-                Some((876543210, 876654320))
+                Some((SeqNumber(875000), SeqNumber(1225000))),
+                Some((SeqNumber(1500000), SeqNumber(2500000))),
+                Some((SeqNumber(876543210), SeqNumber(876654320)))
             ]),
             &[
                 0x05, 0x1a, 0x00, 0x0d, 0x59, 0xf8, 0x00, 0x12, 0xb1, 0x28, 0x00, 0x16, 0xe3, 0x60,
