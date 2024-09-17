@@ -291,10 +291,10 @@ pub struct Packet<#[wire] T> {
 impl<T> Packet<T> {
     fn scale_window(&self) -> (u16, Option<u8>) {
         match (usize::BITS - self.window_len.leading_zeros()).checked_sub(u16::BITS) {
-            Some(scale) => {
-                let window_scale = scale as u8;
-                ((self.window_len >> window_scale) as u16, Some(window_scale))
-            }
+            Some(window_scale) => (
+                (self.window_len >> window_scale).min(u16::MAX.into()) as u16,
+                Some(window_scale as u8),
+            ),
             None => (self.window_len as u16, None),
         }
     }

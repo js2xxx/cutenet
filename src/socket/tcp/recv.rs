@@ -155,10 +155,7 @@ where
             };
 
             // 5-2. ACK the send queue.
-            if !state
-                .send
-                .ack(seq_number, ack_number, usize::from(packet.window_len))
-            {
+            if !state.send.ack(seq_number, ack_number, packet.window_len) {
                 // Challenge ACK.
                 todo!("<SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>")
             }

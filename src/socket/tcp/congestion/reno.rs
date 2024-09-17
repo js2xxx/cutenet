@@ -1,6 +1,5 @@
-use crate::{socket::tcp::RttEstimator, time::Instant};
-
 use super::CongestionController;
+use crate::{socket::tcp::RttEstimator, time::Instant};
 
 #[derive(Debug)]
 pub struct Reno {
@@ -71,9 +70,8 @@ impl CongestionController for Reno {
 mod test {
     use std::println;
 
-    use crate::time::Instant;
-
     use super::*;
+    use crate::time::Instant;
 
     #[test]
     fn test_reno() {
