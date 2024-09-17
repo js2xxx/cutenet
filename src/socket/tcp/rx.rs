@@ -3,19 +3,10 @@ use core::{
     ops::Range,
 };
 
-use super::{RecvState, ReorderQueue, WithTcpState};
+use super::{RecvState, WithTcpState};
 use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*};
 
 impl<P> RecvState<P> {
-    #[allow(unused)]
-    pub(super) fn new(next: TcpSeqNumber, window: usize) -> Self {
-        Self {
-            next,
-            window,
-            ooo: ReorderQueue::new(),
-        }
-    }
-
     fn accept(&self, seq: TcpSeqNumber, len: usize) -> Option<(TcpSeqNumber, Range<usize>)> {
         let seq_start = seq;
         let seq_end = seq_start + len;
@@ -32,13 +23,18 @@ impl<P> RecvState<P> {
             (seq_start, offset..offset + len)
         })
     }
+}
 
-    fn offset(&self, seq: TcpSeqNumber) -> usize {
-        seq - self.next
-    }
+impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
+    fn advance(&mut self, seq: TcpSeqNumber, payload: P) -> Result<(Option<P>, bool), P> {
+        let pos = seq - self.next;
+        let new_recv = self.ooo.merge(pos, payload)?;
 
-    fn advance(&mut self, len: usize) {
-        self.next += len;
+        if let Some(ref new_recv) = new_recv {
+            self.next += new_recv.len();
+        }
+
+        Ok((new_recv, true))
     }
 }
 
@@ -171,26 +167,20 @@ where
             // 6. Check for an URG. TODO.
 
             // 7. Process the received payload.
+            let mut should_ack = false;
             if !range.is_empty() {
                 let payload = (packet.payload.slice_into(range))
                     .unwrap_or_else(|_| unreachable!("slicing into a non-empty range"));
 
-                let pos = state.recv.offset(seq_number);
-                let new_recv = if pos != 0 {
-                    match state.recv.ooo.merge(pos, payload) {
-                        Ok(merged) => merged,
-                        Err(_) => todo!("drop packet (ooo queue full)"),
-                    }
-                } else {
-                    Some(payload)
-                };
-
-                if let Some(new_recv) = new_recv {
-                    state.recv.advance(new_recv.len());
-                    data = Some(new_recv);
+                match state.recv.advance(seq_number, payload) {
+                    Ok((new_recv, s)) => (data, should_ack) = (new_recv, s),
+                    Err(_) => todo!("drop packet (ooo queue full)"),
                 }
             }
-            // 7-1. ACK the received data if necessary. TODO.
+
+            if should_ack {
+                // 7-1. ACK the received data if necessary. TODO.
+            }
 
             // 8. Check for a FIN.
             //
