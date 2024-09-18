@@ -60,7 +60,7 @@ where
     where
         P: PayloadSplit + Clone,
         R: Router<P>,
-        Rx: SocketRx<Item = P>,
+        Rx: SocketRx<Item = (P, TcpControl)>,
     {
         let ip = endpoint.map(|s| s.ip());
         let tx = match crate::stack::dispatch(router, now, ip, IpProtocol::Tcp) {
@@ -184,7 +184,7 @@ where
                     max_seg_size: None,
                     sack_permitted: true,
                     sack_ranges: if tcb.send.can_sack {
-                        tcb.recv.ooo_sack_ranges()
+                        tcb.recv.sack_ranges()
                     } else {
                         [None; 3]
                     },
@@ -228,7 +228,7 @@ where
                 max_seg_size: None,
                 sack_permitted: true,
                 sack_ranges: if tcb.send.can_sack {
-                    tcb.recv.ooo_sack_ranges()
+                    tcb.recv.sack_ranges()
                 } else {
                     [None; 3]
                 },

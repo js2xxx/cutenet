@@ -8,9 +8,11 @@ mod congestion;
 mod conn;
 mod input;
 mod output;
+mod payload;
 mod seq_number;
 mod timer;
 
+use self::payload::Tagged;
 pub use self::{
     congestion::{cubic::Cubic, reno::Reno, CongestionController},
     conn::{ConnResult, TcpListener},
@@ -35,15 +37,16 @@ impl fmt::Display for RecvErrorKind {
 }
 
 #[cfg(feature = "alloc")]
-type ReorderQueue<P> = crate::storage::rope::BTreeReord<P>;
+type ReorderQueue<P> = crate::storage::rope::BTreeReord<Tagged<P>>;
 #[cfg(not(feature = "alloc"))]
-type ReorderQueue<P> = crate::storage::rope::StaticReord<P, crate::config::STATIC_TCP_OOO_CAPACITY>;
+type ReorderQueue<P> =
+    crate::storage::rope::StaticReord<Tagged<P>, crate::config::STATIC_TCP_OOO_CAPACITY>;
 
 #[cfg(feature = "alloc")]
-type RetxQueue<T, P> = crate::storage::rope::BTreeRetx<T, P>;
+type RetxQueue<T, P> = crate::storage::rope::BTreeRetx<T, Tagged<P>>;
 #[cfg(not(feature = "alloc"))]
 type RetxQueue<T, P> =
-    crate::storage::rope::StaticRetx<T, P, crate::config::STATIC_TCP_RETX_CAPACITY>;
+    crate::storage::rope::StaticRetx<T, Tagged<P>, crate::config::STATIC_TCP_RETX_CAPACITY>;
 
 /// https://datatracker.ietf.org/doc/html/rfc9293#name-send-sequence-variables
 #[derive(Debug, Default)]
@@ -109,13 +112,14 @@ impl<P: PayloadSplit> SendState<P> {
         self.remote_mss.min(window_mss)
     }
 
-    fn advance(&mut self, p: P, control: TcpControl) -> Result<(), P> {
-        let len = p.len();
-        self.retx.push(self.next, p)?;
-        if control == TcpControl::Fin {
+    fn advance(&mut self, p: P, c: TcpControl) -> Result<(), P> {
+        let tagged = Tagged::new(p, c.len());
+        let len = tagged.len();
+        self.retx.push(self.next, tagged).map_err(|t| t.payload)?;
+        if c == TcpControl::Fin {
             self.fin = self.next;
         }
-        self.next += len + control.len();
+        self.next += len;
         Ok(())
     }
 
@@ -154,7 +158,7 @@ impl<P: PayloadSplit> SendState<P> {
 }
 
 impl<P: Payload> RecvState<P> {
-    fn ooo_sack_ranges(&self) -> [Option<(TcpSeqNumber, TcpSeqNumber)>; 3] {
+    fn sack_ranges(&self) -> [Option<(TcpSeqNumber, TcpSeqNumber)>; 3] {
         let mut ranges = [None; 3];
         (self.ooo.ranges().zip(&mut ranges))
             .for_each(|(range, r)| *r = Some((self.next + range.start, self.next + range.end)));
@@ -190,18 +194,18 @@ impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
         })
     }
 
-    fn advance(&mut self, seq: TcpSeqNumber, payload: P) -> Result<(Option<P>, bool), P> {
-        if payload.is_empty() {
+    fn advance(&mut self, seq: TcpSeqNumber, p: P, c: TcpControl) -> Result<(Option<P>, bool), P> {
+        if p.is_empty() {
             return Ok((None, true));
         }
         let pos = seq - self.next;
-        let new_recv = self.ooo.merge(pos, payload)?;
+        let new_recv = (self.ooo.merge(pos, Tagged::new(p, c.len()))).map_err(|p| p.payload)?;
 
         if let Some(ref new_recv) = new_recv {
             self.next += new_recv.len();
         }
 
-        Ok((new_recv, true))
+        Ok((new_recv.map(|r| r.payload), true))
     }
 }
 
@@ -221,7 +225,7 @@ pub struct TcpConfig<P, C, R>
 where
     P: Payload,
     C: CongestionController,
-    R: SocketRx<Item = P>,
+    R: SocketRx<Item = (P, TcpControl)>,
 {
     pub hop_limit: u8,
     pub timestamp_gen: Option<TcpTimestampGenerator>,

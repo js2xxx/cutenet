@@ -161,8 +161,9 @@ impl<'a> TcpOption<'a> {
 }
 
 /// The possible control flags of a Transmission Control Protocol packet.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum Control {
+    #[default]
     None,
     Psh,
     Syn,

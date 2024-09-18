@@ -12,7 +12,7 @@ use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*}
 pub type ConnResult<P, Rx, W> = Result<Option<TcpRecv<Rx, W>>, RecvError<TcpPacket<P>>>
 where
     P: PayloadBuild,
-    Rx: SocketRx<Item = P>,
+    Rx: SocketRx<Item = (P, TcpControl)>,
     W: WithTcb<Payload = P>;
 
 #[derive(Debug)]
@@ -59,7 +59,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         Rx: SocketRx<Item = TcpStream<W>>,
         C: CongestionController,
         R: Router<P>,
-        Rx2: SocketRx<Item = P>,
+        Rx2: SocketRx<Item = (P, TcpControl)>,
         W: WithTcb<Payload = P, Congestion = C>,
     {
         if !self.rx.is_connected() {
@@ -145,7 +145,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
         P: PayloadBuild,
         C: CongestionController,
         Rx: SocketRx<Item = TcpStream<W>>,
-        Rx2: SocketRx<Item = P>,
+        Rx2: SocketRx<Item = (P, TcpControl)>,
         W: WithTcb<Payload = P, Congestion = C>,
     {
         if !self.rx.is_connected() {

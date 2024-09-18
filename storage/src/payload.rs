@@ -73,11 +73,11 @@ pub trait PayloadParse: Payload + Sized {
     fn pop(self, range: Range<usize>) -> Result<Self, Self>;
 }
 
-pub trait PayloadMerge: PayloadBuild {
+pub trait PayloadMerge: Payload + Sized {
     fn merge(&mut self, latter: Self);
 }
 
-pub trait PayloadSplit: PayloadParse {
+pub trait PayloadSplit: Payload + Sized {
     fn split(mut self, mid: usize) -> Result<(Self, Self), Self> {
         match self.split_off(mid) {
             Some(right) => Ok((self, right)),
