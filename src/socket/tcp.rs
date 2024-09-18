@@ -1,8 +1,7 @@
-use core::{fmt, ops::Range, time::Duration};
+use core::{fmt, net::SocketAddr, time::Duration};
 
 use self::timer::{AckDelayTimer, RttEstimator, Timer};
-use super::SocketRx;
-use crate::{storage::*, time::PollAt, wire::*};
+use crate::{stack::DispatchError, storage::*, time::PollAt, wire::*};
 
 mod congestion;
 mod conn;
@@ -15,9 +14,9 @@ mod timer;
 use self::payload::Tagged;
 pub use self::{
     congestion::{cubic::Cubic, reno::Reno, CongestionController},
-    conn::{ConnResult, TcpListener},
-    input::TcpRecv,
-    output::{TcpSend, TcpStream},
+    conn::TcpListener,
+    input::RecvResult,
+    output::{TcpSend, TcpSendPacket, TcpStream},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +35,25 @@ impl fmt::Display for RecvErrorKind {
     }
 }
 
+#[derive(Debug)]
+pub enum SendErrorKind {
+    BufferTooSmall,
+    QueueFull,
+    Dispatch(DispatchError),
+}
+
+impl fmt::Display for SendErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BufferTooSmall => write!(f, "buffer too small"),
+            Self::QueueFull => write!(f, "queue full"),
+            Self::Dispatch(e) => write!(f, "dispatch error: {e:?}"),
+        }
+    }
+}
+
+crate::error::make_error!(SendErrorKind => pub SendError);
+
 #[cfg(feature = "alloc")]
 type ReorderQueue<P> = crate::storage::rope::BTreeReord<Tagged<P>>;
 #[cfg(not(feature = "alloc"))]
@@ -49,7 +67,7 @@ type RetxQueue<T, P> =
     crate::storage::rope::StaticRetx<T, Tagged<P>, crate::config::STATIC_TCP_RETX_CAPACITY>;
 
 /// https://datatracker.ietf.org/doc/html/rfc9293#name-send-sequence-variables
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SendState<P> {
     initial: TcpSeqNumber,
     fin: TcpSeqNumber,
@@ -69,12 +87,21 @@ struct SendState<P> {
 }
 
 /// https://datatracker.ietf.org/doc/html/rfc9293#name-receive-sequence-variables
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RecvState<P> {
     next: TcpSeqNumber,
     window: usize,
 
     ooo: ReorderQueue<P>,
+}
+
+impl<P: Payload> RecvState<P> {
+    fn sack_ranges(&self) -> [Option<(TcpSeqNumber, TcpSeqNumber)>; 3] {
+        let mut ranges = [None; 3];
+        (self.ooo.ranges().zip(&mut ranges))
+            .for_each(|(range, r)| *r = Some((self.next + range.start, self.next + range.end)));
+        ranges
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,8 +118,19 @@ pub enum TcpState {
     Closed,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpConfig<C>
+where
+    C: CongestionController,
+{
+    pub hop_limit: u8,
+    pub timestamp_gen: Option<TcpTimestampGenerator>,
+    pub congestion: C,
+}
+
+#[derive(Debug)]
 pub struct Tcb<P, C> {
+    endpoint: Ends<SocketAddr>,
     state: TcpState,
 
     send: SendState<P>,
@@ -111,152 +149,27 @@ pub struct Tcb<P, C> {
     last_timestamp: u32,
 }
 
-impl<P: PayloadSplit> SendState<P> {
-    fn mss(&self) -> usize {
-        let window_mss = self.unacked + self.window - self.next;
-        self.remote_mss.min(window_mss)
-    }
-
-    fn advance(&mut self, p: P, c: TcpControl) -> Result<(), P> {
-        let tagged = Tagged::new(p, c);
-        let len = tagged.len();
-        self.retx.push(self.next, tagged).map_err(|t| t.payload)?;
-        if c == TcpControl::Fin {
-            self.fin = self.next;
-        }
-        self.next += len;
-        Ok(())
-    }
-
-    fn fin_acked(&self) -> bool {
-        self.unacked > self.fin
-    }
-}
-
-enum AckResult {
-    Ok,
-    Duplicate(usize),
-    Invalid,
-}
-
-impl<P: PayloadSplit> SendState<P> {
-    fn ack(&mut self, seq: TcpSeqNumber, ack: TcpSeqNumber, window: usize) -> AckResult {
-        let unacked = self.unacked;
-
-        let mut is_dup = false;
-        if unacked < ack && ack <= self.next {
-            self.unacked = ack;
-        } else if ack <= unacked {
-            self.dup_acks += 1;
-            is_dup = true;
-        } else {
-            return AckResult::Invalid;
-        };
-
-        if (unacked <= ack && ack <= self.next)
-            && (self.seq_lw < seq || (self.seq_lw == seq && self.ack_lw <= ack))
-        {
-            self.window = window;
-            self.seq_lw = seq;
-            self.ack_lw = ack;
-        }
-
-        self.retx.remove(..ack);
-
-        if is_dup {
-            AckResult::Duplicate(self.dup_acks)
-        } else {
-            AckResult::Ok
-        }
-    }
-
-    fn sack(&mut self, ranges: [Option<(TcpSeqNumber, TcpSeqNumber)>; 3]) {
-        let ranges = ranges.into_iter().flatten().map(|(start, end)| start..end);
-        ranges.for_each(|range| self.retx.remove(range));
-    }
-}
-
-impl<P: Payload> RecvState<P> {
-    fn sack_ranges(&self) -> [Option<(TcpSeqNumber, TcpSeqNumber)>; 3] {
-        let mut ranges = [None; 3];
-        (self.ooo.ranges().zip(&mut ranges))
-            .for_each(|(range, r)| *r = Some((self.next + range.start, self.next + range.end)));
-        ranges
-    }
-}
-
-impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
-    fn accept(
-        &self,
-        is_syn_sent: bool,
-        seq: TcpSeqNumber,
-        segment_len: usize,
-    ) -> Option<(TcpSeqNumber, Range<usize>)> {
-        // NOTE: recv.next is uninit when is_syn_sent.
-        if is_syn_sent {
-            return Some((seq, 0..segment_len));
-        }
-
-        let seq_start = seq;
-        let seq_end = seq_start + segment_len;
-
-        let window_start = self.next;
-        let window_end = self.next + self.window;
-
-        let start = seq_start.max(window_start);
-        let end = seq_end.min(window_end);
-
-        (start <= end).then(|| {
-            let segment_len = end - start;
-            let offset = start - seq_start;
-            (seq_start, offset..offset + segment_len)
-        })
-    }
-
-    fn advance(&mut self, seq: TcpSeqNumber, p: P, c: TcpControl) -> Result<(Option<P>, bool), P> {
-        if p.is_empty() {
-            return Ok((None, true));
-        }
-        let pos = seq - self.next;
-
-        let was_empty = self.ooo.is_empty();
-        let new_recv = (self.ooo.merge(pos, Tagged::new(p, c))).map_err(|p| p.payload)?;
-        let is_empty = self.ooo.is_empty();
-
-        if let Some(ref new_recv) = new_recv {
-            self.next += new_recv.len();
-        }
-
-        Ok((new_recv.map(|r| r.payload), !was_empty || !is_empty))
-    }
-}
-
 impl<P, C> Tcb<P, C> {
-    fn poll_at(&self) -> PollAt {
+    pub fn poll_at(&self) -> PollAt {
         (self.timer.poll_at()).min(self.ack_delay_timer.poll_at())
     }
-}
 
-pub trait WithTcb: Clone {
-    type Payload: Payload;
-    type Congestion: CongestionController;
+    pub fn ack_delay(&self) -> Option<Duration> {
+        self.ack_delay_timer.delay()
+    }
 
-    fn new(state: Tcb<Self::Payload, Self::Congestion>) -> Self;
+    pub fn set_ack_delay(&mut self, ack_delay: Option<Duration>) {
+        self.ack_delay_timer.set_delay(ack_delay);
+    }
 
-    fn with<T, F>(&self, f: F) -> T
-    where
-        F: FnOnce(&mut Tcb<Self::Payload, Self::Congestion>) -> T;
-}
+    pub fn keep_alive(&self) -> Option<Duration> {
+        self.keep_alive
+    }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TcpConfig<P, C, R>
-where
-    P: Payload,
-    C: CongestionController,
-    R: SocketRx<Item = (P, TcpControl)>,
-{
-    pub hop_limit: u8,
-    pub timestamp_gen: Option<TcpTimestampGenerator>,
-    pub congestion: C,
-    pub packet_rx: R,
+    pub fn set_keep_alive(&mut self, keep_alive: Option<Duration>) {
+        self.keep_alive = keep_alive;
+        if keep_alive.is_some() {
+            self.timer.set_keep_alive();
+        }
+    }
 }

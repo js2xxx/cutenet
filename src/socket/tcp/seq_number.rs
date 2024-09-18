@@ -28,7 +28,7 @@ fn time_period(time: Instant) -> u32 {
     (time.secs() / 64) as u32 & TIME_MASK
 }
 
-impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
+impl<H: BuildHasher> TcpListener<H> {
     pub(super) fn seq_number<P: Payload>(
         &self,
         now: Instant,

@@ -581,6 +581,35 @@ impl<T> Packet<T> {
             _ => unreachable!("IP address family mismatch"),
         }
     }
+
+    pub fn map_wire<U>(self, map: impl FnOnce(T, Ends<IpAddr>) -> U) -> Packet<U> {
+        match self {
+            Packet::V4(v4::Packet {
+                addr,
+                next_header,
+                hop_limit,
+                frag_info,
+                payload,
+            }) => Packet::V4(v4::Packet {
+                addr,
+                next_header,
+                hop_limit,
+                frag_info,
+                payload: map(payload, addr.map(Into::into)),
+            }),
+            Packet::V6(v6::Packet {
+                addr,
+                next_header,
+                hop_limit,
+                payload,
+            }) => Packet::V6(v6::Packet {
+                addr,
+                next_header,
+                hop_limit,
+                payload: map(payload, addr.map(Into::into)),
+            }),
+        }
+    }
 }
 
 impl<T, P, U> WireParse for Packet<T>

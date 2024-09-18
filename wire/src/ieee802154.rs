@@ -51,7 +51,7 @@ impl AddressingMode {
             AddressingMode::Absent => 0,
             AddressingMode::Short => 2,
             AddressingMode::Extended => 8,
-            AddressingMode::Unknown(_) => 0, // TODO(thvdveld): what do we need to here?
+            AddressingMode::Unknown(_) => 0,
         }
     }
 }
