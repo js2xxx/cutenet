@@ -618,3 +618,54 @@ where
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Wire)]
+#[prefix(crate)]
+pub enum IpPayload<#[wire] T, #[no_payload] U> {
+    V4(#[wire] v4::Ipv4Payload<T>),
+    V6(#[wire] v6::Ipv6Payload<T, U>),
+}
+
+impl<T, U> IpPayload<T, U> {
+    pub fn ip_protocol(&self) -> Protocol {
+        match self {
+            IpPayload::V4(payload) => payload.ip_protocol(),
+            IpPayload::V6(payload) => payload.ip_protocol(),
+        }
+    }
+}
+
+impl<T, P, U> WireParse for IpPayload<T, U>
+where
+    T: WireParse<Payload = P>,
+    P: PayloadParse<NoPayload = U>,
+    U: NoPayload<Init = P>,
+{
+    fn parse(cx: &dyn WireCx, raw: Self::Payload) -> Result<Self, ParseError<Self::Payload>> {
+        match cx.ip_version() {
+            Version::V4 => v4::Ipv4Payload::parse(cx, raw).map(IpPayload::V4),
+            Version::V6 => v6::Ipv6Payload::parse(cx, raw).map(IpPayload::V6),
+        }
+    }
+}
+
+impl<T, P, U> WireBuild for IpPayload<T, U>
+where
+    T: WireBuild<Payload = P>,
+    P: PayloadBuild<NoPayload = U>,
+    U: NoPayload<Init = P>,
+{
+    fn buffer_len(&self) -> usize {
+        match self {
+            IpPayload::V4(payload) => payload.buffer_len(),
+            IpPayload::V6(payload) => payload.buffer_len(),
+        }
+    }
+
+    fn build(self, cx: &dyn WireCx) -> Result<Self::Payload, BuildError<Self::Payload>> {
+        match self {
+            IpPayload::V4(payload) => payload.build(cx),
+            IpPayload::V6(payload) => payload.build(cx),
+        }
+    }
+}

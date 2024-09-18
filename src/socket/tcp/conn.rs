@@ -186,6 +186,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
             congestion: config.congestion,
             rtte: Default::default(),
             timer: Default::default(),
+            ack_delay_timer: Default::default(),
             timestamp_gen: config.timestamp_gen,
             last_timestamp: packet.timestamp.map_or(0, |t| t.tsval),
         });

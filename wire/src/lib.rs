@@ -73,7 +73,7 @@ pub use self::ip::{
         Cidr as Ipv6Cidr, Ipv6AddrExt, Ipv6Payload, Packet as Ipv6Packet,
         HEADER_LEN as IPV6_HEADER_LEN, MIN_MTU as IPV6_MIN_MTU,
     },
-    Cidr as IpCidr, IpAddrExt, IpCidrExt, Packet as IpPacket, Protocol as IpProtocol,
+    Cidr as IpCidr, IpAddrExt, IpCidrExt, IpPayload, Packet as IpPacket, Protocol as IpProtocol,
     Version as IpVersion,
 };
 

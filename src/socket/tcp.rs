@@ -1,8 +1,8 @@
 use core::{fmt, ops::Range};
 
-use self::timer::{RttEstimator, Timer};
+use self::timer::{AckDelayTimer, RttEstimator, Timer};
 use super::SocketRx;
-use crate::{storage::*, wire::*};
+use crate::{storage::*, time::PollAt, wire::*};
 
 mod congestion;
 mod conn;
@@ -102,6 +102,8 @@ pub struct Tcb<P, C> {
     rtte: RttEstimator,
     timer: Timer,
 
+    ack_delay_timer: AckDelayTimer,
+
     timestamp_gen: Option<TcpTimestampGenerator>,
     last_timestamp: u32,
 }
@@ -199,13 +201,22 @@ impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
             return Ok((None, true));
         }
         let pos = seq - self.next;
+
+        let was_empty = self.ooo.is_empty();
         let new_recv = (self.ooo.merge(pos, Tagged::new(p, c.len()))).map_err(|p| p.payload)?;
+        let is_empty = self.ooo.is_empty();
 
         if let Some(ref new_recv) = new_recv {
             self.next += new_recv.len();
         }
 
-        Ok((new_recv.map(|r| r.payload), true))
+        Ok((new_recv.map(|r| r.payload), !was_empty || !is_empty))
+    }
+}
+
+impl<P, C> Tcb<P, C> {
+    fn poll_at(&self) -> PollAt {
+        (self.timer.poll_at()).min(self.ack_delay_timer.poll_at())
     }
 }
 

@@ -48,40 +48,49 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvResult {
+    Ok,
+    Remove,
+}
+
 impl<P, Rx, W> TcpRecv<Rx, W>
 where
-    P: PayloadSplit + PayloadMerge,
+    P: PayloadSplit + PayloadMerge + PayloadBuild,
     Rx: SocketRx<Item = (P, TcpControl)>,
     W: WithTcb<Payload = P>,
 {
     pub fn process<R: Router<P>>(
         &mut self,
         now: Instant,
-        #[allow(unused_variables)] router: &mut R,
+        router: &mut R,
         ip: Ends<IpAddr>,
         packet: TcpPacket<P>,
-    ) {
-        let reply = |tcb: &Tcb<P, W::Congestion>, seq, ack, control, window| TcpPacket {
-            port: self.endpoint.map(|s| s.port()),
-            control,
-            seq_number: seq,
-            ack_number: ack,
-            window_len: window,
-            max_seg_size: None,
-            sack_permitted: true,
-            sack_ranges: if tcb.send.can_sack {
-                tcb.recv.sack_ranges()
-            } else {
-                [None; 3]
-            },
-            timestamp: TcpTimestamp::generate_reply_with_tsval(
-                tcb.timestamp_gen,
-                tcb.last_timestamp,
-            ),
-            payload: PayloadHolder(0),
+        reply_buf: impl FnOnce() -> P::NoPayload,
+    ) -> (RecvResult, PollAt) {
+        let reply = |tcb: &Tcb<P, W::Congestion>, seq, ack, control, window| {
+            (tcb.hop_limit, TcpPacket {
+                port: self.endpoint.map(|s| s.port()),
+                control,
+                seq_number: seq,
+                ack_number: ack,
+                window_len: window,
+                max_seg_size: None,
+                sack_permitted: true,
+                sack_ranges: if tcb.send.can_sack {
+                    tcb.recv.sack_ranges()
+                } else {
+                    [None; 3]
+                },
+                timestamp: TcpTimestamp::generate_reply_with_tsval(
+                    tcb.timestamp_gen,
+                    tcb.last_timestamp,
+                ),
+                payload: PayloadHolder(0),
+            })
         };
 
-        let reply = self.tcb.with(|tcb| {
+        let (reply, res) = self.tcb.with(|tcb| {
             macro_rules! reply {
                 (challenge_ack: $($t:tt)*) => {
                     reply(
@@ -116,7 +125,7 @@ where
                         TcpControl::Rst,
                     ),
                 };
-                return Some(reply);
+                return (Some(reply), (RecvResult::Remove, tcb.poll_at()));
             }
 
             // (2) 1. Check the sequence number.
@@ -126,7 +135,7 @@ where
                 packet.segment_len(),
             ) else {
                 let reply = (packet.control != TcpControl::Rst).then(|| reply!(challenge_ack));
-                return reply;
+                return (reply, (RecvResult::Ok, tcb.poll_at()));
             };
             range.end -= packet.control.len();
             let range = range;
@@ -141,7 +150,7 @@ where
                 });
                 // 2-2. Valid RST; Reset the connection.
                 tcb.state = TcpState::Closed;
-                return reply;
+                return (reply, (RecvResult::Remove, tcb.poll_at()));
             }
 
             // (1 | 2) 3. Check security/compartment. TODO.
@@ -153,29 +162,32 @@ where
                 } else if let Some(_timestamp) = packet.timestamp {
                     // TIME-WAIT & Timestamp enabled: Establish new connection if
                     // necessary. TODO.
-                    return None;
+                    return (None, (RecvResult::Ok, tcb.poll_at()));
                 } else {
                     // Challenge ACK.
                     let reply = reply!(challenge_ack);
                     tcb.state = TcpState::Closed;
-                    return Some(reply);
+                    return (Some(reply), (RecvResult::Remove, tcb.poll_at()));
                 }
             }
 
             // (1) 1. | (2) 5. Check for an ACK.
             let Some(ack_number) = packet.ack_number else {
                 // 5-1. No ACK, drop & return.
-                return None;
+                return (None, (RecvResult::Ok, tcb.poll_at()));
             };
 
             // 5-2. ACK the send queue.
             if !tcb.send.ack(seq_number, ack_number, packet.window_len) {
-                return Some(if tcb.state == TcpState::SynSent {
-                    reply!(seq: ack_number, TcpControl::Rst)
+                return if tcb.state == TcpState::SynSent {
+                    (
+                        Some(reply!(seq: ack_number, TcpControl::Rst)),
+                        (RecvResult::Ok, tcb.poll_at()),
+                    )
                 } else {
                     // Challenge ACK.
-                    reply!(challenge_ack)
-                });
+                    (Some(reply!(challenge_ack)), (RecvResult::Ok, tcb.poll_at()))
+                };
             }
             tcb.send.sack(packet.sack_ranges);
             tcb.rtte.packet_acked(now, ack_number);
@@ -192,12 +204,14 @@ where
                         reply = Some(reply!(challenge_ack));
                     } else {
                         // Interchanged opening (SYN-SENT => SYN-RECEIVED) not supported.
-                        return None;
+                        return (None, (RecvResult::Ok, tcb.poll_at()));
                     }
                 }
                 // 5-3. FIN-WAIT-1 => FIN-WAIT-2.
                 (TcpState::FinWait1, true) => tcb.state = TcpState::FinWait2,
-                (TcpState::FinWait2, _) => todo!("acknowledge user's close call"),
+                (TcpState::FinWait2, _) => {
+                    // Acknowledge user's close call. TODO.
+                }
 
                 // 5-4. CLOSING => TIME-WAIT.
                 (TcpState::Closing, true) => {
@@ -208,7 +222,7 @@ where
                 // 5-5. LAST-ACK => CLOSED.
                 (TcpState::LastAck, true) => {
                     tcb.state = TcpState::Closed;
-                    return None;
+                    return (None, (RecvResult::Remove, tcb.poll_at()));
                 }
                 // 5-6. TIME-WAIT: Restart the 2 MSL timeout.
                 (TcpState::TimeWait, _) => tcb.timer.set_for_close(now),
@@ -226,14 +240,22 @@ where
                     reply = Some(reply!(challenge_ack: 0));
                 } else {
                     let mut data = None;
-                    let mut should_ack = false;
+                    let mut should_immediate_ack = false;
+
                     if !range.is_empty() {
                         let payload = (packet.payload.slice_into(range))
                             .unwrap_or_else(|_| unreachable!("slicing into a non-empty range"));
 
                         match tcb.recv.advance(seq_number, payload, packet.control) {
-                            Ok((new_recv, s)) => (data, should_ack) = (new_recv, s),
-                            Err(_) => todo!("drop packet (ooo queue full)"),
+                            Ok((new_recv, s)) => (data, should_immediate_ack) = (new_recv, s),
+                            Err(payload) => {
+                                tcb.state = TcpState::Closed;
+                                reply = Some(reply!(
+                                    seq: TcpSeqNumber(0),
+                                    ack: packet.seq_number + payload.len() + packet.control.len(),
+                                    TcpControl::Rst,
+                                ))
+                            }
                         }
                     }
 
@@ -257,8 +279,14 @@ where
                         }
                     }
 
-                    if should_ack && reply.is_none() {
-                        // 7-1. ACK the received data if necessary. TODO.
+                    // 7-1. ACK the received data if necessary.
+                    if reply.is_some() {
+                        tcb.ack_delay_timer.reset();
+                    } else if should_immediate_ack || tcb.ack_delay_timer.expired(now) {
+                        reply = Some(reply!(challenge_ack));
+                        tcb.ack_delay_timer.reset();
+                    } else {
+                        tcb.ack_delay_timer.activate(now);
                     }
                 }
             }
@@ -268,7 +296,7 @@ where
             // https://datatracker.ietf.org/doc/html/rfc9293#section-3.10.7.4-2.8.1
             if packet.control == TcpControl::Fin {
                 if tcb.state == TcpState::SynSent {
-                    return reply;
+                    return (reply, (RecvResult::Ok, tcb.poll_at()));
                 }
 
                 match (tcb.state, fin_acked) {
@@ -283,13 +311,27 @@ where
                 }
             }
 
-            reply
+            (reply, (RecvResult::Ok, tcb.poll_at()))
         });
 
-        todo!()
+        let ip = ip.reverse();
+        if let Some((hop_limit, reply)) = reply
+            && let Ok(tx) = crate::stack::dispatch(router, now, ip, IpProtocol::Tcp)
+        {
+            let device_caps = tx.device_caps();
+
+            let buf = reply_buf().reserve(reply.header_len()).init();
+            let packet = reply.sub_payload(|_| buf);
+
+            let payload = uncheck_build!(packet.build(&(device_caps.tx_checksums, ip)));
+            let packet = IpPacket::new(ip, IpProtocol::Tcp, hop_limit, payload);
+            let _ = tx.comsume(now, packet);
+        }
+
+        res
     }
 
     pub fn poll_at(&self) -> PollAt {
-        self.tcb.with(|tcb| tcb.timer.poll_at())
+        self.tcb.with(|tcb| tcb.poll_at())
     }
 }

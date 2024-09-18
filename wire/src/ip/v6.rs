@@ -3,7 +3,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
 use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
-use super::{IpAddrExt, Protocol, WireCx};
+use super::{IpAddrExt, Protocol, Version, WireCx};
 use crate::{context::Ends, prelude::*};
 
 #[path = "v6_cidr.rs"]
@@ -222,7 +222,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
             hop_limit: packet.hop_limit(),
 
             payload: T::parse(
-                &[cx, &(generic_addr, next_header)],
+                &[cx, &(generic_addr, next_header, Version::V6)],
                 raw.pop(HEADER_LEN..total_len)
                     .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
             )?,
@@ -244,7 +244,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         } = self;
 
         let generic_addr = addr.map(IpAddr::V6);
-        let payload = payload.build(&[cx, &(generic_addr, next_header)])?;
+        let payload = payload.build(&[cx, &(generic_addr, next_header, Version::V6)])?;
 
         payload.push(HEADER_LEN, |buf| {
             let payload_len = u16::try_from(buf.len() - HEADER_LEN)
@@ -288,7 +288,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Lax<Packet<T>> {
             hop_limit: packet.hop_limit(),
 
             payload: T::parse(
-                &[cx, &(generic_addr, next_header)],
+                &[cx, &(generic_addr, next_header, Version::V6)],
                 raw.pop(HEADER_LEN..len)
                     .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
             )?,
@@ -303,6 +303,17 @@ pub enum Ipv6Payload<#[wire] T, #[no_payload] U> {
     Icmp(#[wire] crate::Icmpv6Packet<T, U>),
     Udp(#[wire] crate::UdpPacket<T>),
     Tcp(#[wire] crate::TcpPacket<T>),
+}
+
+impl<T, U> Ipv6Payload<T, U> {
+    pub fn ip_protocol(&self) -> Protocol {
+        match self {
+            Ipv6Payload::HopByHop(_) => Protocol::HopByHop,
+            Ipv6Payload::Icmp(_) => Protocol::Icmpv6,
+            Ipv6Payload::Udp(_) => Protocol::Udp,
+            Ipv6Payload::Tcp(_) => Protocol::Tcp,
+        }
+    }
 }
 
 impl<T, P, U> WireParse for Ipv6Payload<T, U>

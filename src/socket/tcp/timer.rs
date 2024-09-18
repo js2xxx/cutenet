@@ -114,8 +114,6 @@ pub enum Timer {
         expires_at: Instant,
     },
 }
-
-const ACK_DELAY_DEFAULT: Duration = Duration::from_millis(10);
 const CLOSE_DELAY: Duration = Duration::from_millis(10_000);
 
 impl Timer {
@@ -205,6 +203,80 @@ impl Timer {
 }
 
 impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const ACK_DELAY_DEFAULT: Duration = Duration::from_millis(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AckDelayState {
+    Idle,
+    Waiting { ddl: Instant },
+    Immediate,
+}
+
+#[derive(Debug)]
+pub struct AckDelayTimer {
+    ack_delay: Option<Duration>,
+    state: AckDelayState,
+}
+
+impl AckDelayTimer {
+    pub const fn new() -> Self {
+        Self {
+            ack_delay: Some(ACK_DELAY_DEFAULT),
+            state: AckDelayState::Idle,
+        }
+    }
+
+    pub fn set_delay(&mut self, delay: Option<Duration>) {
+        self.ack_delay = delay;
+    }
+
+    pub fn delay(&self) -> Option<Duration> {
+        self.ack_delay
+    }
+
+    pub fn expired(&self, now: Instant) -> bool {
+        match self.state {
+            AckDelayState::Idle => false,
+            AckDelayState::Waiting { ddl } => now >= ddl,
+            AckDelayState::Immediate => true,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.state = AckDelayState::Idle;
+    }
+
+    pub fn activate(&mut self, now: Instant) {
+        let Some(ack_delay) = self.ack_delay else {
+            self.state = AckDelayState::Immediate;
+            return;
+        };
+        let ddl = now + ack_delay;
+
+        match self.state {
+            AckDelayState::Idle => self.state = AckDelayState::Waiting { ddl },
+            AckDelayState::Waiting { ddl: old_ddl } if ddl < old_ddl => {
+                self.state = AckDelayState::Waiting { ddl }
+            }
+            AckDelayState::Waiting { .. } | AckDelayState::Immediate => {}
+        }
+    }
+
+    pub fn poll_at(&self) -> PollAt {
+        match self.state {
+            AckDelayState::Idle => PollAt::Pending,
+            AckDelayState::Waiting { ddl } => PollAt::Instant(ddl),
+            AckDelayState::Immediate => PollAt::Now,
+        }
+    }
+}
+
+impl Default for AckDelayTimer {
     fn default() -> Self {
         Self::new()
     }

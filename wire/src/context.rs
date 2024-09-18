@@ -1,6 +1,6 @@
 use core::{fmt, net::IpAddr};
 
-use crate::{Checksums, EthernetProtocol, IpProtocol};
+use crate::{Checksums, EthernetProtocol, IpProtocol, IpVersion};
 
 mod provide_any;
 use self::provide_any::{request_ref, Demand, Provider};
@@ -24,6 +24,10 @@ impl dyn WireCx + '_ {
 
     pub fn ip_protocol(&self) -> IpProtocol {
         *request_ref(self).expect("the context has no IP protocol when parsing payloads")
+    }
+
+    pub fn ip_version(&self) -> IpVersion {
+        *request_ref(self).expect("the context has no IP version when parsing payloads")
     }
 }
 

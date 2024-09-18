@@ -1,4 +1,4 @@
-use core::{fmt, net::SocketAddr};
+use core::{fmt, net::SocketAddr, time::Duration};
 
 use super::{
     CongestionController, RecvState, SendState, Tcb, TcpConfig, TcpRecv, TcpState, WithTcb,
@@ -41,6 +41,14 @@ pub struct TcpStream<W: WithTcb> {
 impl<W: WithTcb> TcpStream<W> {
     pub(super) const fn new(endpoint: Ends<SocketAddr>, tcb: W) -> Self {
         Self { endpoint, tcb }
+    }
+
+    pub fn ack_delay(&self) -> Option<Duration> {
+        self.tcb.with(|tcb| tcb.ack_delay_timer.delay())
+    }
+
+    pub fn set_ack_delay(&mut self, delay: Option<Duration>) {
+        self.tcb.with(|tcb| tcb.ack_delay_timer.set_delay(delay))
     }
 }
 
@@ -94,6 +102,7 @@ where
             congestion: config.congestion,
             rtte: Default::default(),
             timer: Default::default(),
+            ack_delay_timer: Default::default(),
             timestamp_gen: config.timestamp_gen,
             last_timestamp: 0,
         });
@@ -273,6 +282,7 @@ where
             (tcb.send.advance(retx, control)).map_err(|p| SendErrorKind::QueueFull.with(p))?;
             tcb.timer.set_for_retx(now, tcb.rtte.retx_timeout());
 
+            tcb.ack_delay_timer.reset();
             tcb.rtte.packet_sent(now, tcb.send.next);
             tcb.congestion.post_transmit(now, packet.payload_len());
 

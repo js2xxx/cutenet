@@ -3,7 +3,7 @@ use core::net::{IpAddr, Ipv4Addr};
 use byteorder::{ByteOrder, NetworkEndian};
 
 pub use self::cidr::Cidr;
-use super::{checksum, IpAddrExt, Protocol, WireCx};
+use super::{checksum, IpAddrExt, Protocol, Version, WireCx};
 use crate::{context::Ends, prelude::*};
 
 #[path = "v4_cidr.rs"]
@@ -213,7 +213,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
             }),
 
             payload: T::parse(
-                &[cx, &(generic_addr, next_header)],
+                &[cx, &(generic_addr, next_header, Version::V4)],
                 raw.pop(usize::from(header_len)..usize::from(total_len))
                     .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
             )?,
@@ -236,7 +236,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
         } = self;
 
         let generic_addr = addr.map(IpAddr::V4);
-        let payload = payload.build(&[cx, &(generic_addr, next_header)])?;
+        let payload = payload.build(&[cx, &(generic_addr, next_header, Version::V4)])?;
 
         payload.push(HEADER_LEN, |buf| {
             let mut packet = RawPacket(buf);
@@ -303,7 +303,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Lax<Packet<T>> {
             }),
 
             payload: T::parse(
-                &[cx, &(generic_addr, next_header)],
+                &[cx, &(generic_addr, next_header, Version::V4)],
                 raw.pop(HEADER_LEN..len)
                     .map_err(|err| ParseErrorKind::PacketTooShort.with(err))?,
             )?,
@@ -317,6 +317,16 @@ pub enum Ipv4Payload<#[wire] T> {
     Icmp(#[wire] crate::Icmpv4Packet<T>),
     Udp(#[wire] crate::UdpPacket<T>),
     Tcp(#[wire] crate::TcpPacket<T>),
+}
+
+impl<T> Ipv4Payload<T> {
+    pub fn ip_protocol(&self) -> Protocol {
+        match self {
+            Self::Icmp(_) => Protocol::Icmp,
+            Self::Udp(_) => Protocol::Udp,
+            Self::Tcp(_) => Protocol::Tcp,
+        }
+    }
 }
 
 impl<T, P, U> WireParse for Ipv4Payload<T>

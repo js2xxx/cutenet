@@ -13,6 +13,10 @@ impl<P> ReorderQueue<P> {
     pub const fn new() -> Self {
         Self { map: BTreeMap::new() }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 impl<P: PayloadMerge + PayloadSplit> ReorderQueue<P> {
