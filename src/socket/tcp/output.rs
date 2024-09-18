@@ -50,6 +50,19 @@ impl<W: WithTcb> TcpStream<W> {
     pub fn set_ack_delay(&mut self, delay: Option<Duration>) {
         self.tcb.with(|tcb| tcb.ack_delay_timer.set_delay(delay))
     }
+
+    pub fn keep_alive(&self) -> Option<Duration> {
+        self.tcb.with(|tcb| tcb.keep_alive)
+    }
+
+    pub fn set_keep_alive(&mut self, delay: Option<Duration>) {
+        self.tcb.with(|tcb| {
+            tcb.keep_alive = delay;
+            if delay.is_some() {
+                tcb.timer.set_keep_alive();
+            }
+        })
+    }
 }
 
 impl<P, W> TcpStream<W>
@@ -89,6 +102,7 @@ where
                 window: config.congestion.window(),
                 seq_lw: TcpSeqNumber(0),
                 ack_lw: init_seq,
+                dup_acks: 0,
                 retx: Default::default(),
                 remote_mss: usize::MAX,
                 can_sack: false,
@@ -101,6 +115,7 @@ where
             hop_limit: config.hop_limit,
             congestion: config.congestion,
             rtte: Default::default(),
+            keep_alive: None,
             timer: Default::default(),
             ack_delay_timer: Default::default(),
             timestamp_gen: config.timestamp_gen,
@@ -282,9 +297,10 @@ where
             (tcb.send.advance(retx, control)).map_err(|p| SendErrorKind::QueueFull.with(p))?;
             tcb.timer.set_for_retx(now, tcb.rtte.retx_timeout());
 
-            tcb.ack_delay_timer.reset();
-            tcb.rtte.packet_sent(now, tcb.send.next);
             tcb.congestion.post_transmit(now, packet.payload_len());
+            tcb.rtte.packet_sent(now, tcb.send.next);
+            tcb.timer.rewind_keep_alive(now, tcb.keep_alive);
+            tcb.ack_delay_timer.reset();
 
             Ok(Some((packet, rest, tcb.hop_limit)))
         })? {

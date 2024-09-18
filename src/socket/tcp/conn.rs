@@ -162,7 +162,9 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
 
         let endpoint = ip.zip_map(packet.port, SocketAddr::new).reverse();
 
-        let config = config();
+        let mut config = config();
+        config.congestion.set_mss(usize::from(mss));
+
         let tcb = W::new(Tcb {
             state: TcpState::Established,
             send: SendState {
@@ -173,6 +175,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
                 window: config.congestion.window(),
                 seq_lw: packet.seq_number,
                 ack_lw: packet.ack_number.unwrap(),
+                dup_acks: 0,
                 retx: Default::default(),
                 remote_mss: usize::from(mss),
                 can_sack,
@@ -185,6 +188,7 @@ impl<Rx, H: BuildHasher> TcpListener<Rx, H> {
             hop_limit: config.hop_limit,
             congestion: config.congestion,
             rtte: Default::default(),
+            keep_alive: None,
             timer: Default::default(),
             ack_delay_timer: Default::default(),
             timestamp_gen: config.timestamp_gen,

@@ -1,4 +1,4 @@
-use core::{fmt, ops::Range};
+use core::{fmt, ops::Range, time::Duration};
 
 use self::timer::{AckDelayTimer, RttEstimator, Timer};
 use super::SocketRx;
@@ -61,6 +61,8 @@ struct SendState<P> {
     seq_lw: TcpSeqNumber,
     ack_lw: TcpSeqNumber,
 
+    dup_acks: usize,
+
     retx: RetxQueue<TcpSeqNumber, P>,
     remote_mss: usize,
     can_sack: bool,
@@ -100,8 +102,9 @@ pub struct Tcb<P, C> {
 
     congestion: C,
     rtte: RttEstimator,
-    timer: Timer,
 
+    keep_alive: Option<Duration>,
+    timer: Timer,
     ack_delay_timer: AckDelayTimer,
 
     timestamp_gen: Option<TcpTimestampGenerator>,
@@ -115,7 +118,7 @@ impl<P: PayloadSplit> SendState<P> {
     }
 
     fn advance(&mut self, p: P, c: TcpControl) -> Result<(), P> {
-        let tagged = Tagged::new(p, c.len());
+        let tagged = Tagged::new(p, c);
         let len = tagged.len();
         self.retx.push(self.next, tagged).map_err(|t| t.payload)?;
         if c == TcpControl::Fin {
@@ -128,16 +131,26 @@ impl<P: PayloadSplit> SendState<P> {
     fn fin_acked(&self) -> bool {
         self.unacked > self.fin
     }
+}
 
-    fn ack(&mut self, seq: TcpSeqNumber, ack: TcpSeqNumber, window: usize) -> bool {
+enum AckResult {
+    Ok,
+    Duplicate(usize),
+    Invalid,
+}
+
+impl<P: PayloadSplit> SendState<P> {
+    fn ack(&mut self, seq: TcpSeqNumber, ack: TcpSeqNumber, window: usize) -> AckResult {
         let unacked = self.unacked;
 
+        let mut is_dup = false;
         if unacked < ack && ack <= self.next {
             self.unacked = ack;
         } else if ack <= unacked {
-            // Duplicate ACK. Fast retransmit (RFC 5681). TODO.
+            self.dup_acks += 1;
+            is_dup = true;
         } else {
-            return false;
+            return AckResult::Invalid;
         };
 
         if (unacked <= ack && ack <= self.next)
@@ -150,7 +163,11 @@ impl<P: PayloadSplit> SendState<P> {
 
         self.retx.remove(..ack);
 
-        true
+        if is_dup {
+            AckResult::Duplicate(self.dup_acks)
+        } else {
+            AckResult::Ok
+        }
     }
 
     fn sack(&mut self, ranges: [Option<(TcpSeqNumber, TcpSeqNumber)>; 3]) {
@@ -203,7 +220,7 @@ impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
         let pos = seq - self.next;
 
         let was_empty = self.ooo.is_empty();
-        let new_recv = (self.ooo.merge(pos, Tagged::new(p, c.len()))).map_err(|p| p.payload)?;
+        let new_recv = (self.ooo.merge(pos, Tagged::new(p, c))).map_err(|p| p.payload)?;
         let is_empty = self.ooo.is_empty();
 
         if let Some(ref new_recv) = new_recv {

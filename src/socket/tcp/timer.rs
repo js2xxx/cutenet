@@ -117,8 +117,8 @@ pub enum Timer {
 const CLOSE_DELAY: Duration = Duration::from_millis(10_000);
 
 impl Timer {
-    pub const fn new() -> Timer {
-        Timer::Idle { keep_alive_at: None }
+    pub const fn new(keep_alive_at: Option<Instant>) -> Timer {
+        Timer::Idle { keep_alive_at }
     }
 
     pub fn should_keep_alive(&self, now: Instant) -> bool {
@@ -175,7 +175,7 @@ impl Timer {
 
     pub fn set_for_retx(&mut self, now: Instant, delay: Duration) {
         match *self {
-            Timer::Idle { .. } | Timer::FastRetx { .. } => {
+            Timer::Idle { .. } | Timer::FastRetx => {
                 *self = Timer::Retx { expires_at: now + delay, delay }
             }
             Timer::Retx { expires_at, delay } if now >= expires_at => {
@@ -204,7 +204,7 @@ impl Timer {
 
 impl Default for Timer {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
