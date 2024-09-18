@@ -26,80 +26,36 @@ impl<P: PayloadSplit> SendState<P> {
     }
 }
 
-impl<P, C> Tcb<P, C>
-where
-    P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
-    C: CongestionController,
-{
-    fn packet(&self, push: bool, payload: P) -> TcpPacket<P> {
-        TcpPacket {
-            port: self.endpoint.map(|s| s.port()),
-            control: if push {
-                TcpControl::Psh
-            } else {
-                TcpControl::None
-            },
-            seq_number: self.send.next,
-            ack_number: Some(self.recv.next),
-            window_len: self.recv.window,
-            max_seg_size: None,
-            sack_permitted: true,
-            sack_ranges: if self.send.can_sack {
-                self.recv.sack_ranges()
-            } else {
-                [None; 3]
-            },
-            timestamp: TcpTimestamp::generate_reply_with_tsval(
-                self.timestamp_gen,
-                self.last_timestamp,
-            ),
-            payload,
-        }
-    }
-
-    fn prepare_send(
-        &mut self,
-        now: Instant,
-        device_caps: &DeviceCaps,
-        packet: &mut TcpPacket<P>,
-    ) -> Result<Option<P>, SendError> {
-        let control = packet.control;
-        let ip = self.endpoint.map(|s| s.ip());
-
-        self.congestion.pre_transmit(now);
-
-        let buffer_len = packet.payload_len() + device_caps.header_len(ip, packet.header_len());
-        if buffer_len > packet.payload.capacity() {
-            return Err(SendErrorKind::BufferTooSmall.into());
-        }
-
-        let mtu_mss = usize::from(device_caps.mss(ip, packet.header_len()));
-
-        let max_len = mtu_mss.min(self.send.mss()).min(self.congestion.window());
-        let rest = packet.payload.split_off(max_len);
-
-        let retx = packet.payload.clone();
-        (self.send.advance(retx, control)).map_err(|_| SendErrorKind::QueueFull)?;
-        self.timer.set_for_retx(now, self.rtte.retx_timeout());
-
-        self.congestion.post_transmit(now, packet.payload_len());
-        self.rtte.packet_sent(now, self.send.next);
-        self.timer.rewind_keep_alive(now, self.keep_alive);
-        self.ack_delay_timer.reset();
-
-        Ok(rest)
-    }
-}
-
 pub trait TcpStream<P, C>: DerefMut<Target = Tcb<P, C>> + Sized {
+    fn send_data<R: Router<P>>(
+        self,
+        now: Instant,
+        router: &mut R,
+        push: bool,
+        data: P,
+    ) -> Result<(TxResult, Option<P>), SendError<P>>
+    where
+        P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
+        C: CongestionController,
+    {
+        match self.send(now, router) {
+            Ok(tx) => tx.consume_data(now, push, data),
+            Err(err) => Err(err.kind.with(data)),
+        }
+    }
+
     fn send<R: Router<P>>(
         self,
         now: Instant,
         router: &mut R,
     ) -> Result<TcpSend<Self, P, R::Tx<'_>>, SendError>
     where
-        P: PayloadBuild,
+        P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
+        C: CongestionController,
     {
+        if !self.may_send() {
+            return Err(SendErrorKind::InvalidState(self.state).into());
+        }
         let ip = self.endpoint.map(|s| s.ip());
 
         let tx = crate::stack::dispatch(router, now, ip, IpProtocol::Tcp)
@@ -171,6 +127,71 @@ pub struct TcpSend<T, P, Tx> {
 }
 
 pub type TcpSendPacket<P, Tx> = TcpSend<(IpPacket<TcpPacket<P>>, Option<P>), P, Tx>;
+
+impl<P, C> Tcb<P, C>
+where
+    P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
+    C: CongestionController,
+{
+    fn packet(&self, push: bool, payload: P) -> TcpPacket<P> {
+        TcpPacket {
+            port: self.endpoint.map(|s| s.port()),
+            control: if push {
+                TcpControl::Psh
+            } else {
+                TcpControl::None
+            },
+            seq_number: self.send.next,
+            ack_number: Some(self.recv.next),
+            window_len: self.recv.window,
+            max_seg_size: None,
+            sack_permitted: true,
+            sack_ranges: if self.send.can_sack {
+                self.recv.sack_ranges()
+            } else {
+                [None; 3]
+            },
+            timestamp: TcpTimestamp::generate_reply_with_tsval(
+                self.timestamp_gen,
+                self.last_timestamp,
+            ),
+            payload,
+        }
+    }
+
+    fn prepare_send(
+        &mut self,
+        now: Instant,
+        device_caps: &DeviceCaps,
+        packet: &mut TcpPacket<P>,
+    ) -> Result<Option<P>, SendError> {
+        let control = packet.control;
+        let ip = self.endpoint.map(|s| s.ip());
+
+        self.congestion.pre_transmit(now);
+
+        let buffer_len = packet.payload_len() + device_caps.header_len(ip, packet.header_len());
+        if buffer_len > packet.payload.capacity() {
+            return Err(SendErrorKind::BufferTooSmall.into());
+        }
+
+        let mtu_mss = usize::from(device_caps.mss(ip, packet.header_len()));
+
+        let max_len = mtu_mss.min(self.send.mss()).min(self.congestion.window());
+        let rest = packet.payload.split_off(max_len);
+
+        let retx = packet.payload.clone();
+        (self.send.advance(retx, control)).map_err(|_| SendErrorKind::QueueFull)?;
+        self.timer.set_for_retx(now, self.rtte.retx_timeout());
+
+        self.congestion.post_transmit(now, packet.payload_len());
+        self.rtte.packet_sent(now, self.send.next);
+        self.timer.rewind_keep_alive(now, self.keep_alive);
+        self.ack_delay_timer.reset();
+
+        Ok(rest)
+    }
+}
 
 impl<T, P, Tx> TcpSend<T, P, Tx> {
     pub(super) fn new(obj: T, tx: StackTx<P, Tx>) -> Self {

@@ -37,6 +37,7 @@ impl fmt::Display for RecvErrorKind {
 
 #[derive(Debug)]
 pub enum SendErrorKind {
+    InvalidState(TcpState),
     BufferTooSmall,
     QueueFull,
     Dispatch(DispatchError),
@@ -45,6 +46,7 @@ pub enum SendErrorKind {
 impl fmt::Display for SendErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidState(s) => write!(f, "invalid state: {s:?}"),
             Self::BufferTooSmall => write!(f, "buffer too small"),
             Self::QueueFull => write!(f, "queue full"),
             Self::Dispatch(e) => write!(f, "dispatch error: {e:?}"),
@@ -171,5 +173,30 @@ impl<P, C> Tcb<P, C> {
         if keep_alive.is_some() {
             self.timer.set_keep_alive();
         }
+    }
+
+    pub fn is_open(&self) -> bool {
+        !matches!(self.state, TcpState::Closed | TcpState::TimeWait)
+    }
+
+    pub fn is_active(&self) -> bool {
+        !matches!(self.state, TcpState::Closed | TcpState::TimeWait)
+    }
+
+    pub fn may_send(&self) -> bool {
+        matches!(self.state, TcpState::Established | TcpState::CloseWait)
+    }
+
+    pub fn may_recv(&self) -> bool {
+        // In FIN-WAIT-1/2, we have closed our transmit half of the connection but
+        // we still can receive indefinitely.
+        matches!(
+            self.state,
+            TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2
+        )
+    }
+
+    pub fn abort(&mut self) {
+        self.state = TcpState::Closed;
     }
 }
