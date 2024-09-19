@@ -16,8 +16,8 @@
   - [ ] Dynamic network routers (based on TRIEs)
 - [ ] Network sockets
   - [ ] Raw sockets
-  - [ ] TCP sockets
-  - [ ] UDP sockets
+  - [x] TCP sockets
+  - [x] UDP sockets
 - [ ] Network socket sets
 
 ## References
