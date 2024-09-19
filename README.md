@@ -22,4 +22,5 @@
 
 ## References
 
-- [`smoltcp`](https://github.com/smoltcp-rs/smoltcp).
+- [`smoltcp`](https://github.com/smoltcp-rs/smoltcp);
+- [`seastar`](https://github.com/scylladb/seastar).
