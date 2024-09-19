@@ -196,7 +196,7 @@ where
             payload,
         } = self;
 
-        payload.init().push(HEADER_LEN, |buf| {
+        payload.init().push(HEADER_LEN, |buf, _| {
             let mut packet = RawPacket(buf);
 
             packet.set_hardware_type(Hardware::Ethernet);
@@ -221,7 +221,7 @@ where
 mod tests {
     use std::vec;
 
-    use cutenet_storage::{Buf, NoPayloadHolder};
+    use cutenet_storage::NoPayloadHolder;
 
     use super::*;
 
@@ -265,9 +265,9 @@ mod tests {
         };
 
         let bytes = vec![0xa5; 28];
-        let payload = Buf::builder(bytes).reserve_for(&tag);
+        let payload = bytes.reset().reserve(tag.buffer_len());
 
-        let packet: Buf<_> = tag.sub_no_payload(|_| payload).build(&()).unwrap();
-        assert_eq!(packet.data(), &PACKET_BYTES[..]);
+        let packet = tag.sub_no_payload(|_| payload).build(&()).unwrap();
+        assert_eq!(packet, &PACKET_BYTES[..]);
     }
 }

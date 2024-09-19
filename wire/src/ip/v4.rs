@@ -237,11 +237,12 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
 
         let generic_addr = addr.map(IpAddr::V4);
         let payload = payload.build(&[cx, &(generic_addr, next_header, Version::V4)])?;
+        let payload_len = payload.len();
 
-        payload.push(HEADER_LEN, |buf| {
+        payload.push(HEADER_LEN, |buf, _| {
             let mut packet = RawPacket(buf);
 
-            let total_len = u16::try_from(packet.0.len());
+            let total_len = u16::try_from(payload_len + HEADER_LEN);
             packet.set_total_len(total_len.map_err(|_| BuildErrorKind::PayloadTooLong)?);
 
             packet.set_version(4);
@@ -370,9 +371,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
-
-    use cutenet_storage::{Buf, PayloadHolder};
+    use std::vec::Vec;
 
     use super::*;
     use crate::Checksums;
@@ -425,21 +424,16 @@ mod tests {
             next_header: Protocol::Icmp,
             hop_limit: 0x1a,
             frag_info: None,
-            payload: PayloadHolder(PAYLOAD_BYTES.len()),
+            payload: Vec::from(PAYLOAD_BYTES),
         };
 
-        let bytes = vec![0xa5; 30];
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
-        payload.append_slice(&PAYLOAD_BYTES);
-
-        let packet = tag.sub_payload(|_| payload).build(&CX).unwrap();
-        assert_eq!(packet.data(), &EGRESS_PACKET_BYTES[..]);
+        let packet = tag.build(&CX).unwrap();
+        assert_eq!(packet, &EGRESS_PACKET_BYTES[..]);
     }
 
     #[test]
     fn test_overlong() {
-        let mut pb = vec![];
-        pb.extend(INGRESS_PACKET_BYTES.into_iter().chain([0]));
+        let pb = Vec::from_iter(INGRESS_PACKET_BYTES.into_iter().chain([0]));
         let packet: Packet<&[u8]> = Packet::parse(&CX, &pb[..]).unwrap();
 
         assert_eq!(packet.payload.len(), PAYLOAD_BYTES.len());

@@ -139,13 +139,3 @@ impl<T: Payload + Wire<Payload = T>> WireParse for T {
         Ok(raw)
     }
 }
-
-pub trait ReserveExt {
-    fn reserve_for<T: WireBuild>(self, tag: &T) -> Self;
-}
-
-impl<S: cutenet_storage::Storage> ReserveExt for cutenet_storage::ReserveBuf<S> {
-    fn reserve_for<T: WireBuild>(self, tag: &T) -> Self {
-        self.add_reservation(tag.header_len())
-    }
-}

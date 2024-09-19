@@ -792,7 +792,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
             payload,
         } = self;
 
-        payload.build(cx)?.push(header_len, |buf| {
+        payload.build(cx)?.push(header_len, |buf, _| {
             let mut frame = RawFrame(buf);
 
             frame.set_frame_type(frame_type);
@@ -849,7 +849,7 @@ impl<T> Frame<T> {
 
 #[cfg(test)]
 mod tests {
-    use cutenet_storage::{Buf, PayloadHolder};
+    use std::{vec, vec::Vec};
 
     use super::*;
 
@@ -861,8 +861,6 @@ mod tests {
 
     #[test]
     fn prepare_frame() {
-        let mut buffer = [0u8; 128];
-
         let repr = Frame {
             frame_type: FrameType::Data,
             security_enabled: false,
@@ -880,20 +878,14 @@ mod tests {
                 ),
                 dst: (Some(Pan(0xabcd)), Some(Addr::BROADCAST)),
             },
-            payload: PayloadHolder(10),
+            payload: vec![0; 10],
         };
 
-        let buffer_len = repr.header_len();
-
-        let buf = Buf::builder(&mut buffer[..buffer_len])
-            .reserve_for(&repr)
-            .build();
-
-        let buf: Buf<_> = repr.sub_payload(|_| buf).build(&()).unwrap();
+        let buf = repr.build(&()).unwrap();
 
         // println!("{frame:2x?}");
 
-        let frame: Frame<Buf<_>> = Frame::parse(&(), buf).unwrap();
+        let frame: Frame<Vec<_>> = Frame::parse(&(), buf).unwrap();
 
         assert_eq!(frame.frame_type, FrameType::Data);
         assert!(!frame.security_enabled);

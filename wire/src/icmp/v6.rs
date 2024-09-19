@@ -318,16 +318,20 @@ impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     }
 
     /// Validate the header checksum.
-    pub fn verify_checksum(&self, addr: Ends<IpAddr>) -> bool {
-        let data = self.0.as_ref();
+    pub fn verify_checksum<'a>(
+        &self,
+        addr: Ends<IpAddr>,
+        next_iter: impl Iterator<Item = &'a [u8]>,
+    ) -> bool {
+        let (data_sum, data_len) = checksum::data_iter(self.0.as_ref(), next_iter);
         checksum::combine(&[
             checksum::pseudo_header_v6(
                 &addr.src.unwrap_v6(),
                 &addr.dst.unwrap_v6(),
                 ip::Protocol::Icmpv6,
-                data.len() as u32,
+                data_len as u32,
             ),
-            checksum::data(data),
+            data_sum,
         ]) == !0
     }
 }
@@ -358,20 +362,22 @@ impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
         }
     }
 
-    pub fn fill_checksum(&mut self, addr: Ends<IpAddr>) {
+    pub fn fill_checksum<'a>(
+        &mut self,
+        addr: Ends<IpAddr>,
+        next_iter: impl Iterator<Item = &'a [u8]>,
+    ) {
         self.set_checksum(0);
-        let checksum = {
-            let data = self.0.as_ref();
-            !checksum::combine(&[
-                checksum::pseudo_header_v6(
-                    &addr.src.unwrap_v6(),
-                    &addr.dst.unwrap_v6(),
-                    ip::Protocol::Icmpv6,
-                    data.len() as u32,
-                ),
-                checksum::data(data),
-            ])
-        };
+        let (data_sum, data_len) = checksum::data_iter(self.0.as_ref(), next_iter);
+        let checksum = !checksum::combine(&[
+            checksum::pseudo_header_v6(
+                &addr.src.unwrap_v6(),
+                &addr.dst.unwrap_v6(),
+                ip::Protocol::Icmpv6,
+                data_len as u32,
+            ),
+            data_sum,
+        ]);
         self.set_checksum(checksum);
     }
 }
@@ -454,11 +460,12 @@ where
                     return Err(ParseErrorKind::PacketTooShort.with(raw));
                 }
             }
-            Message::RplControl => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
-            Message::Unknown(_) => return Err(ParseErrorKind::ProtocolUnknown.with(raw)),
+            Message::RplControl | Message::Unknown(_) => {
+                return Err(ParseErrorKind::ProtocolUnknown.with(raw));
+            }
         }
 
-        if cx.checksums().icmp() && !packet.verify_checksum(cx.ip_addrs()) {
+        if cx.checksums().icmp() && !packet.verify_checksum(cx.ip_addrs(), raw.next_data_iter()) {
             return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
@@ -523,77 +530,82 @@ where
     }
 
     fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
-        let checksum = |mut packet: RawPacket<&mut [u8]>| {
+        fn checksum<'a>(
+            mut packet: RawPacket<&mut [u8]>,
+            next_iter: impl Iterator<Item = &'a [u8]>,
+            cx: &dyn WireCx,
+        ) -> Result<(), BuildErrorKind> {
             if cx.checksums().icmp() {
-                packet.fill_checksum(cx.ip_addrs());
+                packet.fill_checksum(cx.ip_addrs(), next_iter);
             } else {
                 // make sure we get a consistently zeroed checksum,
                 // since implementations might rely on it
                 packet.set_checksum(0);
             }
             Ok(())
-        };
+        }
 
         let opt = PushOption::new().truncate(MAX_ERROR_PACKET_LEN);
         match self {
             Packet::DstUnreachable { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf, iter| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::DstUnreachable);
                     packet.set_msg_code(reason.into());
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
             Packet::PktTooBig { mtu, payload } => {
-                (payload.build(&())?).push_with(field::MTU.end, &opt, |buf| {
+                (payload.build(&())?).push_with(field::MTU.end, &opt, |buf, iter| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::PktTooBig);
                     packet.set_msg_code(0);
                     packet.set_pkt_too_big_mtu(mtu);
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
             Packet::TimeExceeded { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf, iter| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::TimeExceeded);
                     packet.set_msg_code(reason.into());
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
 
             Packet::ParamProblem { reason, pointer, payload } => {
-                (payload.build(&())?).push_with(field::POINTER.end, &opt, |buf| {
+                (payload.build(&())?).push_with(field::POINTER.end, &opt, |buf, iter| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::ParamProblem);
                     packet.set_msg_code(reason.into());
                     packet.set_param_problem_ptr(pointer);
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
             Packet::EchoRequest { ident, seq_no, payload } => {
-                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
+                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf, iter| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::EchoRequest);
                     packet.set_msg_code(0);
                     packet.set_echo_ident(ident);
                     packet.set_echo_seq_no(seq_no);
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
             Packet::EchoReply { ident, seq_no, payload } => {
-                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
+                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf, iter| {
                     let mut packet = RawPacket(buf);
                     packet.set_msg_type(Message::EchoReply);
                     packet.set_msg_code(0);
                     packet.set_echo_ident(ident);
                     packet.set_echo_seq_no(seq_no);
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
-            Packet::Nd { nd, payload } => payload.init().push(nd.len(), |buf| {
-                nd.build(RawPacket(buf));
-                checksum(RawPacket(buf))
+            Packet::Nd { nd, payload } => payload.init().push(nd.len(), |buf, iter| {
+                let next = buf;
+                nd.build(RawPacket(next));
+                checksum(RawPacket(next), iter, cx)
             }),
         }
     }
@@ -602,9 +614,9 @@ where
 #[cfg(test)]
 mod tests {
     use core::net::Ipv6Addr;
-    use std::vec;
+    use std::vec::Vec;
 
-    use cutenet_storage::{Buf, PayloadHolder};
+    use cutenet_storage::PayloadHolder;
     use ip::IpAddrExt;
 
     use super::*;
@@ -651,13 +663,10 @@ mod tests {
         let repr = Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
-            payload: PayloadHolder(ECHO_PACKET_PAYLOAD.len()),
+            payload: Vec::from(ECHO_PACKET_PAYLOAD),
         };
-        let bytes = vec![0xa5; repr.buffer_len()];
-        let mut buf = Buf::builder(bytes).reserve_for(&repr).build();
-        buf.append_slice(&ECHO_PACKET_PAYLOAD);
-        let packet = repr.sub_payload(|_| buf).build(&CX).unwrap();
-        assert_eq!(packet.data(), &ECHO_PACKET_BYTES[..]);
+        let packet = repr.build(&CX).unwrap();
+        assert_eq!(packet, &ECHO_PACKET_BYTES[..]);
     }
 
     #[test]
@@ -682,15 +691,12 @@ mod tests {
                 addr: MOCK_IP_ADDRS.map(|ip| ip.unwrap_v6()),
                 next_header: ip::Protocol::Udp,
                 hop_limit: 0x40,
-                payload: PayloadHolder(PKT_TOO_BIG_UDP_PAYLOAD.len()),
+                payload: Vec::from(PKT_TOO_BIG_UDP_PAYLOAD),
             }),
         };
-        let bytes = vec![0xa5; repr.buffer_len()];
-        let mut buf = Buf::builder(bytes).reserve_for(&repr).build();
-        buf.append_slice(&PKT_TOO_BIG_UDP_PAYLOAD);
 
-        let packet = repr.sub_payload(|_| buf).build(&CX).unwrap();
-        assert_eq!(packet.data(), &PKT_TOO_BIG_BYTES[..]);
+        let packet = repr.build(&CX).unwrap();
+        assert_eq!(packet, &PKT_TOO_BIG_BYTES[..]);
     }
 
     #[test]

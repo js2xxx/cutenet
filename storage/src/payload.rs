@@ -11,6 +11,18 @@ pub trait Payload {
         self.len() == 0
     }
 
+    type DataIter<'a>: Iterator<Item = &'a [u8]>
+    where
+        Self: 'a;
+
+    fn data_iter(&self) -> Self::DataIter<'_>;
+
+    type DataIterMut<'a>: Iterator<Item = &'a mut [u8]>
+    where
+        Self: 'a;
+
+    fn data_iter_mut(&mut self) -> Self::DataIterMut<'_>;
+
     fn truncate(self) -> Self::NoPayload;
 
     fn reset(self) -> Self::NoPayload;
@@ -48,7 +60,7 @@ pub trait PayloadBuild: Payload + Sized {
 
     fn push<F, E>(self, size: usize, set_header: F) -> Result<Self, Error<E, Self>>
     where
-        F: FnOnce(&mut [u8]) -> Result<(), E>,
+        F: FnOnce(&mut [u8], Self::DataIter<'_>) -> Result<(), E>,
     {
         self.push_with(size, &Default::default(), set_header)
     }
@@ -60,15 +72,21 @@ pub trait PayloadBuild: Payload + Sized {
         set_header: F,
     ) -> Result<Self, Error<E, Self>>
     where
-        F: FnOnce(&mut [u8]) -> Result<(), E>;
+        F: FnOnce(&mut [u8], Self::DataIter<'_>) -> Result<(), E>;
 
     fn prepend(self, size: usize) -> Result<Self, Error<(), Self>> {
-        self.push(size, |_| Ok(()))
+        self.push(size, |_, _| Ok(()))
     }
 }
 
 pub trait PayloadParse: Payload + Sized {
-    fn header_data(&self) -> &[u8];
+    fn header_data(&self) -> &[u8] {
+        self.data_iter().next().unwrap_or_default()
+    }
+
+    fn next_data_iter(&self) -> core::iter::Skip<Self::DataIter<'_>> {
+        self.data_iter().skip(1)
+    }
 
     fn pop(self, range: Range<usize>) -> Result<Self, Self>;
 }
@@ -105,6 +123,18 @@ mod slice {
 
         fn len(&self) -> usize {
             (**self).len()
+        }
+
+        type DataIter<'d> = core::iter::Once<&'d [u8]> where Self: 'd;
+
+        fn data_iter(&self) -> Self::DataIter<'_> {
+            core::iter::once(*self)
+        }
+
+        type DataIterMut<'d> = core::iter::Empty<&'d mut [u8]> where Self: 'd;
+
+        fn data_iter_mut(&mut self) -> Self::DataIterMut<'_> {
+            core::iter::empty()
         }
 
         fn truncate(self) -> Self::NoPayload {
@@ -192,6 +222,18 @@ mod vec {
             self.len()
         }
 
+        type DataIter<'a> = core::iter::Once<&'a [u8]>;
+
+        fn data_iter(&self) -> Self::DataIter<'_> {
+            core::iter::once(&self[..])
+        }
+
+        type DataIterMut<'a> = core::iter::Once<&'a mut [u8]>;
+
+        fn data_iter_mut(&mut self) -> Self::DataIterMut<'_> {
+            core::iter::once(&mut self[..])
+        }
+
         fn truncate(mut self) -> Self::NoPayload {
             self.clear();
             EmptyVec(self)
@@ -231,7 +273,7 @@ mod vec {
             set_header: F,
         ) -> Result<Self, Error<E, Self>>
         where
-            F: FnOnce(&mut [u8]) -> Result<(), E>,
+            F: FnOnce(&mut [u8], Self::DataIter<'_>) -> Result<(), E>,
         {
             let len = match opt.truncate {
                 Some(truncate) => (size + self.len()).min(truncate),
@@ -241,7 +283,8 @@ mod vec {
             let mut ret = Vec::with_capacity(len);
             ret.resize(header_len, 0);
 
-            if let Err(err) = set_header(&mut ret[..]) {
+            if let Err(err) = set_header(&mut ret[..], core::iter::once(&self)) {
+                self.extend(&ret[header_len..]);
                 return Err((err, self).into());
             }
 

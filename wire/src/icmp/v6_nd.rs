@@ -261,9 +261,7 @@ impl Nd {
 #[cfg(test)]
 mod tests {
     use core::net::IpAddr;
-    use std::vec;
-
-    use cutenet_storage::{Buf, NoPayloadHolder};
+    use std::vec::Vec;
 
     use super::*;
     use crate::{context::Ends, ethernet, icmp::v6::Packet, Checksums};
@@ -305,12 +303,9 @@ mod tests {
 
     #[test]
     fn test_router_advert_construct() {
-        let repr = create_repr(NoPayloadHolder);
+        let repr = create_repr(Vec::new().reset());
 
-        let bytes = vec![0x0; 24];
-        let buf = Buf::builder(bytes).reserve_for(&repr);
-
-        let packet: Buf<_> = repr.sub_no_payload(|_| buf).build(&CX).unwrap();
-        assert_eq!(packet.data(), &ROUTER_ADVERT_BYTES[..]);
+        let packet = repr.build(&CX).unwrap();
+        assert_eq!(packet, &ROUTER_ADVERT_BYTES[..]);
     }
 }

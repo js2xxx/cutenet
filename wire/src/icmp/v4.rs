@@ -216,15 +216,15 @@ wire!(impl RawPacket {
 
 impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     /// Validate the header checksum.
-    pub fn verify_checksum(&self) -> bool {
-        checksum::data(self.0.as_ref()) == !0
+    pub fn verify_checksum<'a>(&self, next_iter: impl Iterator<Item = &'a [u8]>) -> bool {
+        checksum::data_iter(self.0.as_ref(), next_iter).0 == !0
     }
 }
 
 impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
-    pub fn fill_checksum(&mut self) {
+    pub fn fill_checksum<'a>(&mut self, next_iter: impl Iterator<Item = &'a [u8]>) {
         self.set_checksum(0);
-        let checksum = !checksum::data(self.0.as_ref());
+        let checksum = !checksum::data_iter(self.0.as_ref(), next_iter).0;
         self.set_checksum(checksum)
     }
 }
@@ -266,7 +266,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
             return Err(ParseErrorKind::PacketTooShort.with(raw));
         }
 
-        if cx.checksums().icmp() && !packet.verify_checksum() {
+        if cx.checksums().icmp() && !packet.verify_checksum(raw.next_data_iter()) {
             return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
@@ -312,21 +312,25 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
     }
 
     fn build(self, cx: &dyn WireCx) -> Result<P, BuildError<P>> {
-        let checksum = |mut packet: RawPacket<&mut [u8]>| {
+        fn checksum<'a>(
+            mut packet: RawPacket<&mut [u8]>,
+            next_iter: impl Iterator<Item = &'a [u8]>,
+            cx: &dyn WireCx,
+        ) -> Result<(), BuildErrorKind> {
             if cx.checksums().icmp() {
-                packet.fill_checksum();
+                packet.fill_checksum(next_iter);
             } else {
                 // make sure we get a consistently zeroed checksum,
                 // since implementations might rely on it
                 packet.set_checksum(0);
             }
             Ok(())
-        };
+        }
 
         let opt = PushOption::new().truncate(usize::MAX);
         match self {
             Packet::EchoRequest { ident, seq_no, payload } => {
-                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
+                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf, iter| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::EchoRequest);
@@ -334,11 +338,11 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                     packet.set_echo_ident(ident);
                     packet.set_echo_seq_no(seq_no);
 
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
             Packet::EchoReply { ident, seq_no, payload } => {
-                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf| {
+                payload.build(cx)?.push(field::ECHO_SEQNO.end, |buf, iter| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::EchoReply);
@@ -346,27 +350,27 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
                     packet.set_echo_ident(ident);
                     packet.set_echo_seq_no(seq_no);
 
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
             Packet::DstUnreachable { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf, iter| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::DstUnreachable);
                     packet.set_msg_code(reason.into());
 
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
             Packet::TimeExceeded { reason, payload } => {
-                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf| {
+                (payload.build(&())?).push_with(field::UNUSED.end, &opt, |buf, iter| {
                     let mut packet = RawPacket(buf);
 
                     packet.set_msg_type(Message::TimeExceeded);
                     packet.set_msg_code(reason.into());
 
-                    checksum(packet)
+                    checksum(packet, iter, cx)
                 })
             }
         }
@@ -375,9 +379,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
-
-    use cutenet_storage::{Buf, PayloadHolder};
+    use std::vec::Vec;
 
     use super::*;
     use crate::Checksums;
@@ -405,14 +407,10 @@ mod tests {
         let tag = Packet::EchoRequest {
             ident: 0x1234,
             seq_no: 0xabcd,
-            payload: PayloadHolder(ECHO_DATA_BYTES.len()),
+            payload: Vec::from(ECHO_DATA_BYTES),
         };
 
-        let bytes = vec![0xa5; 12];
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
-        payload.append_slice(&ECHO_DATA_BYTES);
-
-        let packet = tag.sub_payload(|_| payload).build(&CX).unwrap();
-        assert_eq!(packet.data(), &ECHO_PACKET_BYTES[..]);
+        let packet = tag.build(&CX).unwrap();
+        assert_eq!(packet, &ECHO_PACKET_BYTES[..]);
     }
 }

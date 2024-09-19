@@ -105,10 +105,10 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Header<T> {
 
         let payload = payload.build(cx)?;
 
-        payload.push(header_len, |raw| {
+        payload.push(header_len, |buf, _| {
             let data_len =
                 u8::try_from((header_len - 1) / 8).map_err(|_| BuildErrorKind::PayloadTooLong)?;
-            let mut raw_header = RawHeader(raw);
+            let mut raw_header = RawHeader(buf);
 
             raw_header.set_next_header(next_header);
             raw_header.set_data_len(data_len);
@@ -125,8 +125,6 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Header<T> {
 
 #[cfg(test)]
 mod test {
-    use cutenet_storage::{Buf, PayloadHolder};
-
     use super::*;
 
     // A Hop-by-Hop Option header with a PadN option of option data length 4.
@@ -196,23 +194,17 @@ mod test {
         let repr = Header {
             next_header: IpProtocol::Tcp,
             options: [Opt::PadN(4)].into_iter().collect(),
-            payload: PayloadHolder(0),
+            payload: std::vec::Vec::new(),
         };
-        let buf = Buf::builder(std::vec![0x1f; repr.buffer_len()])
-            .reserve_for(&repr)
-            .build();
-        let header = repr.sub_payload(|_| buf).build(&()).unwrap();
-        assert_eq!(header.data(), &REPR_PACKET_PAD4);
+        let header = repr.build(&()).unwrap();
+        assert_eq!(header, &REPR_PACKET_PAD4);
 
         let repr = Header {
             next_header: IpProtocol::Tcp,
             options: [Opt::PadN(12)].into_iter().collect(),
-            payload: PayloadHolder(0),
+            payload: std::vec::Vec::new(),
         };
-        let buf = Buf::builder(std::vec![0x1f; repr.buffer_len()])
-            .reserve_for(&repr)
-            .build();
-        let header = repr.sub_payload(|_| buf).build(&()).unwrap();
-        assert_eq!(header.data(), &REPR_PACKET_PAD12);
+        let header = repr.build(&()).unwrap();
+        assert_eq!(header, &REPR_PACKET_PAD12);
     }
 }

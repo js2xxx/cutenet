@@ -144,7 +144,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Frame<T> {
             payload,
         } = self;
 
-        payload.build(&[cx, &(protocol,)])?.push(HEADER_LEN, |buf| {
+        payload.build(&[cx, &(protocol,)])?.push(HEADER_LEN, |buf, _| {
             let mut frame = RawFrame(buf);
             frame.set_src_addr(src);
             frame.set_dst_addr(dst);
@@ -226,9 +226,7 @@ mod tests {
 
 #[cfg(test)]
 mod test_ipv4 {
-    use std::vec;
-
-    use cutenet_storage::{Buf, PayloadHolder};
+    use std::vec::Vec;
 
     // Tests that are valid only with "proto-ipv4"
     use super::*;
@@ -267,23 +265,17 @@ mod test_ipv4 {
                 dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
             },
             protocol: Protocol::Ipv4,
-            payload: PayloadHolder(PAYLOAD_BYTES.len()),
+            payload: Vec::from(PAYLOAD_BYTES),
         };
 
-        let bytes = vec![0xa5; 64];
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
-        payload.append_slice(&PAYLOAD_BYTES[..]);
-
-        let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
-        assert_eq!(frame.data(), &FRAME_BYTES[..]);
+        let frame = tag.build(&()).unwrap();
+        assert_eq!(frame, &FRAME_BYTES[..]);
     }
 }
 
 #[cfg(test)]
 mod test_ipv6 {
-    use std::vec;
-
-    use cutenet_storage::{Buf, PayloadHolder};
+    use std::vec::Vec;
 
     // Tests that are valid only with "proto-ipv6"
     use super::*;
@@ -320,15 +312,10 @@ mod test_ipv6 {
                 dst: Addr([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
             },
             protocol: Protocol::Ipv6,
-            payload: PayloadHolder(PAYLOAD_BYTES.len()),
+            payload: Vec::from(PAYLOAD_BYTES),
         };
 
-        let bytes = vec![0xa5; 54];
-
-        let mut payload = Buf::builder(bytes).reserve_for(&tag).build();
-        payload.append_slice(&PAYLOAD_BYTES[..]);
-
-        let frame = tag.sub_payload(|_| payload).build(&()).unwrap();
-        assert_eq!(frame.data(), &FRAME_BYTES[..]);
+        let frame = tag.build(&()).unwrap();
+        assert_eq!(frame, &FRAME_BYTES[..]);
     }
 }

@@ -5,7 +5,7 @@ use core::{
 
 use super::{
     CongestionController, RecvError, RecvErrorKind, RecvState, SendError, SendErrorKind, SendState,
-    TcpSocket, TcpConfig, TcpSend, TcpState,
+    TcpConfig, TcpSend, TcpSocket, TcpState,
 };
 use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*};
 

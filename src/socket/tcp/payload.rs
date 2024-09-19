@@ -28,6 +28,18 @@ impl<P: Payload> Payload for Tagged<P> {
         self.extra_len + self.payload.len()
     }
 
+    type DataIter<'a> = P::DataIter<'a> where P: 'a;
+
+    fn data_iter(&self) -> Self::DataIter<'_> {
+        self.payload.data_iter()
+    }
+
+    type DataIterMut<'a> = P::DataIterMut<'a> where P: 'a;
+
+    fn data_iter_mut(&mut self) -> Self::DataIterMut<'_> {
+        self.payload.data_iter_mut()
+    }
+
     fn truncate(self) -> Self::NoPayload {
         Tagged {
             payload: self.payload.truncate(),

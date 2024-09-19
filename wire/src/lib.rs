@@ -16,7 +16,7 @@ mod context;
 pub use self::context::{Ends, WireCx};
 
 mod traits;
-pub use self::traits::{ReserveExt, Wire, WireBuild, WireParse, WireSubNoPayload, WireSubstitute};
+pub use self::traits::{Wire, WireBuild, WireParse, WireSubNoPayload, WireSubstitute};
 
 mod error;
 pub use self::error::{BuildError, BuildErrorKind, ParseError, ParseErrorKind};

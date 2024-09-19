@@ -6,9 +6,6 @@ use core::ops::DerefMut;
 
 use stable_deref_trait::StableDeref;
 
-mod buf;
-pub use self::buf::{Buf, ReserveBuf};
-
 mod holder;
 pub use self::holder::{NoPayloadHolder, PayloadHolder};
 

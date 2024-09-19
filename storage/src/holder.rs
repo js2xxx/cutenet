@@ -15,6 +15,18 @@ impl Payload for PayloadHolder {
         self.0
     }
 
+    type DataIter<'a> = core::iter::Empty<&'a [u8]>;
+
+    fn data_iter(&self) -> Self::DataIter<'_> {
+        core::iter::empty()
+    }
+
+    type DataIterMut<'a> = core::iter::Empty<&'a mut [u8]>;
+
+    fn data_iter_mut(&mut self) -> Self::DataIterMut<'_> {
+        core::iter::empty()
+    }
+
     fn truncate(self) -> Self::NoPayload {
         NoPayloadHolder
     }
@@ -52,7 +64,7 @@ impl PayloadBuild for PayloadHolder {
         _set_header: F,
     ) -> Result<Self, Error<E, Self>>
     where
-        F: FnOnce(&mut [u8]) -> Result<(), E>,
+        F: FnOnce(&mut [u8], Self::DataIter<'_>) -> Result<(), E>,
     {
         Ok(PayloadHolder(self.0 + size))
     }

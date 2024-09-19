@@ -231,13 +231,16 @@ impl<T: AsRef<[u8]> + ?Sized> RawPacket<T> {
     ///
     /// This function panics unless `src_addr` and `dst_addr` belong to the same
     /// family, and that family is IPv4 or IPv6.
-    pub fn verify_checksum(&self, addr: Ends<IpAddr>) -> bool {
-        let data = self.0.as_ref();
-        let combine = checksum::combine(&[
-            checksum::pseudo_header(&addr.src, &addr.dst, ip::Protocol::Tcp, data.len() as u32),
-            checksum::data(data),
-        ]);
-        combine == !0
+    pub fn verify_checksum<'a>(
+        &self,
+        addr: Ends<IpAddr>,
+        next_iter: impl Iterator<Item = &'a [u8]>,
+    ) -> bool {
+        let (data_sum, data_len) = checksum::data_iter(self.0.as_ref(), next_iter);
+        checksum::combine(&[
+            checksum::pseudo_header(&addr.src, &addr.dst, ip::Protocol::Tcp, data_len as u32),
+            data_sum,
+        ]) == !0
     }
 
     pub fn options(&self) -> &[u8] {
@@ -251,15 +254,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> RawPacket<T> {
     /// # Panics
     /// This function panics unless `src_addr` and `dst_addr` belong to the same
     /// family, and that family is IPv4 or IPv6.
-    pub fn fill_checksum(&mut self, addr: Ends<IpAddr>) {
+    pub fn fill_checksum<'a>(
+        &mut self,
+        addr: Ends<IpAddr>,
+        next_iter: impl Iterator<Item = &'a [u8]>,
+    ) {
         self.set_checksum(0);
-        let checksum = {
-            let data = self.0.as_ref();
-            !checksum::combine(&[
-                checksum::pseudo_header(&addr.src, &addr.dst, ip::Protocol::Tcp, data.len() as u32),
-                checksum::data(data),
-            ])
-        };
+        let (data_sum, data_len) = checksum::data_iter(self.0.as_ref(), next_iter);
+        let checksum = !checksum::combine(&[
+            checksum::pseudo_header(&addr.src, &addr.dst, ip::Protocol::Tcp, data_len as u32),
+            data_sum,
+        ]);
         self.set_checksum(checksum);
     }
 
@@ -322,7 +327,7 @@ impl<P: PayloadParse, T: WireParse<Payload = P>> WireParse for Packet<T> {
         }
 
         // Valid checksum is expected.
-        if cx.checksums().tcp() && !packet.verify_checksum(cx.ip_addrs()) {
+        if cx.checksums().tcp() && !packet.verify_checksum(cx.ip_addrs(), raw.next_data_iter()) {
             return Err(ParseErrorKind::ChecksumInvalid.with(raw));
         }
 
@@ -443,7 +448,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             payload,
         } = self;
 
-        payload.build(cx)?.push(header_len, |buf| {
+        payload.build(cx)?.push(header_len, |buf, iter| {
             let mut packet = RawPacket(buf);
 
             packet.set_src_port(src);
@@ -493,7 +498,7 @@ impl<P: PayloadBuild, T: WireBuild<Payload = P>> WireBuild for Packet<T> {
             packet.set_urgent_at(0);
 
             if cx.checksums().tcp() {
-                packet.fill_checksum(cx.ip_addrs())
+                packet.fill_checksum(cx.ip_addrs(), iter)
             } else {
                 // make sure we get a consistently zeroed checksum,
                 // since implementations might rely on it
@@ -554,9 +559,7 @@ impl<T: Wire> Packet<T> {
 #[cfg(test)]
 mod tests {
     use core::net::Ipv4Addr;
-    use std::vec;
-
-    use cutenet_storage::{Buf, PayloadHolder};
+    use std::vec::Vec;
 
     use super::*;
     use crate::Checksums;
@@ -618,13 +621,9 @@ mod tests {
 
     #[test]
     fn test_construct() {
-        let repr = packet_repr(PayloadHolder(PAYLOAD_BYTES.len()));
-        let bytes = vec![0xa5; repr.buffer_len()];
-        let mut payload = Buf::builder(bytes).reserve_for(&repr).build();
-        payload.append_slice(&PAYLOAD_BYTES);
-
-        let packet = repr.sub_payload(|_| payload).build(&CX).unwrap();
-        assert_eq!(packet.data(), &SYN_PACKET_BYTES[..]);
+        let repr = packet_repr(Vec::from(PAYLOAD_BYTES));
+        let packet = repr.build(&CX).unwrap();
+        assert_eq!(packet, &SYN_PACKET_BYTES[..]);
     }
 
     #[test]
