@@ -5,7 +5,7 @@ use core::{
 
 use super::{
     CongestionController, RecvError, RecvErrorKind, RecvState, SendError, SendErrorKind, SendState,
-    Tcb, TcpConfig, TcpSend, TcpState,
+    TcpSocket, TcpConfig, TcpSend, TcpState,
 };
 use crate::{route::Router, socket::SocketRx, storage::*, time::Instant, wire::*};
 
@@ -46,7 +46,7 @@ impl<H: BuildHasher> TcpListener<H> {
         ip: Ends<IpAddr>,
         packet: TcpPacket<P>,
         config: impl FnOnce() -> TcpConfig<C>,
-    ) -> Result<Option<Tcb<P, C>>, RecvError<TcpPacket<P>>>
+    ) -> Result<Option<TcpSocket<P, C>>, RecvError<TcpPacket<P>>>
     where
         P: PayloadBuild,
         C: CongestionController,
@@ -126,7 +126,7 @@ impl<H: BuildHasher> TcpListener<H> {
         ip: Ends<IpAddr>,
         packet: TcpPacket<P>,
         config: impl FnOnce() -> TcpConfig<C>,
-    ) -> Result<Option<Tcb<P, C>>, RecvError<TcpPacket<P>>>
+    ) -> Result<Option<TcpSocket<P, C>>, RecvError<TcpPacket<P>>>
     where
         P: PayloadBuild,
         C: CongestionController,
@@ -140,13 +140,13 @@ impl<H: BuildHasher> TcpListener<H> {
         let mut config = config();
         config.congestion.set_mss(usize::from(mss));
 
-        Ok(Some(Tcb::establish(
+        Ok(Some(TcpSocket::establish(
             endpoint, &packet, config, mss, can_sack,
         )))
     }
 }
 
-impl<P, C> Tcb<P, C>
+impl<P, C> TcpSocket<P, C>
 where
     P: Payload,
     C: CongestionController,
@@ -157,11 +157,11 @@ where
         config: TcpConfig<C>,
         mss: u16,
         can_sack: bool,
-    ) -> Tcb<P, C>
+    ) -> TcpSocket<P, C>
     where
         C: CongestionController,
     {
-        Tcb {
+        TcpSocket {
             endpoint,
             state: TcpState::Established,
             send: SendState {
@@ -194,7 +194,7 @@ where
     }
 }
 
-impl<P, C> Tcb<P, C>
+impl<P, C> TcpSocket<P, C>
 where
     P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
     C: CongestionController,
@@ -222,7 +222,7 @@ where
 
         let config = config();
 
-        let mut tcb = Tcb {
+        let mut tcb = TcpSocket {
             endpoint,
             state: TcpState::SynSent,
             send: SendState {
@@ -230,7 +230,7 @@ where
                 fin: TcpSeqNumber(u32::MAX),
                 unacked: init_seq,
                 next: init_seq + 1,
-                window: config.congestion.window(),
+                window: usize::MAX,
                 seq_lw: TcpSeqNumber(0),
                 ack_lw: init_seq,
                 dup_acks: 0,

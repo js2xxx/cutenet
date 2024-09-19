@@ -1,7 +1,7 @@
 use core::ops::DerefMut;
 
 use super::{
-    payload::Tagged, CongestionController, SendError, SendErrorKind, SendState, Tcb, TcpState,
+    payload::Tagged, CongestionController, SendError, SendErrorKind, SendState, TcpSocket, TcpState,
 };
 use crate::{
     iface::NetTx, phy::DeviceCaps, route::Router, stack::StackTx, storage::*, time::Instant,
@@ -26,7 +26,7 @@ impl<P: PayloadSplit> SendState<P> {
     }
 }
 
-pub trait TcpStream<P, C>: DerefMut<Target = Tcb<P, C>> + Sized {
+pub trait TcpSendExt<P, C>: DerefMut<Target = TcpSocket<P, C>> + Sized {
     fn send_data<R: Router<P>>(
         self,
         now: Instant,
@@ -56,12 +56,7 @@ pub trait TcpStream<P, C>: DerefMut<Target = Tcb<P, C>> + Sized {
         if !self.may_send() {
             return Err(SendErrorKind::InvalidState(self.state).into());
         }
-        let ip = self.endpoint.map(|s| s.ip());
-
-        let tx = crate::stack::dispatch(router, now, ip, IpProtocol::Tcp)
-            .map_err(SendErrorKind::Dispatch)?;
-
-        Ok(TcpSend::new(self, tx))
+        send_impl(self, now, router)
     }
 
     fn close<R: Router<P>>(
@@ -89,7 +84,7 @@ pub trait TcpStream<P, C>: DerefMut<Target = Tcb<P, C>> + Sized {
             | TcpState::Closed => return Ok(()),
         }
 
-        match self.send(now, router) {
+        match send_impl(self, now, router) {
             Ok(tx) => {
                 let packet = TcpPacket {
                     port: tx.obj.endpoint.map(|s| s.port()),
@@ -118,7 +113,25 @@ pub trait TcpStream<P, C>: DerefMut<Target = Tcb<P, C>> + Sized {
     }
 }
 
-impl<W: DerefMut<Target = Tcb<P, C>>, P, C> TcpStream<P, C> for W {}
+fn send_impl<S, P, C, R: Router<P>>(
+    s: S,
+    now: Instant,
+    router: &mut R,
+) -> Result<TcpSend<S, P, <R as Router<P>>::Tx<'_>>, SendError>
+where
+    S: TcpSendExt<P, C>,
+    P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
+    C: CongestionController,
+{
+    let ip = s.endpoint.map(|s| s.ip());
+
+    let tx = crate::stack::dispatch(router, now, ip, IpProtocol::Tcp)
+        .map_err(SendErrorKind::Dispatch)?;
+
+    Ok(TcpSend::new(s, tx))
+}
+
+impl<W: DerefMut<Target = TcpSocket<P, C>>, P, C> TcpSendExt<P, C> for W {}
 
 #[derive(Debug)]
 pub struct TcpSend<T, P, Tx> {
@@ -128,7 +141,7 @@ pub struct TcpSend<T, P, Tx> {
 
 pub type TcpSendPacket<P, Tx> = TcpSend<(IpPacket<TcpPacket<P>>, Option<P>), P, Tx>;
 
-impl<P, C> Tcb<P, C>
+impl<P, C> TcpSocket<P, C>
 where
     P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
     C: CongestionController,
@@ -201,7 +214,7 @@ impl<T, P, Tx> TcpSend<T, P, Tx> {
 
 impl<W, P, C, Tx> TcpSend<W, P, Tx>
 where
-    W: DerefMut<Target = Tcb<P, C>>,
+    W: DerefMut<Target = TcpSocket<P, C>>,
     P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
     C: CongestionController,
     Tx: NetTx<P>,

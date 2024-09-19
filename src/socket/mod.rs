@@ -27,6 +27,27 @@ pub trait SocketRx {
     ) -> Result<(), RxError<Self::Item>>;
 }
 
+impl<S: SocketRx<Item = T>, T> SocketRx for &mut S {
+    type Item = T;
+
+    fn is_connected(&self) -> bool {
+        S::is_connected(self)
+    }
+
+    fn is_full(&self) -> bool {
+        S::is_full(self)
+    }
+
+    fn receive(
+        &mut self,
+        now: Instant,
+        src: IpAddr,
+        data: Self::Item,
+    ) -> Result<(), RxError<Self::Item>> {
+        S::receive(self, now, src, data)
+    }
+}
+
 pub trait RawSocketSet<P: Payload> {
     fn receive(&mut self, now: Instant, device_caps: &DeviceCaps, packet: &IpPacket<P>) -> bool;
 }

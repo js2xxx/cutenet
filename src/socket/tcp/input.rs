@@ -1,15 +1,18 @@
 use core::{
     net::{IpAddr, SocketAddr},
-    ops::Range,
+    ops::{DerefMut, Range},
 };
 
-use super::{payload::Tagged, CongestionController, RecvState, SendState, Tcb, TcpState};
+use super::{payload::Tagged, CongestionController, RecvState, SendState, TcpSocket, TcpState};
 use crate::{
     error::Error,
+    route::Router,
     socket::{RxErrorKind, SocketRx},
+    stack::DispatchError,
     storage::*,
     time::{Instant, PollAt},
     wire::*,
+    TxResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +114,7 @@ impl<P: PayloadMerge + PayloadSplit> RecvState<P> {
     }
 }
 
-impl<P, C> Tcb<P, C>
+impl<P, C> TcpSocket<P, C>
 where
     P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
     C: CongestionController,
@@ -123,15 +126,21 @@ where
     pub fn accepts(&self, ip: Ends<IpAddr>, packet: TcpPacket<P>) -> bool {
         self.endpoint == ip.zip_map(packet.port, SocketAddr::new).reverse()
     }
+}
 
-    pub fn process(
-        &mut self,
+pub trait TcpRecvExt<P, C>: DerefMut<Target = TcpSocket<P, C>> + Sized {
+    fn process(
+        mut self,
         now: Instant,
         ip: Ends<IpAddr>,
         packet: TcpPacket<P>,
         mut reply_buf: impl FnMut() -> P::NoPayload,
-        rx: &mut impl SocketRx<Item = (P, TcpControl)>,
-    ) -> (Option<IpPacket<TcpPacket<P>>>, RecvResult) {
+        mut rx: impl SocketRx<Item = (P, TcpControl)>,
+    ) -> (Option<TcpReply<P>>, RecvResult)
+    where
+        P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
+        C: CongestionController,
+    {
         // (1) https://datatracker.ietf.org/doc/html/rfc9293#name-syn-sent-state, or
         // (2) https://datatracker.ietf.org/doc/html/rfc9293#name-other-states
         if self.timer.should_close(now) || !rx.is_connected() {
@@ -208,7 +217,8 @@ where
         match self.send.ack(seq_number, ack_number, packet.window_len) {
             AckResult::Ok => {
                 if !self.timer.is_retransmit() {
-                    self.timer.set_for_idle(now, self.keep_alive);
+                    let interval = self.keep_alive;
+                    self.timer.set_for_idle(now, interval);
                 }
             }
             AckResult::Duplicate(times) => {
@@ -234,8 +244,8 @@ where
         }
         self.send.sack(packet.sack_ranges);
         self.rtte.packet_acked(now, ack_number);
-        self.congestion
-            .on_ack(now, packet.segment_len(), &self.rtte);
+        let tcb = &mut *self;
+        tcb.congestion.on_ack(now, packet.segment_len(), &tcb.rtte);
 
         let mut reply = None;
 
@@ -245,7 +255,8 @@ where
             (TcpState::SynSent, _) => {
                 if self.send.unacked > self.send.initial {
                     self.state = TcpState::Established;
-                    self.timer.set_for_idle(now, self.keep_alive);
+                    let interval = self.keep_alive;
+                    self.timer.set_for_idle(now, interval);
 
                     reply = Some(self.challenge_ack(&mut reply_buf));
                 } else {
@@ -351,10 +362,12 @@ where
         }
 
         if let Some(_delta) = self.timer.should_retransmit(now) {
-            self.timer.set_for_idle(now, self.keep_alive);
+            let interval = self.keep_alive;
+            self.timer.set_for_idle(now, interval);
             self.congestion.on_retransmit(now);
 
-            let next = self.send.retx.peek(self.send.next).next();
+            let end = self.send.next;
+            let next = self.send.retx.peek(end).next();
             if let Some((seq, data)) = next {
                 reply = Some(self.retx_reply(seq, data.control, data.payload));
             }
@@ -365,31 +378,37 @@ where
         }
 
         if reply.is_some() {
-            self.timer.rewind_keep_alive(now, self.keep_alive);
+            let interval = self.keep_alive;
+            self.timer.rewind_keep_alive(now, interval);
         }
 
         (reply, RecvResult::Ok(self.poll_at()))
     }
 
-    pub fn poll_timeout(
-        &mut self,
+    fn poll_timeout(
+        mut self,
         now: Instant,
         mut reply_buf: impl FnMut() -> P::NoPayload,
-        rx: &impl SocketRx<Item = (P, TcpControl)>,
-    ) -> (Option<IpPacket<TcpPacket<P>>>, RecvResult) {
+    ) -> (Option<TcpReply<P>>, RecvResult)
+    where
+        P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
+        C: CongestionController,
+    {
         // https://datatracker.ietf.org/doc/html/rfc9293#name-timeouts
 
-        if self.timer.should_close(now) || rx.is_connected() {
+        if self.timer.should_close(now) {
             self.state = TcpState::Closed;
             return (None, RecvResult::Remove);
         }
 
+        let keep_alive = self.keep_alive;
         let reply = (self.timer.should_retransmit(now))
             .and_then(|_| {
-                self.timer.set_for_idle(now, self.keep_alive);
+                self.timer.set_for_idle(now, keep_alive);
                 self.congestion.on_retransmit(now);
 
-                let next = self.send.retx.peek(self.send.next).next();
+                let end = self.send.next;
+                let next = self.send.retx.peek(end).next();
                 next.map(|(seq, data)| self.retx_reply(seq, data.control, data.payload))
             })
             .or_else(|| {
@@ -399,14 +418,33 @@ where
 
         if reply.is_some() {
             self.ack_delay_timer.reset();
-            self.timer.rewind_keep_alive(now, self.keep_alive);
+            self.timer.rewind_keep_alive(now, keep_alive);
         }
 
         (reply, RecvResult::Ok(self.poll_at()))
     }
 }
 
-impl<P, C> Tcb<P, C>
+#[derive(Debug)]
+pub struct TcpReply<P>(IpPacket<TcpPacket<P>>);
+
+impl<P: PayloadBuild> TcpReply<P> {
+    pub fn consume(
+        self,
+        now: Instant,
+        mut router: impl Router<P>,
+    ) -> Result<TxResult, DispatchError> {
+        let tx = crate::stack::dispatch(&mut router, now, self.0.ip_addr(), self.0.next_header())?;
+
+        let device_caps = tx.device_caps();
+        let packet = self
+            .0
+            .map_wire(|tcp, ip| uncheck_build!(tcp.build(&(device_caps.tx_checksums, ip))));
+        Ok(tx.comsume(now, packet))
+    }
+}
+
+impl<P, C> TcpSocket<P, C>
 where
     P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
     C: CongestionController,
@@ -418,7 +456,7 @@ where
         control: TcpControl,
         window: usize,
         buf: impl FnOnce(usize) -> P,
-    ) -> IpPacket<TcpPacket<P>> {
+    ) -> TcpReply<P> {
         let packet = TcpPacket {
             port: self.endpoint.map(|s| s.port()),
             control,
@@ -441,10 +479,10 @@ where
         let buf = buf(packet.header_len());
         let packet = packet.sub_payload(|_| buf);
         let ip = self.endpoint.map(|s| s.ip());
-        IpPacket::new(ip, IpProtocol::Tcp, self.hop_limit, packet)
+        TcpReply(IpPacket::new(ip, IpProtocol::Tcp, self.hop_limit, packet))
     }
 
-    fn challenge_ack(&self, mut reply_buf: impl FnMut() -> P::NoPayload) -> IpPacket<TcpPacket<P>> {
+    fn challenge_ack(&self, mut reply_buf: impl FnMut() -> P::NoPayload) -> TcpReply<P> {
         self.reply(
             self.send.next,
             Some(self.recv.next),
@@ -454,10 +492,7 @@ where
         )
     }
 
-    fn challenge_ack_congested(
-        &self,
-        mut reply_buf: impl FnMut() -> P::NoPayload,
-    ) -> IpPacket<TcpPacket<P>> {
+    fn challenge_ack_congested(&self, mut reply_buf: impl FnMut() -> P::NoPayload) -> TcpReply<P> {
         self.reply(
             self.send.next,
             Some(self.recv.next),
@@ -471,7 +506,7 @@ where
         &self,
         seq: TcpSeqNumber,
         mut reply_buf: impl FnMut() -> P::NoPayload,
-    ) -> IpPacket<TcpPacket<P>> {
+    ) -> TcpReply<P> {
         self.reply(
             seq,
             None,
@@ -486,13 +521,13 @@ where
         seq: TcpSeqNumber,
         ack: TcpSeqNumber,
         mut reply_buf: impl FnMut() -> P::NoPayload,
-    ) -> IpPacket<TcpPacket<P>> {
+    ) -> TcpReply<P> {
         self.reply(seq, Some(ack), TcpControl::Rst, 0, |header_len| {
             reply_buf().reserve(header_len).init()
         })
     }
 
-    fn retx_reply(&self, seq: TcpSeqNumber, control: TcpControl, buf: P) -> IpPacket<TcpPacket<P>> {
+    fn retx_reply(&self, seq: TcpSeqNumber, control: TcpControl, buf: P) -> TcpReply<P> {
         let window = self.congestion.window();
         self.reply(seq, Some(self.recv.next), control, window, |_| buf)
     }

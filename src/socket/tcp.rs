@@ -15,8 +15,8 @@ use self::payload::Tagged;
 pub use self::{
     congestion::{cubic::Cubic, reno::Reno, CongestionController},
     conn::TcpListener,
-    input::RecvResult,
-    output::{TcpSend, TcpSendPacket, TcpStream},
+    input::{RecvResult, TcpRecvExt, TcpReply},
+    output::{TcpSend, TcpSendExt, TcpSendPacket},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +131,7 @@ where
 }
 
 #[derive(Debug)]
-pub struct Tcb<P, C> {
+pub struct TcpSocket<P, C> {
     endpoint: Ends<SocketAddr>,
     state: TcpState,
 
@@ -151,7 +151,7 @@ pub struct Tcb<P, C> {
     last_timestamp: u32,
 }
 
-impl<P, C> Tcb<P, C> {
+impl<P, C> TcpSocket<P, C> {
     pub fn poll_at(&self) -> PollAt {
         (self.timer.poll_at()).min(self.ack_delay_timer.poll_at())
     }
