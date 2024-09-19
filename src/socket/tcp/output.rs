@@ -198,7 +198,7 @@ where
         self.timer.set_for_retx(now, self.rtte.retx_timeout());
 
         self.congestion.post_transmit(now, packet.payload_len());
-        self.rtte.packet_sent(now, self.send.next);
+        self.rtte.on_transmit(now, self.send.next);
         self.timer.rewind_keep_alive(now, self.keep_alive);
         self.ack_delay_timer.reset();
 

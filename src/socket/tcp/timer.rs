@@ -38,10 +38,6 @@ impl RttData {
         self.srtt = (self.srtt * (ALPHA_INV - 1) + (rtt - self.srtt)) / ALPHA_INV;
         self.timeout = timeout(self.srtt, self.rttvar);
     }
-
-    fn timeout(&self) -> Duration {
-        self.timeout
-    }
 }
 
 #[derive(Debug)]
@@ -61,10 +57,10 @@ impl RttEstimator {
     }
 
     pub fn retx_timeout(&self) -> Duration {
-        self.data.timeout()
+        self.data.timeout
     }
 
-    pub fn packet_sent(&mut self, now: Instant, end_seq: TcpSeqNumber) {
+    pub(super) fn on_transmit(&mut self, now: Instant, end_seq: TcpSeqNumber) {
         let updated = match self.last_sent {
             Some((_, sent)) => sent < end_seq,
             None => true,
@@ -75,7 +71,7 @@ impl RttEstimator {
         }
     }
 
-    pub fn packet_acked(&mut self, now: Instant, acked: TcpSeqNumber) {
+    pub(super) fn on_ack(&mut self, now: Instant, acked: TcpSeqNumber) {
         if let Some((sent_ts, sent_seq)) = self.last_sent
             && acked >= sent_seq
         {
@@ -84,7 +80,7 @@ impl RttEstimator {
         }
     }
 
-    pub fn packet_lost(&mut self) {
+    pub(super) fn on_retx(&mut self) {
         self.last_sent = None;
         self.retx_count += 1;
         if self.retx_count >= 3 {
@@ -101,7 +97,7 @@ impl Default for RttEstimator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Timer {
+pub(super) enum Timer {
     Idle {
         keep_alive_at: Option<Instant>,
     },
@@ -127,7 +123,7 @@ impl Timer {
         } if now >= keep_alive_at)
     }
 
-    pub fn should_retransmit(&self, now: Instant) -> Option<Duration> {
+    pub fn should_retx(&self, now: Instant) -> Option<Duration> {
         match *self {
             Timer::Retx { expires_at, delay } if now >= expires_at => {
                 Some(now - expires_at + delay)
@@ -197,7 +193,7 @@ impl Timer {
         *self = Timer::Close { expires_at: now + CLOSE_DELAY }
     }
 
-    pub fn is_retransmit(&self) -> bool {
+    pub fn is_retx(&self) -> bool {
         matches!(*self, Timer::Retx { .. } | Timer::FastRetx)
     }
 }

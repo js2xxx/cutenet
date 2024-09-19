@@ -216,7 +216,7 @@ pub trait TcpRecvExt<P, C>: DerefMut<Target = TcpSocket<P, C>> + Sized {
         // 5-2. ACK the send queue.
         match self.send.ack(seq_number, ack_number, packet.window_len) {
             AckResult::Ok => {
-                if !self.timer.is_retransmit() {
+                if !self.timer.is_retx() {
                     let interval = self.keep_alive;
                     self.timer.set_for_idle(now, interval);
                 }
@@ -243,7 +243,7 @@ pub trait TcpRecvExt<P, C>: DerefMut<Target = TcpSocket<P, C>> + Sized {
             }
         }
         self.send.sack(packet.sack_ranges);
-        self.rtte.packet_acked(now, ack_number);
+        self.rtte.on_ack(now, ack_number);
         let tcb = &mut *self;
         tcb.congestion.on_ack(now, packet.segment_len(), &tcb.rtte);
 
@@ -361,10 +361,11 @@ pub trait TcpRecvExt<P, C>: DerefMut<Target = TcpSocket<P, C>> + Sized {
             }
         }
 
-        if let Some(_delta) = self.timer.should_retransmit(now) {
+        if let Some(_delta) = self.timer.should_retx(now) {
             let interval = self.keep_alive;
             self.timer.set_for_idle(now, interval);
             self.congestion.on_retransmit(now);
+            self.rtte.on_retx();
 
             let end = self.send.next;
             let next = self.send.retx.peek(end).next();
@@ -402,10 +403,11 @@ pub trait TcpRecvExt<P, C>: DerefMut<Target = TcpSocket<P, C>> + Sized {
         }
 
         let keep_alive = self.keep_alive;
-        let reply = (self.timer.should_retransmit(now))
+        let reply = (self.timer.should_retx(now))
             .and_then(|_| {
                 self.timer.set_for_idle(now, keep_alive);
                 self.congestion.on_retransmit(now);
+                self.rtte.on_retx();
 
                 let end = self.send.next;
                 let next = self.send.retx.peek(end).next();
