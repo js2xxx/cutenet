@@ -55,32 +55,32 @@ impl fmt::Display for RecvErrorKind {
 }
 
 #[derive(Debug)]
-pub struct Socket {
+pub struct UdpSocket {
     addr: SocketAddr,
     peer: Option<SocketAddr>,
     hop_limit: u8,
 }
 
-impl Socket {
-    pub fn bind<P, Rx>(bind: SocketAddr, rx: Rx) -> Option<(Self, SocketRecv<P, Rx>)>
+impl UdpSocket {
+    pub fn bind<P, Rx>(bind: SocketAddr, rx: Rx) -> Option<(Self, UdpRecv<P, Rx>)>
     where
         P: Payload,
         Rx: SocketRx<Item = P>,
     {
         (bind.port() != 0).then(|| {
             (
-                Socket {
+                UdpSocket {
                     addr: bind,
                     peer: None,
                     hop_limit: 64,
                 },
-                SocketRecv { addr: bind, peer: None, rx },
+                UdpRecv { addr: bind, peer: None, rx },
             )
         })
     }
 }
 
-impl Socket {
+impl UdpSocket {
     pub const fn local(&self) -> SocketAddr {
         self.addr
     }
@@ -104,11 +104,11 @@ impl Socket {
         &mut self,
         peer: SocketAddr,
         rx: Rx,
-    ) -> Option<SocketRecv<P, Rx>> {
+    ) -> Option<UdpRecv<P, Rx>> {
         (peer.port() != 0).then(|| {
             self.peer = Some(peer);
 
-            SocketRecv {
+            UdpRecv {
                 addr: self.addr,
                 peer: self.peer,
                 rx,
@@ -121,7 +121,7 @@ impl Socket {
     }
 }
 
-impl Socket {
+impl UdpSocket {
     pub fn send_data<P: PayloadBuild, R: Router<P>>(
         &self,
         now: Instant,
@@ -138,7 +138,7 @@ impl Socket {
         &self,
         now: Instant,
         router: &'router mut R,
-    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError> {
+    ) -> Result<UdpSend<P, R::Tx<'router>>, SendError> {
         match self.peer {
             Some(dst) => self.send_to(now, router, dst),
             None => Err(SendErrorKind::NotConnected.into()),
@@ -163,7 +163,7 @@ impl Socket {
         now: Instant,
         router: &'router mut R,
         dst: SocketAddr,
-    ) -> Result<SocketSend<P, R::Tx<'router>>, SendError> {
+    ) -> Result<UdpSend<P, R::Tx<'router>>, SendError> {
         let src = self.addr;
 
         if dst.ip().is_unspecified() || dst.port() == 0 {
@@ -179,7 +179,7 @@ impl Socket {
         let tx = crate::stack::dispatch(router, now, ip, IpProtocol::Udp)
             .map_err(SendErrorKind::Dispatch)?;
 
-        Ok(SocketSend {
+        Ok(UdpSend {
             endpoint: Ends { src, dst },
             hop_limit: self.hop_limit,
             tx,
@@ -188,13 +188,13 @@ impl Socket {
 }
 
 #[derive(Debug, Clone)]
-pub struct SocketSend<P, Tx> {
+pub struct UdpSend<P, Tx> {
     endpoint: Ends<SocketAddr>,
     hop_limit: u8,
     tx: StackTx<P, Tx>,
 }
 
-impl<P: PayloadBuild, Tx: NetTx<P>> SocketSend<P, Tx> {
+impl<P: PayloadBuild, Tx: NetTx<P>> UdpSend<P, Tx> {
     pub fn device_caps(&self) -> DeviceCaps {
         self.tx.device_caps()
     }
@@ -224,7 +224,7 @@ impl<P: PayloadBuild, Tx: NetTx<P>> SocketSend<P, Tx> {
 }
 
 #[derive(Debug)]
-pub struct SocketRecv<P, Rx>
+pub struct UdpRecv<P, Rx>
 where
     P: Payload,
     Rx: SocketRx<Item = P> + ?Sized,
@@ -234,7 +234,7 @@ where
     rx: Rx,
 }
 
-impl<P, Rx> SocketRecv<P, Rx>
+impl<P, Rx> UdpRecv<P, Rx>
 where
     P: Payload,
     Rx: SocketRx<Item = P> + ?Sized,
