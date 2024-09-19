@@ -131,78 +131,20 @@ where
         packet: TcpPacket<P>,
         mut reply_buf: impl FnMut() -> P::NoPayload,
         rx: &mut impl SocketRx<Item = (P, TcpControl)>,
-    ) -> (Option<(u8, TcpPacket<P>)>, RecvResult) {
-        let mut reply = |tcb: &Self, seq, ack, control, window, buf: Option<P>| {
-            let packet = TcpPacket {
-                port: self.endpoint.map(|s| s.port()),
-                control,
-                seq_number: seq,
-                ack_number: ack,
-                window_len: window,
-                max_seg_size: None,
-                sack_permitted: true,
-                sack_ranges: if tcb.send.can_sack {
-                    tcb.recv.sack_ranges()
-                } else {
-                    [None; 3]
-                },
-                timestamp: TcpTimestamp::generate_reply_with_tsval(
-                    tcb.timestamp_gen,
-                    tcb.last_timestamp,
-                ),
-                payload: PayloadHolder(0),
-            };
-            let buf = buf.unwrap_or_else(|| reply_buf().reserve(packet.header_len()).init());
-            let packet = packet.sub_payload(|_| buf);
-            (tcb.hop_limit, packet)
-        };
-
-        macro_rules! reply {
-            (retx: $seq:expr, $control:expr, $buf:expr) => {{
-                reply(
-                    self,
-                    $seq,
-                    Some(self.recv.next),
-                    $control,
-                    self.congestion.window(),
-                    Some($buf)
-                )
-            }};
-            (challenge_ack: $($t:tt)*) => {{
-                reply(
-                    self,
-                    self.send.next,
-                    Some(self.recv.next),
-                    TcpControl::None,
-                    $($t)*,
-                    None,
-                )
-            }};
-            (challenge_ack) => {
-                reply!(challenge_ack: self.congestion.window())
-            };
-            (seq: $seq:expr, $control:expr $(,)?) => {{
-                reply(self, $seq, None, $control, self.congestion.window(), None)
-            }};
-            (seq: $seq:expr,ack: $ack:expr, $control:expr $(,)?) => {{
-                reply(self, $seq, Some($ack), $control, self.congestion.window(), None)
-            }};
-        }
-
+    ) -> (Option<IpPacket<TcpPacket<P>>>, RecvResult) {
         // (1) https://datatracker.ietf.org/doc/html/rfc9293#name-syn-sent-state, or
         // (2) https://datatracker.ietf.org/doc/html/rfc9293#name-other-states
-        if self.timer.should_close(now) {
+        if self.timer.should_close(now) || !rx.is_connected() {
             self.state = TcpState::Closed;
         }
 
-        if self.state == TcpState::Closed || !rx.is_connected() {
-            self.state = TcpState::Closed;
+        if self.state == TcpState::Closed {
             let reply = match packet.ack_number {
-                Some(ack) => reply!(seq: ack, TcpControl::Rst),
-                None => reply!(
-                    seq: TcpSeqNumber(0),
-                    ack: packet.seq_number + packet.segment_len(),
-                    TcpControl::Rst,
+                Some(ack) => self.rst_reply(ack, &mut reply_buf),
+                None => self.rst_ack_reply(
+                    TcpSeqNumber(0),
+                    packet.seq_number + packet.segment_len(),
+                    &mut reply_buf,
                 ),
             };
             return (Some(reply), RecvResult::Remove);
@@ -214,7 +156,8 @@ where
             packet.seq_number,
             packet.segment_len(),
         ) else {
-            let reply = (packet.control != TcpControl::Rst).then(|| reply!(challenge_ack));
+            let reply =
+                (packet.control != TcpControl::Rst).then(|| self.challenge_ack(&mut reply_buf));
             return (reply, RecvResult::Ok(self.poll_at()));
         };
         range.end -= packet.control.len();
@@ -226,7 +169,7 @@ where
 
             let reply = (seq_number != self.recv.next).then(|| {
                 // 2-3. Challenge ACK.
-                reply!(challenge_ack)
+                self.challenge_ack(&mut reply_buf)
             });
             // 2-2. Valid RST; Reset the connection.
             self.state = TcpState::Closed;
@@ -249,7 +192,7 @@ where
                 return (None, RecvResult::Ok(self.poll_at()));
             } else {
                 // Challenge ACK.
-                let reply = reply!(challenge_ack);
+                let reply = self.challenge_ack(&mut reply_buf);
                 self.state = TcpState::Closed;
                 return (Some(reply), RecvResult::Remove);
             }
@@ -277,12 +220,15 @@ where
             AckResult::Invalid => {
                 return if self.state == TcpState::SynSent {
                     (
-                        Some(reply!(seq: ack_number, TcpControl::Rst)),
+                        Some(self.rst_reply(ack_number, &mut reply_buf)),
                         RecvResult::Ok(self.poll_at()),
                     )
                 } else {
                     // Challenge ACK.
-                    (Some(reply!(challenge_ack)), RecvResult::Ok(self.poll_at()))
+                    (
+                        Some(self.challenge_ack(&mut reply_buf)),
+                        RecvResult::Ok(self.poll_at()),
+                    )
                 };
             }
         }
@@ -301,7 +247,7 @@ where
                     self.state = TcpState::Established;
                     self.timer.set_for_idle(now, self.keep_alive);
 
-                    reply = Some(reply!(challenge_ack));
+                    reply = Some(self.challenge_ack(&mut reply_buf));
                 } else {
                     // Interchanged opening (SYN-SENT => SYN-RECEIVED) not supported.
                     return (None, RecvResult::Ok(self.poll_at()));
@@ -337,7 +283,7 @@ where
             TcpState::CloseWait | TcpState::Closing | TcpState::LastAck | TcpState::TimeWait
         ) {
             if rx.is_full() {
-                reply = Some(reply!(challenge_ack: 0));
+                reply = Some(self.challenge_ack_congested(&mut reply_buf));
             } else {
                 let mut data = None;
                 let mut should_immediate_ack = false;
@@ -348,7 +294,7 @@ where
 
                     match self.recv.advance(seq_number, payload, packet.control) {
                         Ok((new_recv, s)) => (data, should_immediate_ack) = (new_recv, s),
-                        Err(_) => reply = Some(reply!(challenge_ack: 0)),
+                        Err(_) => reply = Some(self.challenge_ack_congested(&mut reply_buf)),
                     }
                 }
 
@@ -360,10 +306,10 @@ where
                             data: (payload, control),
                         }) => {
                             self.state = TcpState::Closed;
-                            reply = Some(reply!(
-                                seq: TcpSeqNumber(0),
-                                ack: packet.seq_number + payload.len() + control.len(),
-                                TcpControl::Rst,
+                            reply = Some(self.rst_ack_reply(
+                                TcpSeqNumber(0),
+                                packet.seq_number + payload.len() + control.len(),
+                                &mut reply_buf,
                             ))
                         }
                         Err(Error { kind: RxErrorKind::Full, .. }) => {
@@ -376,7 +322,7 @@ where
                 if reply.is_some() {
                     self.ack_delay_timer.reset();
                 } else if should_immediate_ack || self.ack_delay_timer.expired(now) {
-                    reply = Some(reply!(challenge_ack));
+                    reply = Some(self.challenge_ack(&mut reply_buf));
                     self.ack_delay_timer.reset();
                 } else {
                     self.ack_delay_timer.activate(now);
@@ -410,12 +356,12 @@ where
 
             let next = self.send.retx.peek(self.send.next).next();
             if let Some((seq, data)) = next {
-                reply = Some(reply!(retx: seq, data.control, data.payload));
+                reply = Some(self.retx_reply(seq, data.control, data.payload));
             }
         }
 
         if reply.is_none() && self.timer.should_keep_alive(now) {
-            reply = Some(reply!(challenge_ack));
+            reply = Some(self.challenge_ack(&mut reply_buf));
         }
 
         if reply.is_some() {
@@ -423,5 +369,131 @@ where
         }
 
         (reply, RecvResult::Ok(self.poll_at()))
+    }
+
+    pub fn poll_timeout(
+        &mut self,
+        now: Instant,
+        mut reply_buf: impl FnMut() -> P::NoPayload,
+        rx: &impl SocketRx<Item = (P, TcpControl)>,
+    ) -> (Option<IpPacket<TcpPacket<P>>>, RecvResult) {
+        // https://datatracker.ietf.org/doc/html/rfc9293#name-timeouts
+
+        if self.timer.should_close(now) || rx.is_connected() {
+            self.state = TcpState::Closed;
+            return (None, RecvResult::Remove);
+        }
+
+        let reply = (self.timer.should_retransmit(now))
+            .and_then(|_| {
+                self.timer.set_for_idle(now, self.keep_alive);
+                self.congestion.on_retransmit(now);
+
+                let next = self.send.retx.peek(self.send.next).next();
+                next.map(|(seq, data)| self.retx_reply(seq, data.control, data.payload))
+            })
+            .or_else(|| {
+                (self.ack_delay_timer.expired(now) || self.timer.should_keep_alive(now))
+                    .then(|| self.challenge_ack(&mut reply_buf))
+            });
+
+        if reply.is_some() {
+            self.ack_delay_timer.reset();
+            self.timer.rewind_keep_alive(now, self.keep_alive);
+        }
+
+        (reply, RecvResult::Ok(self.poll_at()))
+    }
+}
+
+impl<P, C> Tcb<P, C>
+where
+    P: PayloadSplit + PayloadMerge + PayloadBuild + Clone,
+    C: CongestionController,
+{
+    fn reply(
+        &self,
+        seq: TcpSeqNumber,
+        ack: Option<TcpSeqNumber>,
+        control: TcpControl,
+        window: usize,
+        buf: impl FnOnce(usize) -> P,
+    ) -> IpPacket<TcpPacket<P>> {
+        let packet = TcpPacket {
+            port: self.endpoint.map(|s| s.port()),
+            control,
+            seq_number: seq,
+            ack_number: ack,
+            window_len: window,
+            max_seg_size: None,
+            sack_permitted: true,
+            sack_ranges: if self.send.can_sack {
+                self.recv.sack_ranges()
+            } else {
+                [None; 3]
+            },
+            timestamp: TcpTimestamp::generate_reply_with_tsval(
+                self.timestamp_gen,
+                self.last_timestamp,
+            ),
+            payload: PayloadHolder(0),
+        };
+        let buf = buf(packet.header_len());
+        let packet = packet.sub_payload(|_| buf);
+        let ip = self.endpoint.map(|s| s.ip());
+        IpPacket::new(ip, IpProtocol::Tcp, self.hop_limit, packet)
+    }
+
+    fn challenge_ack(&self, mut reply_buf: impl FnMut() -> P::NoPayload) -> IpPacket<TcpPacket<P>> {
+        self.reply(
+            self.send.next,
+            Some(self.recv.next),
+            TcpControl::None,
+            self.congestion.window(),
+            |header_len| reply_buf().reserve(header_len).init(),
+        )
+    }
+
+    fn challenge_ack_congested(
+        &self,
+        mut reply_buf: impl FnMut() -> P::NoPayload,
+    ) -> IpPacket<TcpPacket<P>> {
+        self.reply(
+            self.send.next,
+            Some(self.recv.next),
+            TcpControl::None,
+            0,
+            |header_len| reply_buf().reserve(header_len).init(),
+        )
+    }
+
+    fn rst_reply(
+        &self,
+        seq: TcpSeqNumber,
+        mut reply_buf: impl FnMut() -> P::NoPayload,
+    ) -> IpPacket<TcpPacket<P>> {
+        self.reply(
+            seq,
+            None,
+            TcpControl::Rst,
+            self.congestion.window(),
+            |header_len| reply_buf().reserve(header_len).init(),
+        )
+    }
+
+    fn rst_ack_reply(
+        &self,
+        seq: TcpSeqNumber,
+        ack: TcpSeqNumber,
+        mut reply_buf: impl FnMut() -> P::NoPayload,
+    ) -> IpPacket<TcpPacket<P>> {
+        self.reply(seq, Some(ack), TcpControl::Rst, 0, |header_len| {
+            reply_buf().reserve(header_len).init()
+        })
+    }
+
+    fn retx_reply(&self, seq: TcpSeqNumber, control: TcpControl, buf: P) -> IpPacket<TcpPacket<P>> {
+        let window = self.congestion.window();
+        self.reply(seq, Some(self.recv.next), control, window, |_| buf)
     }
 }
