@@ -214,7 +214,7 @@ enum AckDelayState {
 }
 
 #[derive(Debug)]
-pub struct AckDelayTimer {
+pub(super) struct AckDelayTimer {
     ack_delay: Option<Duration>,
     state: AckDelayState,
 }
