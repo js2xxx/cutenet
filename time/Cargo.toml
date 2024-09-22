@@ -1,0 +1,12 @@
+[package]
+name = "cutenet-time"
+
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]

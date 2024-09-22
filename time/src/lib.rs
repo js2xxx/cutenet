@@ -1,3 +1,8 @@
+#![no_std]
+
+#[cfg(feature = "std")]
+extern crate std;
+
 use core::{fmt, ops, time::Duration};
 
 /// A representation of an absolute time value.
@@ -11,30 +16,23 @@ pub struct Instant {
 }
 
 impl Instant {
-    pub const ZERO: Instant = Instant::from_micros_const(0);
+    pub const ZERO: Instant = Instant::from_micros(0);
+
+    pub const MAX: Instant = Instant::from_micros(u64::MAX);
 
     /// Create a new `Instant` from a number of microseconds.
-    pub fn from_micros(micros: u64) -> Instant {
-        Instant { micros }
-    }
-
-    pub const fn from_micros_const(micros: u64) -> Instant {
+    pub const fn from_micros(micros: u64) -> Instant {
         Instant { micros }
     }
 
     /// Create a new `Instant` from a number of milliseconds.
-    pub fn from_millis(millis: u64) -> Instant {
-        Instant { micros: millis * 1000 }
-    }
-
-    /// Create a new `Instant` from a number of milliseconds.
-    pub const fn from_millis_const(millis: u64) -> Instant {
+    pub const fn from_millis(millis: u64) -> Instant {
         Instant { micros: millis * 1000 }
     }
 
     /// Create a new `Instant` from a number of seconds.
-    pub fn from_secs<T: Into<u64>>(secs: T) -> Instant {
-        Instant { micros: secs.into() * 1000000 }
+    pub fn from_secs(secs: u64) -> Instant {
+        Instant { micros: secs * 1000000 }
     }
 
     /// Create a new `Instant` from the current [`std::time::SystemTime`].
@@ -128,8 +126,8 @@ impl ops::Sub<Instant> for Instant {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
-pub enum PollAt {
-    Now,
-    Instant(Instant),
+pub enum PollAt<T = ()> {
+    Now(T),
+    Time(Instant),
     Pending,
 }

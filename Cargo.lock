@@ -38,6 +38,7 @@ dependencies = [
  "cutenet-error",
  "cutenet-macros",
  "cutenet-storage",
+ "cutenet-time",
  "cutenet-wire",
  "either",
  "heapless",
@@ -68,6 +69,10 @@ dependencies = [
  "heapless",
  "stable_deref_trait",
 ]
+
+[[package]]
+name = "cutenet-time"
+version = "0.1.0"
 
 [[package]]
 name = "cutenet-wire"

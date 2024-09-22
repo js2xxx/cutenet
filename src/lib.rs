@@ -25,11 +25,10 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 
-pub mod time;
-
 pub use cutenet_config as config;
 pub use cutenet_error as error;
 pub use cutenet_storage as storage;
+pub use cutenet_time as time;
 pub use cutenet_wire as wire;
 
 pub mod frag;

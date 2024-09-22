@@ -4,6 +4,7 @@ members = [
   "error",
   "macros",
   "storage",
+  "time",
   "wire",
 ]
 
@@ -14,11 +15,12 @@ version = "0.1.0"
 
 [workspace.dependencies]
 # Local crates
-cutenet-config = {path = "config"}
-cutenet-error = {path = "error"}
-cutenet-macros = {path = "macros"}
-cutenet-storage = {path = "storage"}
-cutenet-wire = {path = "wire"}
+cutenet-config = {path = "config", default-features = false}
+cutenet-error = {path = "error", default-features = false}
+cutenet-macros = {path = "macros", default-features = false}
+cutenet-storage = {path = "storage", default-features = false}
+cutenet-time = {path = "time", default-features = false}
+cutenet-wire = {path = "wire", default-features = false}
 # External crates
 bitflags = "2.6"
 byteorder = {version = "1.5", default-features = false}
@@ -53,6 +55,7 @@ log = [
 std = [
   "alloc",
   "cutenet-storage/std",
+  "cutenet-time/std",
 ]
 
 [dependencies]
@@ -61,6 +64,7 @@ cutenet-config.workspace = true
 cutenet-error.workspace = true
 cutenet-macros.workspace = true
 cutenet-storage.workspace = true
+cutenet-time.workspace = true
 cutenet-wire.workspace = true
 
 # External crates

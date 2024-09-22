@@ -140,12 +140,12 @@ impl Timer {
     pub fn poll_at(&self) -> PollAt {
         match *self {
             Timer::Idle { keep_alive_at } => match keep_alive_at {
-                Some(keep_alive_at) => PollAt::Instant(keep_alive_at),
+                Some(keep_alive_at) => PollAt::Time(keep_alive_at),
                 None => PollAt::Pending,
             },
-            Timer::Retx { expires_at, .. } => PollAt::Instant(expires_at),
-            Timer::FastRetx => PollAt::Now,
-            Timer::Close { expires_at } => PollAt::Instant(expires_at),
+            Timer::Retx { expires_at, .. } => PollAt::Time(expires_at),
+            Timer::FastRetx => PollAt::Now(()),
+            Timer::Close { expires_at } => PollAt::Time(expires_at),
         }
     }
 
@@ -266,8 +266,8 @@ impl AckDelayTimer {
     pub fn poll_at(&self) -> PollAt {
         match self.state {
             AckDelayState::Idle => PollAt::Pending,
-            AckDelayState::Waiting { ddl } => PollAt::Instant(ddl),
-            AckDelayState::Immediate => PollAt::Now,
+            AckDelayState::Waiting { ddl } => PollAt::Time(ddl),
+            AckDelayState::Immediate => PollAt::Now(()),
         }
     }
 }
